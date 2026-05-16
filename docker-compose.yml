@@ -1,0 +1,13 @@
+services:
+  api:
+    build: ./api
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${HOME}/.claude:/home/node/.claude:ro
+      - ${HOME}/.codex:/home/node/.codex:ro
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEVICE_TOKEN=${DEVICE_TOKEN}
+    restart: unless-stopped

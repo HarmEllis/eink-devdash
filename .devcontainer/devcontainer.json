@@ -1,0 +1,25 @@
+{
+  "name": "eink-devdash",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "mounts": [
+    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind,readonly",
+    "source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind,readonly"
+  ],
+  "forwardPorts": [3000],
+  "remoteUser": "root",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "24"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "espressif.esp-idf-extension"
+      ]
+    }
+  }
+}
