@@ -1,15 +1,25 @@
 #pragma once
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "esp_err.h"
 
 /* WeAct 2.9" Black/Red — SSD1680, 128×296 px */
-#define EINK_WIDTH  128
-#define EINK_HEIGHT 296
+#define EINK_WIDTH    128
+#define EINK_HEIGHT   296
 #define EINK_BUF_SIZE (EINK_WIDTH * EINK_HEIGHT / 8)  /* 4736 bytes */
 
+/* Pin mapping — ESP32-S3 Super Mini */
+#define EINK_PIN_MOSI  11   /* SDA (yellow) */
+#define EINK_PIN_SCK   12   /* SCL (green)  */
+#define EINK_PIN_CS    10   /* CS  (blue)   */
+#define EINK_PIN_DC     9   /* D/C (white)  */
+#define EINK_PIN_RST    1   /* RES (orange) */
+#define EINK_PIN_BUSY  13   /* BUSY (purple) */
+/* MISO not connected (-1), VCC = 3V3 */
+
 typedef enum {
-    EINK_REFRESH_BW_FAST,   /* ~2-4s, BW RAM only, Mode 2 LUT */
-    EINK_REFRESH_FULL_COLOR, /* ~15-27s, BW+Red RAM, Mode 1 LUT */
+    EINK_REFRESH_BW_FAST,    /* ~2-4s,   BW RAM only, Mode 2 LUT */
+    EINK_REFRESH_FULL_COLOR, /* ~15-27s, BW+Red RAM,  Mode 1 LUT */
 } eink_refresh_mode_t;
 
 typedef struct {
@@ -19,7 +29,14 @@ typedef struct {
     gpio_num_t busy_pin;
 } eink_handle_t;
 
+/* Initializes SPI bus + device and resets the panel. */
 esp_err_t eink_init(eink_handle_t *h);
+
+/* Copy buffers into internal framebuffers (NULL = keep current). */
 void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf);
+
+/* Trigger a display update. */
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode);
+
+/* Send panel to deep sleep (call after every refresh). */
 void eink_sleep(eink_handle_t *h);

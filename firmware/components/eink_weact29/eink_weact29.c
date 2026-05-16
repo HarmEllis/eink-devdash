@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <string.h>
 
 static const char *TAG = "eink";
 
@@ -22,6 +23,7 @@ static uint8_t red_framebuf[EINK_BUF_SIZE];
 
 static void wait_busy(const eink_handle_t *h)
 {
+    /* BUSY is HIGH while panel is busy */
     while (gpio_get_level(h->busy_pin) == 1)
         vTaskDelay(pdMS_TO_TICKS(5));
 }
@@ -30,14 +32,14 @@ static void send_cmd(const eink_handle_t *h, uint8_t cmd)
 {
     gpio_set_level(h->dc_pin, 0);
     spi_transaction_t t = { .length = 8, .tx_buffer = &cmd };
-    spi_device_transmit(h->spi, &t);
+    spi_device_polling_transmit(h->spi, &t);
 }
 
 static void send_data(const eink_handle_t *h, const uint8_t *data, size_t len)
 {
     gpio_set_level(h->dc_pin, 1);
     spi_transaction_t t = { .length = len * 8, .tx_buffer = data };
-    spi_device_transmit(h->spi, &t);
+    spi_device_polling_transmit(h->spi, &t);
 }
 
 static void send_byte(const eink_handle_t *h, uint8_t byte)
@@ -47,33 +49,78 @@ static void send_byte(const eink_handle_t *h, uint8_t byte)
 
 esp_err_t eink_init(eink_handle_t *h)
 {
-    /* HW reset */
+    h->dc_pin   = EINK_PIN_DC;
+    h->rst_pin  = EINK_PIN_RST;
+    h->busy_pin = EINK_PIN_BUSY;
+
+    /* GPIO config for DC, RST, BUSY */
+    gpio_config_t out_cfg = {
+        .pin_bit_mask = (1ULL << EINK_PIN_DC) | (1ULL << EINK_PIN_RST),
+        .mode         = GPIO_MODE_OUTPUT,
+    };
+    ESP_ERROR_CHECK(gpio_config(&out_cfg));
+
+    gpio_config_t in_cfg = {
+        .pin_bit_mask = (1ULL << EINK_PIN_BUSY),
+        .mode         = GPIO_MODE_INPUT,
+    };
+    ESP_ERROR_CHECK(gpio_config(&in_cfg));
+
+    /* SPI bus — MISO unused */
+    spi_bus_config_t bus = {
+        .mosi_io_num   = EINK_PIN_MOSI,
+        .miso_io_num   = -1,
+        .sclk_io_num   = EINK_PIN_SCK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+    };
+    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO));
+
+    /* SPI device — CS managed manually via DC line convention,
+       but we still register CS pin so the driver controls it */
+    spi_device_interface_config_t dev = {
+        .clock_speed_hz = 4 * 1000 * 1000,  /* 4 MHz — SSD1680 max 20 MHz, conservative start */
+        .mode           = 0,
+        .spics_io_num   = EINK_PIN_CS,
+        .queue_size     = 1,
+    };
+    ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &dev, &h->spi));
+
+    /* Hardware reset */
+    gpio_set_level(h->rst_pin, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(h->rst_pin, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(h->rst_pin, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
     wait_busy(h);
 
-    /* Driver output — 296 gates, scan down, mirror */
+    /* Driver output control — 296 gates, GD=0, SM=0, TB=0 */
     send_cmd(h, CMD_DRIVER_OUTPUT);
-    uint8_t drv[] = { 0x27, 0x01, 0x00 }; /* 0x0127 = 295 */
-    send_data(h, drv, 3);
+    uint8_t drv[] = { (EINK_HEIGHT - 1) & 0xFF, ((EINK_HEIGHT - 1) >> 8) & 0x01, 0x00 };
+    send_data(h, drv, sizeof(drv));
 
-    ESP_LOGI(TAG, "SSD1680 initialized");
+    ESP_LOGI(TAG, "SSD1680 initialized (MOSI=%d SCK=%d CS=%d DC=%d RST=%d BUSY=%d)",
+             EINK_PIN_MOSI, EINK_PIN_SCK, EINK_PIN_CS,
+             EINK_PIN_DC, EINK_PIN_RST, EINK_PIN_BUSY);
+
     return ESP_OK;
 }
 
 void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf)
 {
-    if (bw_buf) memcpy(bw_framebuf, bw_buf, EINK_BUF_SIZE);
+    if (bw_buf)  memcpy(bw_framebuf,  bw_buf,  EINK_BUF_SIZE);
     if (red_buf) memcpy(red_framebuf, red_buf, EINK_BUF_SIZE);
 }
 
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
 {
-    /* Set RAM address window */
+    /* Set RAM X address window: 0 .. (WIDTH/8 - 1) */
     send_cmd(h, CMD_SET_RAM_X_ADDR);
-    send_byte(h, 0x00); send_byte(h, (EINK_WIDTH / 8) - 1);
+    send_byte(h, 0x00);
+    send_byte(h, (EINK_WIDTH / 8) - 1);
+
+    /* Set RAM Y address window: 0 .. (HEIGHT - 1) */
     send_cmd(h, CMD_SET_RAM_Y_ADDR);
     send_byte(h, 0x00); send_byte(h, 0x00);
     send_byte(h, (EINK_HEIGHT - 1) & 0xFF);
@@ -86,24 +133,19 @@ void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
     send_data(h, bw_framebuf, EINK_BUF_SIZE);
 
     if (mode == EINK_REFRESH_FULL_COLOR) {
-        /* Write Red RAM */
         send_cmd(h, CMD_SET_RAM_X_COUNT); send_byte(h, 0x00);
         send_cmd(h, CMD_SET_RAM_Y_COUNT); send_byte(h, 0x00); send_byte(h, 0x00);
         send_cmd(h, CMD_WRITE_RED_RAM);
         send_data(h, red_framebuf, EINK_BUF_SIZE);
     }
 
-    /* Trigger update */
     send_cmd(h, CMD_DISP_UPDATE_CTRL);
-    if (mode == EINK_REFRESH_BW_FAST) {
-        send_byte(h, 0xFF); /* Mode 2 + temp load */
-    } else {
-        send_byte(h, 0xF7); /* Mode 1 full */
-    }
+    send_byte(h, mode == EINK_REFRESH_BW_FAST ? 0xFF : 0xF7);
     send_cmd(h, CMD_MASTER_ACTIVATE);
     wait_busy(h);
 
-    ESP_LOGI(TAG, "Refresh done (mode=%d)", mode);
+    ESP_LOGI(TAG, "Refresh done (mode=%s)",
+             mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
 }
 
 void eink_sleep(eink_handle_t *h)
