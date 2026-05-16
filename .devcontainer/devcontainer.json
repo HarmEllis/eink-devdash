@@ -3,27 +3,37 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "remoteUser": "node",
+  "remoteEnv": {
+    "IDF_PATH": "/opt/esp/idf",
+    "IDF_TOOLS_PATH": "/opt/esp",
+    "IDF_PYTHON_CHECK_CONSTRAINTS": "no",
+    "IDF_CCACHE_ENABLE": "1"
+  },
   "mounts": [
-    "source=${localEnv:HOME}/.claude,target=/root/.claude,type=bind,readonly",
-    "source=${localEnv:HOME}/.codex,target=/root/.codex,type=bind,readonly"
+    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind,readonly",
+    "source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind,readonly"
   ],
-  // Port 3000 = API server, port 8080 = web flasher (served locally, WebSerial flashes via local browser)
   "forwardPorts": [3000, 8080],
   "portsAttributes": {
     "3000": { "label": "API server" },
     "8080": { "label": "Web flasher" }
   },
-  "remoteUser": "root",
-  "postCreateCommand": "cd /workspace/api && npm install",
+  "postCreateCommand": "bash -c '. /etc/profile.d/esp-idf.sh && echo \"ESP-IDF: $(idf.py --version)\" && echo \"Node: $(node --version)\" && cd /workspaces/eink-devdash/api && npm install'",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-vscode.cpptools",
-        "espressif.esp-idf-extension"
+        "espressif.esp-idf-extension",
+        "ms-vscode.cpptools-extension-pack",
+        "Anthropic.claude-code",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
       ],
       "settings": {
         "idf.espIdfPath": "/opt/esp/idf",
-        "idf.customExtraPaths": "/opt/esp/tools/bin"
+        "idf.toolsPath": "/opt/esp",
+        "terminal.integrated.defaultProfile.linux": "bash"
       }
     }
   }
