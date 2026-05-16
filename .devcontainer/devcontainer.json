@@ -7,27 +7,23 @@
     "source=${localEnv:HOME}/.claude,target=/root/.claude,type=bind,readonly",
     "source=${localEnv:HOME}/.codex,target=/root/.codex,type=bind,readonly"
   ],
-  // ESP32 USB device — forwarded via usbip from local machine to remote host
-  // Run `scripts/usbip-attach.sh` on the remote host first
-  "runArgs": [
-    "--device=/dev/ttyACM0",
-    "--group-add=dialout"
-  ],
-  "forwardPorts": [3000],
+  // Port 3000 = API server, port 8080 = web flasher (served locally, WebSerial flashes via local browser)
+  "forwardPorts": [3000, 8080],
+  "portsAttributes": {
+    "3000": { "label": "API server" },
+    "8080": { "label": "Web flasher" }
+  },
   "remoteUser": "root",
   "postCreateCommand": "cd /workspace/api && npm install",
   "customizations": {
     "vscode": {
       "extensions": [
         "ms-vscode.cpptools",
-        "espressif.esp-idf-extension",
-        "ms-vscode.vscode-serial-monitor"
+        "espressif.esp-idf-extension"
       ],
       "settings": {
         "idf.espIdfPath": "/opt/esp/idf",
-        "idf.customExtraPaths": "/opt/esp/tools/bin",
-        "idf.port": "/dev/ttyACM0",
-        "idf.flashBaudRate": "921600"
+        "idf.customExtraPaths": "/opt/esp/tools/bin"
       }
     }
   }

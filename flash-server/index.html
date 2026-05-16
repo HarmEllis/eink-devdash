@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>eink-devdash flasher</title>
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+  ></script>
+  <style>
+    body {
+      font-family: monospace;
+      max-width: 480px;
+      margin: 80px auto;
+      padding: 0 1rem;
+      background: #111;
+      color: #eee;
+    }
+    h1 { font-size: 1.2rem; margin-bottom: 0.25rem; }
+    p  { color: #aaa; font-size: 0.85rem; margin: 0.5rem 0 1.5rem; }
+    esp-web-install-button {
+      display: block;
+      margin-top: 1rem;
+    }
+    .note {
+      margin-top: 2rem;
+      font-size: 0.75rem;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <h1>eink-devdash — ESP32-S3 flasher</h1>
+  <p>Gebruik Chrome of Edge. Sluit de ESP32 via USB aan, klik Install.</p>
+
+  <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+
+  <div class="note">
+    Build eerst in de devcontainer: <code>cd firmware && idf.py build</code><br>
+    Dan: <code>./flash-server/serve.sh</code>
+  </div>
+</body>
+</html>
