@@ -4,22 +4,31 @@
     "dockerfile": "Dockerfile"
   },
   "mounts": [
-    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind,readonly",
-    "source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind,readonly"
+    "source=${localEnv:HOME}/.claude,target=/root/.claude,type=bind,readonly",
+    "source=${localEnv:HOME}/.codex,target=/root/.codex,type=bind,readonly"
+  ],
+  // ESP32 USB device — forwarded via usbip from local machine to remote host
+  // Run `scripts/usbip-attach.sh` on the remote host first
+  "runArgs": [
+    "--device=/dev/ttyACM0",
+    "--group-add=dialout"
   ],
   "forwardPorts": [3000],
   "remoteUser": "root",
-  "features": {
-    "ghcr.io/devcontainers/features/node:1": {
-      "version": "24"
-    }
-  },
+  "postCreateCommand": "cd /workspace/api && npm install",
   "customizations": {
     "vscode": {
       "extensions": [
         "ms-vscode.cpptools",
-        "espressif.esp-idf-extension"
-      ]
+        "espressif.esp-idf-extension",
+        "ms-vscode.vscode-serial-monitor"
+      ],
+      "settings": {
+        "idf.espIdfPath": "/opt/esp/idf",
+        "idf.customExtraPaths": "/opt/esp/tools/bin",
+        "idf.port": "/dev/ttyACM0",
+        "idf.flashBaudRate": "921600"
+      }
     }
   }
 }
