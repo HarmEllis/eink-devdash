@@ -7,25 +7,32 @@
 static const char *TAG = "eink";
 
 /* SSD1680 commands */
-#define CMD_DRIVER_OUTPUT    0x01
-#define CMD_WRITE_BW_RAM     0x24
-#define CMD_WRITE_RED_RAM    0x26
-#define CMD_SET_RAM_X_ADDR   0x44
-#define CMD_SET_RAM_Y_ADDR   0x45
-#define CMD_SET_RAM_X_COUNT  0x4E
-#define CMD_SET_RAM_Y_COUNT  0x4F
-#define CMD_DISP_UPDATE_CTRL 0x22
-#define CMD_MASTER_ACTIVATE  0x20
-#define CMD_DEEP_SLEEP       0x10
+#define CMD_DRIVER_OUTPUT       0x01
+#define CMD_SW_RESET            0x12
+#define CMD_TEMP_SENSOR_CTRL    0x18
+#define CMD_DISP_UPDATE_CTRL1   0x21
+#define CMD_DISP_UPDATE_CTRL    0x22
+#define CMD_WRITE_BW_RAM        0x24
+#define CMD_WRITE_RED_RAM       0x26
+#define CMD_DATA_ENTRY_MODE     0x11
+#define CMD_BORDER_WAVEFORM     0x3C
+#define CMD_SET_RAM_X_ADDR      0x44
+#define CMD_SET_RAM_Y_ADDR      0x45
+#define CMD_SET_RAM_X_COUNT     0x4E
+#define CMD_SET_RAM_Y_COUNT     0x4F
+#define CMD_MASTER_ACTIVATE     0x20
+#define CMD_DEEP_SLEEP          0x10
 
 static uint8_t bw_framebuf[EINK_BUF_SIZE];
 static uint8_t red_framebuf[EINK_BUF_SIZE];
 
 static void wait_busy(const eink_handle_t *h)
 {
-    /* BUSY is HIGH while panel is busy */
+    /* BUSY is HIGH while panel is busy. Use vTaskDelay(1) — at least one full
+       tick — so IDLE0 gets CPU time and the task watchdog doesn't trigger
+       during the ~15s BWR full refresh. */
     while (gpio_get_level(h->busy_pin) == 1)
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(1);
 }
 
 static void send_cmd(const eink_handle_t *h, uint8_t cmd)
@@ -66,13 +73,15 @@ esp_err_t eink_init(eink_handle_t *h)
     };
     ESP_ERROR_CHECK(gpio_config(&in_cfg));
 
-    /* SPI bus — MISO unused */
+    /* SPI bus — MISO unused. max_transfer_sz must be >= EINK_BUF_SIZE (4736);
+       default is 4096 which silently drops the framebuffer write. */
     spi_bus_config_t bus = {
-        .mosi_io_num   = EINK_PIN_MOSI,
-        .miso_io_num   = -1,
-        .sclk_io_num   = EINK_PIN_SCK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
+        .mosi_io_num    = EINK_PIN_MOSI,
+        .miso_io_num    = -1,
+        .sclk_io_num    = EINK_PIN_SCK,
+        .quadwp_io_num  = -1,
+        .quadhd_io_num  = -1,
+        .max_transfer_sz = EINK_BUF_SIZE,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO));
 
@@ -95,10 +104,43 @@ esp_err_t eink_init(eink_handle_t *h)
     vTaskDelay(pdMS_TO_TICKS(10));
     wait_busy(h);
 
+    /* Software reset — required after hardware reset */
+    send_cmd(h, CMD_SW_RESET);
+    wait_busy(h);
+
     /* Driver output control — 296 gates, GD=0, SM=0, TB=0 */
     send_cmd(h, CMD_DRIVER_OUTPUT);
     uint8_t drv[] = { (EINK_HEIGHT - 1) & 0xFF, ((EINK_HEIGHT - 1) >> 8) & 0x01, 0x00 };
     send_data(h, drv, sizeof(drv));
+
+    /* Data entry mode: X increment, Y increment, address counter updates in X direction */
+    send_cmd(h, CMD_DATA_ENTRY_MODE);
+    send_byte(h, 0x03);
+
+    /* Set RAM address windows (must match what eink_refresh sends) */
+    send_cmd(h, CMD_SET_RAM_X_ADDR);
+    send_byte(h, 0x00);
+    send_byte(h, (EINK_WIDTH / 8) - 1);
+
+    send_cmd(h, CMD_SET_RAM_Y_ADDR);
+    send_byte(h, 0x00); send_byte(h, 0x00);
+    send_byte(h, (EINK_HEIGHT - 1) & 0xFF);
+    send_byte(h, ((EINK_HEIGHT - 1) >> 8) & 0xFF);
+
+    /* Border waveform: VSS (avoids red border artefacts) */
+    send_cmd(h, CMD_BORDER_WAVEFORM);
+    send_byte(h, 0x05);
+
+    /* Display Update Control 1: normal BW source (0x00), normal red source (0x80).
+       Without 0x80 in byte 2 the red channel polarity is inverted after SW reset —
+       0xFF in red RAM renders as all-red instead of all-white. */
+    send_cmd(h, CMD_DISP_UPDATE_CTRL1);
+    send_byte(h, 0x00);
+    send_byte(h, 0x80);
+
+    /* Use internal temperature sensor for waveform selection */
+    send_cmd(h, CMD_TEMP_SENSOR_CTRL);
+    send_byte(h, 0x80);
 
     ESP_LOGI(TAG, "SSD1680 initialized (MOSI=%d SCK=%d CS=%d DC=%d RST=%d BUSY=%d)",
              EINK_PIN_MOSI, EINK_PIN_SCK, EINK_PIN_CS,

@@ -123,9 +123,9 @@ static void set_pixel_red(int x, int y, int red)
     int idx = (y * EINK_WIDTH + x) / 8;
     int bit = 7 - ((y * EINK_WIDTH + x) % 8);
     if (red)
-        red_buf[idx] &= ~(1 << bit);
+        red_buf[idx] |= (1 << bit);   /* 1 = red for this panel */
     else
-        red_buf[idx] |= (1 << bit);
+        red_buf[idx] &= ~(1 << bit);  /* 0 = white */
 }
 
 static void draw_char(int x, int y, char c, int use_red)
@@ -172,7 +172,7 @@ void display_render(const dashboard_data_t *data, dash_config_t *cfg)
 {
     ensure_init();
     memset(bw_buf, 0xFF, sizeof(bw_buf));
-    memset(red_buf, 0xFF, sizeof(red_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
 
     char line[64];
 
@@ -239,7 +239,7 @@ void display_show_qr(void)
 {
     ensure_init();
     memset(bw_buf, 0xFF, sizeof(bw_buf));
-    memset(red_buf, 0xFF, sizeof(red_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
     draw_string(2, 2, "Scan QR to configure", 0);
     draw_string(2, 14, "WiFi: devdash-prov", 0);
     eink_set_framebuffer(bw_buf, red_buf);
@@ -251,7 +251,7 @@ void display_show_offline(void)
 {
     ensure_init();
     memset(bw_buf, 0xFF, sizeof(bw_buf));
-    memset(red_buf, 0xFF, sizeof(red_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
     draw_string(2, 2, "OFFLINE", 1);
     draw_string(2, 14, "API unreachable", 0);
     eink_set_framebuffer(bw_buf, red_buf);
