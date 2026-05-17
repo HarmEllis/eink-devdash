@@ -2,6 +2,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include <string.h>
 
 static const char *TAG = "storage";
@@ -13,9 +14,17 @@ void storage_init(void)
 
 void storage_load(dash_config_t *cfg)
 {
+    /* Defaults from Kconfig — overridden by any value present in NVS. */
+    strncpy(cfg->api_url, CONFIG_DEVDASH_API_URL, sizeof(cfg->api_url) - 1);
+    cfg->api_url[sizeof(cfg->api_url) - 1] = '\0';
+    strncpy(cfg->device_token, CONFIG_DEVDASH_DEVICE_TOKEN,
+            sizeof(cfg->device_token) - 1);
+    cfg->device_token[sizeof(cfg->device_token) - 1] = '\0';
+    cfg->refresh_min = CONFIG_DEVDASH_REFRESH_MIN;
+
     nvs_handle_t h;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
-        ESP_LOGW(TAG, "No saved config");
+        ESP_LOGW(TAG, "No saved config, using Kconfig defaults");
         return;
     }
 
@@ -25,8 +34,8 @@ void storage_load(dash_config_t *cfg)
     nvs_get_str(h, "device_token", cfg->device_token, &len);
 
     uint8_t v = 0;
-    nvs_get_u8(h, "refresh_min", &v); cfg->refresh_min = v ? v : 5;
-    nvs_get_u8(h, "provisioned", &v); cfg->provisioned = (bool)v;
+    if (nvs_get_u8(h, "refresh_min", &v) == ESP_OK && v >= 3 && v <= 60)
+        cfg->refresh_min = v;
 
     nvs_close(h);
 }
@@ -39,7 +48,6 @@ void storage_save(const dash_config_t *cfg)
     nvs_set_str(h, "api_url", cfg->api_url);
     nvs_set_str(h, "device_token", cfg->device_token);
     nvs_set_u8(h, "refresh_min", cfg->refresh_min);
-    nvs_set_u8(h, "provisioned", (uint8_t)cfg->provisioned);
 
     nvs_commit(h);
     nvs_close(h);

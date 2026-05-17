@@ -9,7 +9,6 @@ typedef struct {
     char api_url[256];
     char device_token[64];
     uint8_t refresh_min;   /* 3–60 */
-    bool provisioned;
 } dash_config_t;
 
 void storage_init(void);

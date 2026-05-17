@@ -4,7 +4,7 @@ import { getClaudeUsage } from '../services/claude.service.js'
 import { getCodexUsage } from '../services/codex.service.js'
 
 export async function dashboardRoute(app: FastifyInstance) {
-  app.get('/api/dashboard', async (_req, reply) => {
+  app.get('/dashboard', async (_req, reply) => {
     const [github, claude, codex] = await Promise.all([
       getGitHubStats(),
       getClaudeUsage(),

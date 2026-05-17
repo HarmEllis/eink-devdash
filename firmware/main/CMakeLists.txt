@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "display.c"
         "wifi_prov.c"
+        "improv.c"
         "api_client.c"
         "storage.c"
     INCLUDE_DIRS "."
@@ -11,6 +12,8 @@ idf_component_register(
         esp_http_client
         nvs_flash
         wifi_provisioning
+        driver
+        vfs
         json
         eink_weact29
 )

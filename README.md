@@ -111,14 +111,42 @@ idf.py build
 idf.py flash monitor
 ```
 
-On first boot the display shows a QR code. Scan it with the ESP SoftAP provisioning app (or any BLE/SoftAP provisioning tool) to set:
+On first boot the display shows a provisioning prompt. You have two ways to
+hand the device your WiFi credentials:
 
-- WiFi SSID + password
-- API URL (e.g. `http://192.168.1.50:3000`)
-- Device token (must match `DEVICE_TOKEN` in `.env`)
-- Refresh interval (3–60 minutes)
+**Option A — Improv Serial (browser, USB):**
+After flashing in the web flasher (see *Web flash* below), the page offers a
+*Configure Wi-Fi* step over the same USB connection (Improv Serial protocol).
+Enter your SSID + password and the device connects and reboots into normal
+mode — no app needed.
 
-Configuration is saved to NVS. To re-provision, erase flash:
+**Option B — SoftAP provisioning portal:**
+Join the SoftAP advertised by the device with the *ESP SoftAP Provisioning*
+app and supply your WiFi SSID + password. The SSID and the Proof-of-Possession
+(PoP) are derived per device from the factory MAC and shown on the e-ink
+display, e.g. `devdash-A4F2` / pop `aabbccddeeff`. Credentials are stored in
+NVS by the ESP-IDF provisioning manager.
+
+Both options run in parallel during the provisioning window — use whichever
+fits your setup.
+
+The API base URL, device bearer token, and refresh interval are build-time
+settings (`idf.py menuconfig` → *DevDash Configuration*) and default to:
+
+- API URL: `http://192.168.1.50:3000`
+- Device token: empty (firmware will display "offline" until you set one)
+- Refresh interval: 5 minutes
+
+You can also commit your values to `firmware/sdkconfig.defaults` so they are
+applied to every fresh build. The device token must match `DEVICE_TOKEN` in
+the API server's `.env`.
+
+If the device cannot connect with its stored credentials (e.g. you changed
+your WiFi password), it automatically clears them and re-enters the
+provisioning window once before giving up and going back to deep sleep — no
+erase-flash needed for the common case.
+
+To force re-provisioning manually anyway:
 
 ```bash
 idf.py erase-flash
@@ -201,17 +229,18 @@ eink-devdash/
 
 ## NVS layout
 
-Namespace `dash` — all keys validated with CRC on boot.
+Namespace `devdash`.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `schema_version` | u16 | NVS schema version |
-| `api_url` | string | API server URL |
-| `device_token` | string | Bearer token |
-| `refresh_min` | u8 | Refresh interval (3–60 min) |
-| `last_red_state` | u8 | Whether red ink was active last render |
-| `bw_fast_cycle_count` | u8 | Cycles since last full-color refresh |
-| `cap_profile` | blob | Cached capacity profile |
+| `api_url` | string | API server base URL (overrides Kconfig default) |
+| `device_token` | string | Bearer token (overrides Kconfig default) |
+| `refresh_min` | u8 | Refresh interval, 3–60 min (overrides Kconfig default) |
+
+WiFi credentials are stored separately by the IDF provisioning manager
+(`nvs.net80211` namespace). The refresh-cycle bookkeeping (`bw_fast_cycle_count`,
+`last_red_state`) lives in RTC slow memory and persists across deep-sleep
+wakeups but resets on power-on.
 
 ---
 

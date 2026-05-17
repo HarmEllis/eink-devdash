@@ -2,7 +2,7 @@ import { readdir, readFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
-type CodexUsage = { daily: { used: number; limit: number } }
+type CodexUsage = { dailyUsed: number; dailyLimit: number }
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY
 const CODEX_DIR = join(homedir(), '.codex')
@@ -10,18 +10,25 @@ const CODEX_DIR = join(homedir(), '.codex')
 async function fetchFromApi(): Promise<CodexUsage | null> {
   if (!OPENAI_API_KEY) return null
 
-  const today = new Date().toISOString().split('T')[0]
-  const url = `https://api.openai.com/v1/organization/usage/completions?start_time=${today}&limit=1`
+  /* OpenAI usage endpoint expects start_time as Unix seconds (UTC). */
+  const startOfDay = new Date()
+  startOfDay.setUTCHours(0, 0, 0, 0)
+  const startTime = Math.floor(startOfDay.getTime() / 1000)
+  const url = `https://api.openai.com/v1/organization/usage/completions?start_time=${startTime}&limit=1`
 
   try {
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      console.warn(`[codex] usage API ${res.status}, falling back to log parsing`)
+      return null
+    }
     const json = await res.json() as any
     const used = json?.data?.[0]?.num_model_requests ?? 0
-    return { daily: { used, limit: 0 } }
-  } catch {
+    return { dailyUsed: used, dailyLimit: 0 }
+  } catch (err) {
+    console.warn('[codex] usage API failed, falling back to log parsing', err)
     return null
   }
 }
@@ -43,9 +50,9 @@ async function parseFromLogs(): Promise<CodexUsage> {
       } catch { /* skip unreadable files */ }
     }
 
-    return { daily: { used: count, limit: 0 } }
+    return { dailyUsed: count, dailyLimit: 0 }
   } catch {
-    return { daily: { used: 0, limit: 0 } }
+    return { dailyUsed: 0, dailyLimit: 0 }
   }
 }
 

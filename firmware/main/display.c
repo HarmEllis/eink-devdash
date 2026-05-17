@@ -462,13 +462,20 @@ void display_render(const dashboard_data_t *data)
     eink_sleep(&s_eink);
 }
 
-void display_show_qr(void)
+void display_show_qr(const char *ssid, const char *pop)
 {
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
     memset(red_buf, 0x00, sizeof(red_buf));
-    draw_str(6, 30, "Scan to configure:", 0);
-    draw_str(6, 50, "WiFi: devdash-prov", 0);
+    draw_str(6, 10, "Provision WiFi:", 0);
+
+    char line[40];
+    snprintf(line, sizeof(line), "SSID: %s", ssid ? ssid : "devdash-XXXX");
+    draw_str(6, 30, line, 0);
+    snprintf(line, sizeof(line), "PoP:  %s", pop ? pop : "(see docs)");
+    draw_str(6, 50, line, 0);
+    draw_str(6, 80, "Or use Improv via USB", 0);
+
     eink_set_framebuffer(bw_buf, red_buf);
     eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
     eink_sleep(&s_eink);

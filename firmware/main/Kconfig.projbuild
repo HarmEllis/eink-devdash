@@ -1,0 +1,37 @@
+menu "DevDash Configuration"
+
+config DEVDASH_API_URL
+    string "API base URL"
+    default "http://192.168.1.50:3000"
+    help
+        Base URL of the dashboard API server (without trailing /dashboard).
+
+config DEVDASH_DEVICE_TOKEN
+    string "Device bearer token"
+    default ""
+    help
+        Bearer token used to authenticate with the API server. Must match the
+        DEVICE_TOKEN environment variable on the server.
+
+config DEVDASH_REFRESH_MIN
+    int "Refresh interval (minutes)"
+    range 3 60
+    default 5
+    help
+        Minutes between dashboard refreshes (deep-sleep duration). The display
+        cannot reliably refresh faster than every ~3 minutes.
+
+config DEVDASH_PROV_TIMEOUT_S
+    int "Provisioning timeout (seconds, 0 = no timeout)"
+    range 0 3600
+    default 600
+    help
+        How long to keep the SoftAP provisioning portal open after a fresh
+        flash before giving up and going back to deep sleep.
+
+config DEVDASH_WIFI_CONNECT_TIMEOUT_S
+    int "WiFi connect timeout (seconds)"
+    range 5 120
+    default 30
+
+endmenu
