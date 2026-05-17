@@ -1,7 +1,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "esp_sleep.h"
 #include "nvs_flash.h"
 #include "storage.h"
 #include "wifi_prov.h"
@@ -23,24 +22,25 @@ void app_main(void)
 
     dash_config_t cfg = {0};
     storage_load(&cfg);
+    cfg.provisioned = true;  /* skip wifi provisioning during layout test */
 
-    if (!cfg.provisioned) {
-        ESP_LOGI(TAG, "No config — starting provisioning");
-        display_show_qr();
-        wifi_prov_run(&cfg);
-        storage_save(&cfg);
-    }
+    /* Static demo data — V3 layout test (normal state, no alerts) */
+    dashboard_data_t data = {
+        .schema_version = 1,
+        .github = { .issues = 12, .prs = 4, .dependabot = 0 },
+        .claude = {
+            .five_hour = { .used = 64, .limit = 100 },
+            .weekly    = { .used = 41, .limit = 100 },
+            .auth_error = false,
+        },
+        .codex = { .daily_used = 52, .daily_limit = 100 },
+        .updated_at = "14:32",
+        .stale   = false,
+        .offline = false,
+    };
+    display_render(&data);
 
-    dashboard_data_t data = {0};
-    if (api_client_fetch(&cfg, &data) == ESP_OK) {
-        display_render(&data, &cfg);
-    } else {
-        ESP_LOGW(TAG, "API fetch failed");
-        display_show_offline();
-    }
-
-    uint32_t sleep_sec = cfg.refresh_min * 60;
-    ESP_LOGI(TAG, "Deep sleep %lus", (unsigned long)sleep_sec);
-    esp_sleep_enable_timer_wakeup((uint64_t)sleep_sec * 1000000ULL);
-    esp_deep_sleep_start();
+    /* Deep sleep disabled during layout test — just halt */
+    ESP_LOGI(TAG, "Layout test done, halting.");
+    while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
 }

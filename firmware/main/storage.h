@@ -10,8 +10,6 @@ typedef struct {
     char device_token[64];
     uint8_t refresh_min;   /* 3–60 */
     bool provisioned;
-    bool last_red_state;
-    uint8_t bw_fast_cycle_count;
 } dash_config_t;
 
 void storage_init(void);

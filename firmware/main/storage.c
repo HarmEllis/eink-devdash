@@ -27,8 +27,6 @@ void storage_load(dash_config_t *cfg)
     uint8_t v = 0;
     nvs_get_u8(h, "refresh_min", &v); cfg->refresh_min = v ? v : 5;
     nvs_get_u8(h, "provisioned", &v); cfg->provisioned = (bool)v;
-    nvs_get_u8(h, "last_red", &v);   cfg->last_red_state = (bool)v;
-    nvs_get_u8(h, "bw_cycles", &v);  cfg->bw_fast_cycle_count = v;
 
     nvs_close(h);
 }
@@ -42,8 +40,6 @@ void storage_save(const dash_config_t *cfg)
     nvs_set_str(h, "device_token", cfg->device_token);
     nvs_set_u8(h, "refresh_min", cfg->refresh_min);
     nvs_set_u8(h, "provisioned", (uint8_t)cfg->provisioned);
-    nvs_set_u8(h, "last_red", (uint8_t)cfg->last_red_state);
-    nvs_set_u8(h, "bw_cycles", cfg->bw_fast_cycle_count);
 
     nvs_commit(h);
     nvs_close(h);
