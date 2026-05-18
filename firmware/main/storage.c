@@ -11,7 +11,18 @@
 static const char *TAG = "storage";
 static const char *CFG_V2_KEY = "cfg_v2";
 
-_Static_assert(sizeof(dash_config_v2_t) < 8192, "cfg_v2 must fit comfortably in NVS");
+_Static_assert(sizeof(dash_api_profile_t) <= 272,
+               "dash_api_profile_t grew unexpectedly — recompute blob budget");
+_Static_assert(sizeof(dash_wifi_profile_t) <= 1464,
+               "dash_wifi_profile_t grew unexpectedly — recompute blob budget");
+_Static_assert(sizeof(dash_config_v2_t) <= DASH_CFG_V2_MAX_BYTES,
+               "cfg_v2 exceeds DASH_CFG_V2_MAX_BYTES — switch to per-network blobs");
+/* Caps×counts budget: keeps the comfort margin obvious if caps move. */
+_Static_assert((size_t)DASH_API_URL_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS +
+               (size_t)DASH_DEVICE_TOKEN_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS <=
+               DASH_CFG_V2_MAX_BYTES - 512,
+               "URL/token caps × networks × APIs leave <512 B for headers — "
+               "lower caps or switch to per-network blobs");
 
 static uint8_t clamp_refresh(uint8_t value)
 {
@@ -145,6 +156,10 @@ void storage_mask_token(const char *token, char *out, size_t out_sz)
 void storage_init(void)
 {
     /* nvs_flash_init() is called in app_main before storage_init */
+    ESP_LOGI(TAG, "cfg_v2 blob: %u bytes (%u%% of %u B budget)",
+             (unsigned)sizeof(dash_config_v2_t),
+             (unsigned)((sizeof(dash_config_v2_t) * 100u) / DASH_CFG_V2_MAX_BYTES),
+             (unsigned)DASH_CFG_V2_MAX_BYTES);
 }
 
 void storage_load(dash_config_t *cfg)

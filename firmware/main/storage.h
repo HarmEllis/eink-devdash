@@ -15,6 +15,14 @@
 #define DASH_API_URL_MAX 192
 #define DASH_DEVICE_TOKEN_MAX 64
 
+/*
+ * Hard ceiling for the cfg_v2 NVS blob. NVS supports blobs up to ~97% of
+ * the partition size, but a single fat blob means losing every network on
+ * any corrupted save. If the static assertions below ever fire, switch to
+ * per-network blobs instead of widening this cap.
+ */
+#define DASH_CFG_V2_MAX_BYTES 8192
+
 typedef struct {
     char api_url[DASH_API_URL_MAX];
     char device_token[DASH_DEVICE_TOKEN_MAX];
