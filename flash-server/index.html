@@ -8,37 +8,47 @@
     type="module"
     src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
   ></script>
-  <style>
-    body {
-      font-family: monospace;
-      max-width: 480px;
-      margin: 80px auto;
-      padding: 0 1rem;
-      background: #111;
-      color: #eee;
-    }
-    h1 { font-size: 1.2rem; margin-bottom: 0.25rem; }
-    p  { color: #aaa; font-size: 0.85rem; margin: 0.5rem 0 1.5rem; }
-    esp-web-install-button {
-      display: block;
-      margin-top: 1rem;
-    }
-    .note {
-      margin-top: 2rem;
-      font-size: 0.75rem;
-      color: #666;
-    }
-  </style>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <h1>eink-devdash — ESP32-S3 flasher</h1>
-  <p>Gebruik Chrome of Edge. Sluit de ESP32 via USB aan, klik Install.</p>
+  <main>
+    <header>
+      <h1>eink-devdash</h1>
+      <p id="status">Disconnected</p>
+    </header>
 
-  <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+    <section>
+      <h2>1. Connect Device</h2>
+      <div class="row">
+        <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+        <button id="connect-button" type="button">Connect Serial</button>
+      </div>
+    </section>
 
-  <div class="note">
-    Build eerst in de devcontainer: <code>cd firmware && idf.py build</code><br>
-    Dan: <code>./flash-server/serve.sh</code>
-  </div>
+    <section>
+      <h2>2. Load Current Config</h2>
+      <div class="row">
+        <button id="load-button" type="button" disabled>Load Config</button>
+        <button id="reprovision-button" type="button" disabled>Reprovision WiFi</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. Network Editor</h2>
+      <div id="network-list" class="stack"></div>
+      <button id="add-network-button" type="button" disabled>Add Network</button>
+    </section>
+
+    <section>
+      <h2>4. Save / Apply</h2>
+      <div class="row">
+        <button id="save-button" type="button" disabled>Save Selected Network</button>
+        <button id="reorder-networks-button" type="button" disabled>Apply Network Order</button>
+      </div>
+      <p class="note">The device restarts after each saved change.</p>
+    </section>
+  </main>
+
+  <script type="module" src="config-ui.js"></script>
 </body>
 </html>
