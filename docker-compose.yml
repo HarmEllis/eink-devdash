@@ -10,4 +10,22 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - DEVICE_TOKEN=${DEVICE_TOKEN}
+      - MDNS_ENABLED=${MDNS_ENABLED:-true}
+      - MDNS_NAME=${MDNS_NAME:-devdash-api}
+    restart: unless-stopped
+
+  api-mdns-host:
+    profiles:
+      - mdns-host
+    build: ./api
+    network_mode: host
+    volumes:
+      - ${HOME}/.claude:/home/node/.claude:ro
+      - ${HOME}/.codex:/home/node/.codex:ro
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEVICE_TOKEN=${DEVICE_TOKEN}
+      - MDNS_ENABLED=${MDNS_ENABLED:-true}
+      - MDNS_NAME=${MDNS_NAME:-devdash-api}
     restart: unless-stopped

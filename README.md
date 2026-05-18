@@ -90,6 +90,8 @@ Create a `.env` file in the repo root:
 GITHUB_TOKEN=ghp_...
 OPENAI_API_KEY=sk-...
 DEVICE_TOKEN=<random 32-char secret you generate>
+MDNS_ENABLED=true
+MDNS_NAME=devdash-api
 ```
 
 Start the server:
@@ -98,7 +100,19 @@ Start the server:
 docker compose up -d
 ```
 
-The API is available at `http://<your-vm-ip>:3000`. The `/health` endpoint requires no authentication; all other routes require `Authorization: Bearer <DEVICE_TOKEN>`.
+The API is available at `http://<your-vm-ip>:3000`. It also advertises
+`http://devdash-api.local:3000` over mDNS by default when the container network
+allows multicast. The `/health` endpoint requires no authentication; all other
+routes require `Authorization: Bearer <DEVICE_TOKEN>`.
+
+For reliable `.local` discovery on Linux Docker hosts, use host networking:
+
+```bash
+docker compose --profile mdns-host up -d api-mdns-host
+```
+
+Bridge networking with the default `api` service still works for direct IP URLs,
+but mDNS advertisement can be inconsistent across Docker hosts and VLANs.
 
 ### 2. Firmware
 
@@ -130,21 +144,25 @@ NVS by the ESP-IDF provisioning manager.
 Both options run in parallel during the provisioning window — use whichever
 fits your setup.
 
-The API base URL, device bearer token, and refresh interval are build-time
-settings (`idf.py menuconfig` → *DevDash Configuration*) and default to:
+The API base URL, device bearer token, and refresh interval have build-time
+defaults (`idf.py menuconfig` -> *DevDash Configuration*) and are migrated into
+the runtime `cfg_v2` profile store on first boot. After that, manage up to five
+WiFi networks and up to five API endpoints per network from the web flasher over
+Improv Serial. API URLs must use `http://`; IP addresses, DNS names, and
+`.local` mDNS names are accepted.
 
 - API URL: `http://192.168.1.50:3000`
-- Device token: empty (firmware will display "offline" until you set one)
+- Device token: empty (firmware will display `OFFLINE` until you set one)
 - Refresh interval: 5 minutes
 
 You can also commit your values to `firmware/sdkconfig.defaults` so they are
 applied to every fresh build. The device token must match `DEVICE_TOKEN` in
 the API server's `.env`.
 
-If the device cannot connect with its stored credentials (e.g. you changed
-your WiFi password), it automatically clears them and re-enters the
-provisioning window once before giving up and going back to deep sleep — no
-erase-flash needed for the common case.
+If none of the stored WiFi networks are reachable, the device displays
+`OFFLINE` and returns to deep sleep. It does not erase stored credentials
+automatically. Hold the BOOT button while the device is asleep to wake it into
+the provisioning and Improv configuration window.
 
 To force re-provisioning manually anyway:
 
