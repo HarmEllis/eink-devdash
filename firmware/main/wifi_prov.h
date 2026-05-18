@@ -18,6 +18,11 @@ bool wifi_net_is_provisioned(void);
  * time the call returns. */
 esp_err_t wifi_net_provision_if_needed(void);
 
+/* Open the SoftAP provisioning and Improv Serial configuration window even
+ * when credentials already exist. Used for GPIO0 wake-up and explicit rescue
+ * flows. */
+esp_err_t wifi_net_open_config_window(void);
+
 /* Connect using stored credentials and wait for an IP address, up to the
  * Kconfig WiFi connect timeout. */
 esp_err_t wifi_net_connect(void);

@@ -112,10 +112,8 @@ void wifi_net_get_prov_info(char *ssid, size_t ssid_sz,
     derive_device_ids(ssid, ssid_sz, pop, pop_sz);
 }
 
-esp_err_t wifi_net_provision_if_needed(void)
+static esp_err_t run_provisioning_window(void)
 {
-    if (wifi_net_is_provisioned()) return ESP_OK;
-
     /* Need a temporary AP netif while provisioning. */
     esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
 
@@ -147,6 +145,17 @@ esp_err_t wifi_net_provision_if_needed(void)
     if (ap_netif) esp_netif_destroy_default_wifi(ap_netif);
 
     return (bits & BIT_PROV_DONE) ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t wifi_net_open_config_window(void)
+{
+    return run_provisioning_window();
+}
+
+esp_err_t wifi_net_provision_if_needed(void)
+{
+    if (wifi_net_is_provisioned()) return ESP_OK;
+    return run_provisioning_window();
 }
 
 esp_err_t wifi_net_forget(void)

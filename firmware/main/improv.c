@@ -6,12 +6,16 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "esp_vfs_dev.h"
+#include "esp_system.h"
 #include "driver/uart.h"
+#include "storage.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -19,6 +23,7 @@
 static const char *TAG = "improv";
 
 #define IMPROV_BUF_SIZE   256
+#define IMPROV_PACKET_SIZE 280
 
 /* Improv Serial protocol — https://www.improv-wifi.com/serial/ */
 #define IMPROV_HEADER     "IMPROV"
@@ -32,6 +37,12 @@ static const char *TAG = "improv";
 #define CMD_WIFI_SETTINGS   0x01
 #define CMD_IDENTIFY        0x02
 #define CMD_GET_DEVICE_INFO 0x03
+#define CMD_LIST_CONFIG       0x40
+#define CMD_SET_NETWORK       0x41
+#define CMD_DELETE_NETWORK    0x42
+#define CMD_REORDER_NETWORKS  0x43
+#define CMD_REORDER_APIS      0x44
+#define CMD_REPROVISION_WIFI  0x45
 
 #define STATE_READY         0x02
 #define STATE_PROVISIONING  0x03
@@ -96,8 +107,12 @@ static void uart_write_all(const uint8_t *data, int len)
 
 static void send_packet(uint8_t type, const uint8_t *data, uint8_t len)
 {
-    uint8_t pkt[IMPROV_BUF_SIZE];
+    uint8_t pkt[IMPROV_PACKET_SIZE];
     int pos = 0;
+    if ((int)len + 10 > IMPROV_PACKET_SIZE) {
+        ESP_LOGW(TAG, "Improv packet too large: %u", len);
+        return;
+    }
     memcpy(pkt, IMPROV_HEADER, 6);
     pos = 6;
     pkt[pos++] = IMPROV_VERSION;
@@ -139,6 +154,306 @@ static void send_rpc_result(uint8_t command, const char *url)
         data[pos++] = 0;
     }
     send_packet(TYPE_RPC_RESULT, data, pos);
+}
+
+static void send_rpc_json(uint8_t command, cJSON *payload)
+{
+    char *json = cJSON_PrintUnformatted(payload);
+    if (!json) {
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    size_t json_len = strlen(json);
+    if (json_len > 252) {
+        ESP_LOGW(TAG, "RPC result for 0x%02X is too large (%u bytes)",
+                 command, (unsigned)json_len);
+        free(json);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+
+    uint8_t data[IMPROV_BUF_SIZE];
+    data[0] = command;
+    data[1] = (uint8_t)json_len;
+    memcpy(data + 2, json, json_len);
+    send_packet(TYPE_RPC_RESULT, data, (uint8_t)(json_len + 2));
+    free(json);
+}
+
+static bool payload_proto_ok(cJSON *root)
+{
+    cJSON *proto = cJSON_GetObjectItemCaseSensitive(root, "proto_version");
+    return proto && cJSON_IsNumber(proto) && proto->valueint == DASH_CFG_V2_VERSION;
+}
+
+static cJSON *parse_json_payload(const uint8_t *data, uint8_t len)
+{
+    if (!data || len == 0) return NULL;
+    char json[IMPROV_BUF_SIZE] = {0};
+    memcpy(json, data, len);
+    return cJSON_Parse(json);
+}
+
+static cJSON *json_ack(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "proto_version", DASH_CFG_V2_VERSION);
+    cJSON_AddBoolToObject(root, "ok", true);
+    return root;
+}
+
+static void restart_after_ack(void)
+{
+    vTaskDelay(pdMS_TO_TICKS(150));
+    esp_restart();
+}
+
+static void handle_list_config(const uint8_t *data, uint8_t len)
+{
+    cJSON *req = parse_json_payload(data, len);
+    if (!req || !payload_proto_ok(req)) {
+        cJSON_Delete(req);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    cJSON_Delete(req);
+
+    dash_config_v2_t cfg = {0};
+    storage_load_v2(&cfg);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "proto_version", DASH_CFG_V2_VERSION);
+    cJSON_AddNumberToObject(root, "refresh_min", cfg.refresh_min);
+    cJSON_AddNumberToObject(root, "last_success_network_idx",
+                            cfg.last_success_network_idx);
+    cJSON_AddNumberToObject(root, "last_success_api_idx",
+                            cfg.last_success_api_idx);
+    cJSON *nets = cJSON_AddArrayToObject(root, "networks");
+    for (uint8_t i = 0; i < cfg.network_count; i++) {
+        const dash_wifi_profile_t *net = &cfg.networks[i];
+        cJSON *jn = cJSON_CreateObject();
+        cJSON_AddNumberToObject(jn, "id", net->id);
+        cJSON_AddBoolToObject(jn, "enabled", net->enabled);
+        cJSON_AddStringToObject(jn, "ssid", net->ssid);
+        cJSON *apis = cJSON_AddArrayToObject(jn, "apis");
+        for (uint8_t j = 0; j < net->api_count; j++) {
+            const dash_api_profile_t *api = &net->apis[j];
+            char masked[DASH_DEVICE_TOKEN_MAX] = {0};
+            storage_mask_token(api->device_token, masked, sizeof(masked));
+            cJSON *ja = cJSON_CreateObject();
+            cJSON_AddNumberToObject(ja, "id", api->id);
+            cJSON_AddBoolToObject(ja, "enabled", api->enabled);
+            cJSON_AddStringToObject(ja, "api_url", api->api_url);
+            cJSON_AddStringToObject(ja, "device_token", masked);
+            cJSON_AddItemToArray(apis, ja);
+        }
+        cJSON_AddItemToArray(nets, jn);
+    }
+    send_rpc_json(CMD_LIST_CONFIG, root);
+    cJSON_Delete(root);
+}
+
+static int find_network_by_id_or_ssid(const dash_config_v2_t *cfg,
+                                      uint32_t id, const char *ssid)
+{
+    for (uint8_t i = 0; i < cfg->network_count; i++) {
+        if (id != 0 && cfg->networks[i].id == id) return i;
+        if (ssid && ssid[0] != '\0' && strcmp(cfg->networks[i].ssid, ssid) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void handle_set_network(const uint8_t *data, uint8_t len)
+{
+    cJSON *root = parse_json_payload(data, len);
+    if (!root || !payload_proto_ok(root)) {
+        cJSON_Delete(root);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    cJSON *ssid = cJSON_GetObjectItemCaseSensitive(root, "ssid");
+    cJSON *password = cJSON_GetObjectItemCaseSensitive(root, "password");
+    cJSON *apis = cJSON_GetObjectItemCaseSensitive(root, "apis");
+    cJSON *id_item = cJSON_GetObjectItemCaseSensitive(root, "id");
+    if (!cJSON_IsString(ssid) || !cJSON_IsArray(apis) ||
+        cJSON_GetArraySize(apis) > MAX_APIS_PER_NETWORK) {
+        cJSON_Delete(root);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+
+    dash_config_v2_t cfg = {0};
+    storage_load_v2(&cfg);
+    uint32_t id = cJSON_IsNumber(id_item) ? (uint32_t)id_item->valuedouble : 0;
+    int idx = find_network_by_id_or_ssid(&cfg, id, ssid->valuestring);
+    if (idx < 0) {
+        if (cfg.network_count >= MAX_WIFI_NETWORKS) {
+            cJSON_Delete(root);
+            send_error(ERROR_INVALID_RPC);
+            return;
+        }
+        idx = cfg.network_count++;
+        cfg.networks[idx].id = storage_next_profile_id(&cfg);
+        cfg.networks[idx].enabled = true;
+    }
+
+    dash_wifi_profile_t *net = &cfg.networks[idx];
+    net->enabled = true;
+    strncpy(net->ssid, ssid->valuestring, sizeof(net->ssid) - 1);
+    if (cJSON_IsString(password) && password->valuestring[0] != '\0') {
+        strncpy(net->password, password->valuestring, sizeof(net->password) - 1);
+    }
+    net->api_count = (uint8_t)cJSON_GetArraySize(apis);
+    for (uint8_t i = 0; i < net->api_count; i++) {
+        cJSON *ja = cJSON_GetArrayItem(apis, i);
+        cJSON *url = cJSON_GetObjectItemCaseSensitive(ja, "api_url");
+        cJSON *token = cJSON_GetObjectItemCaseSensitive(ja, "device_token");
+        cJSON *api_id = cJSON_GetObjectItemCaseSensitive(ja, "id");
+        cJSON *enabled = cJSON_GetObjectItemCaseSensitive(ja, "enabled");
+        if (!cJSON_IsString(url) || !storage_validate_api_url(url->valuestring) ||
+            (token && !cJSON_IsString(token))) {
+            cJSON_Delete(root);
+            send_error(ERROR_INVALID_RPC);
+            return;
+        }
+        dash_api_profile_t *api = &net->apis[i];
+        api->id = cJSON_IsNumber(api_id) ? (uint32_t)api_id->valuedouble
+                                         : storage_next_profile_id(&cfg);
+        api->enabled = enabled ? cJSON_IsTrue(enabled) : true;
+        strncpy(api->api_url, url->valuestring, sizeof(api->api_url) - 1);
+        if (token && token->valuestring[0] != '\0' &&
+            strncmp(token->valuestring, "****", 4) != 0) {
+            strncpy(api->device_token, token->valuestring,
+                    sizeof(api->device_token) - 1);
+        }
+    }
+    storage_save_v2(&cfg);
+    cJSON_Delete(root);
+    cJSON *ack = json_ack();
+    send_rpc_json(CMD_SET_NETWORK, ack);
+    cJSON_Delete(ack);
+    restart_after_ack();
+}
+
+static void handle_delete_network(const uint8_t *data, uint8_t len)
+{
+    cJSON *root = parse_json_payload(data, len);
+    if (!root || !payload_proto_ok(root)) {
+        cJSON_Delete(root);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    cJSON *id_item = cJSON_GetObjectItemCaseSensitive(root, "id");
+    if (!cJSON_IsNumber(id_item)) {
+        cJSON_Delete(root);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    dash_config_v2_t cfg = {0};
+    storage_load_v2(&cfg);
+    int idx = find_network_by_id_or_ssid(&cfg, (uint32_t)id_item->valuedouble, NULL);
+    if (idx >= 0) {
+        for (uint8_t i = idx; i + 1 < cfg.network_count; i++) {
+            cfg.networks[i] = cfg.networks[i + 1];
+        }
+        cfg.network_count--;
+        storage_save_v2(&cfg);
+    }
+    cJSON_Delete(root);
+    cJSON *ack = json_ack();
+    send_rpc_json(CMD_DELETE_NETWORK, ack);
+    cJSON_Delete(ack);
+    restart_after_ack();
+}
+
+static void handle_reorder_networks(const uint8_t *data, uint8_t len)
+{
+    cJSON *root = parse_json_payload(data, len);
+    cJSON *ids = root ? cJSON_GetObjectItemCaseSensitive(root, "ids") : NULL;
+    if (!root || !payload_proto_ok(root) || !cJSON_IsArray(ids) ||
+        cJSON_GetArraySize(ids) > MAX_WIFI_NETWORKS) {
+        cJSON_Delete(root);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    dash_config_v2_t cfg = {0}, next = {0};
+    storage_load_v2(&cfg);
+    next = cfg;
+    next.network_count = 0;
+    for (int i = 0; i < cJSON_GetArraySize(ids); i++) {
+        cJSON *id_item = cJSON_GetArrayItem(ids, i);
+        int idx = cJSON_IsNumber(id_item)
+            ? find_network_by_id_or_ssid(&cfg, (uint32_t)id_item->valuedouble, NULL)
+            : -1;
+        if (idx >= 0) next.networks[next.network_count++] = cfg.networks[idx];
+    }
+    storage_save_v2(&next);
+    cJSON_Delete(root);
+    cJSON *ack = json_ack();
+    send_rpc_json(CMD_REORDER_NETWORKS, ack);
+    cJSON_Delete(ack);
+    restart_after_ack();
+}
+
+static void handle_reorder_apis(const uint8_t *data, uint8_t len)
+{
+    cJSON *root = parse_json_payload(data, len);
+    cJSON *net_id = root ? cJSON_GetObjectItemCaseSensitive(root, "network_id") : NULL;
+    cJSON *ids = root ? cJSON_GetObjectItemCaseSensitive(root, "ids") : NULL;
+    if (!root || !payload_proto_ok(root) || !cJSON_IsNumber(net_id) ||
+        !cJSON_IsArray(ids) || cJSON_GetArraySize(ids) > MAX_APIS_PER_NETWORK) {
+        cJSON_Delete(root);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    dash_config_v2_t cfg = {0};
+    storage_load_v2(&cfg);
+    int nidx = find_network_by_id_or_ssid(&cfg, (uint32_t)net_id->valuedouble, NULL);
+    if (nidx >= 0) {
+        dash_wifi_profile_t *net = &cfg.networks[nidx];
+        dash_api_profile_t old[MAX_APIS_PER_NETWORK] = {0};
+        uint8_t old_count = net->api_count;
+        memcpy(old, net->apis, sizeof(old));
+        net->api_count = 0;
+        for (int i = 0; i < cJSON_GetArraySize(ids); i++) {
+            cJSON *id_item = cJSON_GetArrayItem(ids, i);
+            if (!cJSON_IsNumber(id_item)) continue;
+            for (uint8_t j = 0; j < old_count; j++) {
+                if (old[j].id == (uint32_t)id_item->valuedouble) {
+                    net->apis[net->api_count++] = old[j];
+                    break;
+                }
+            }
+        }
+        storage_save_v2(&cfg);
+    }
+    cJSON_Delete(root);
+    cJSON *ack = json_ack();
+    send_rpc_json(CMD_REORDER_APIS, ack);
+    cJSON_Delete(ack);
+    restart_after_ack();
+}
+
+static void handle_reprovision_wifi(const uint8_t *data, uint8_t len)
+{
+    cJSON *root = parse_json_payload(data, len);
+    if (!root || !payload_proto_ok(root)) {
+        cJSON_Delete(root);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    cJSON_Delete(root);
+    dash_config_v2_t cfg = {0};
+    storage_cfg_v2_defaults(&cfg);
+    storage_save_v2(&cfg);
+    wifi_config_t empty = {0};
+    esp_wifi_set_config(WIFI_IF_STA, &empty);
+    cJSON *ack = json_ack();
+    send_rpc_json(CMD_REPROVISION_WIFI, ack);
+    cJSON_Delete(ack);
+    restart_after_ack();
 }
 
 /* Try to connect to the given SSID/password. Returns ESP_OK on GOT_IP. The
@@ -270,6 +585,24 @@ static void handle_rpc(const uint8_t *data, uint8_t len)
         break;
     case CMD_GET_DEVICE_INFO:
         handle_device_info();
+        break;
+    case CMD_LIST_CONFIG:
+        handle_list_config(cmd_data, cmd_data_len);
+        break;
+    case CMD_SET_NETWORK:
+        handle_set_network(cmd_data, cmd_data_len);
+        break;
+    case CMD_DELETE_NETWORK:
+        handle_delete_network(cmd_data, cmd_data_len);
+        break;
+    case CMD_REORDER_NETWORKS:
+        handle_reorder_networks(cmd_data, cmd_data_len);
+        break;
+    case CMD_REORDER_APIS:
+        handle_reorder_apis(cmd_data, cmd_data_len);
+        break;
+    case CMD_REPROVISION_WIFI:
+        handle_reprovision_wifi(cmd_data, cmd_data_len);
         break;
     default:
         ESP_LOGW(TAG, "Unknown RPC command: 0x%02X", command);

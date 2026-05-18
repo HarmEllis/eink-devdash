@@ -36,3 +36,7 @@ typedef struct {
 } dashboard_data_t;
 
 esp_err_t api_client_fetch(const dash_config_t *cfg, dashboard_data_t *out);
+esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
+                                         int network_idx,
+                                         dashboard_data_t *out,
+                                         int *api_used_idx);

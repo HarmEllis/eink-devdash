@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "display.c"
         "wifi_prov.c"
+        "wifi_roam.c"
         "improv.c"
         "api_client.c"
         "storage.c"
