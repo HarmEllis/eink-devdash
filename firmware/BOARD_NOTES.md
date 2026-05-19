@@ -71,6 +71,8 @@ RTC domain, which stays powered.
 The Super Mini has no external USB-UART bridge; it uses the ESP32-S3's
 built-in USB-Serial-JTAG. Implications:
 
+- Improv and browser Web Serial traffic must use USB-Serial-JTAG, not
+  UART0. UART0 is only useful if a separate wired debug adapter is attached.
 - `esp_deep_sleep_start()` powers down the USB-CDC controller. The host
   COM port disappears for the entire sleep duration.
 - After wake, the host needs ~0.5-1.5 s to re-enumerate the USB device,
@@ -78,6 +80,14 @@ built-in USB-Serial-JTAG. Implications:
 - Browser-based Web Serial monitors (e.g. the flash-server's terminal)
   require a manual "Select port" click to reattach after re-enumeration
   — they will not reconnect automatically.
+- Opening the USB-Serial-JTAG CDC port for plain serial I/O should not reset
+  the chip by itself. A boot log line such as
+  `rst:0x15 (USB_UART_CHIP_RESET)` means the host sent the USB-Serial-JTAG
+  reset control sequence, normally via DTR/RTS transitions used by esptool,
+  ESP Web Tools, or a terminal that asserts modem-control lines on open.
+  ESP-IDF v5.3 has `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`, but that only
+  prevents automatic light sleep while the USB-Serial-JTAG port is connected;
+  it does not disable the reset/download control sequence.
 
 For development this is workable but not pleasant; for production it is
 irrelevant because the chip is battery-powered and the host is absent.

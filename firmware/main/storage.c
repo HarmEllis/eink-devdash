@@ -7,6 +7,7 @@
 #include "sdkconfig.h"
 #include <string.h>
 #include <stdio.h>
+#include <stddef.h>
 
 static const char *TAG = "storage";
 static const char *CFG_V2_KEY = "cfg_v2";
@@ -41,9 +42,18 @@ static void copy_str(char *dst, size_t dst_sz, const char *src)
 
 static uint32_t cfg_crc(const dash_config_v2_t *cfg)
 {
-    dash_config_v2_t tmp = *cfg;
-    tmp.crc32 = 0;
-    return esp_rom_crc32_le(UINT32_MAX, (const uint8_t *)&tmp, sizeof(tmp));
+    /* Piecewise CRC over the struct with the crc32 field treated as zero,
+     * matching the original "copy struct, zero crc32 field, CRC the whole
+     * thing" semantics — without a 7 KiB stack copy that would overflow the
+     * default main/Improv task stacks. */
+    const uint8_t *bytes = (const uint8_t *)cfg;
+    const size_t crc_off = offsetof(dash_config_v2_t, crc32);
+    static const uint8_t zero_crc[sizeof(((dash_config_v2_t *)0)->crc32)] = {0};
+    uint32_t crc = esp_rom_crc32_le(UINT32_MAX, bytes, crc_off);
+    crc = esp_rom_crc32_le(crc, zero_crc, sizeof(zero_crc));
+    crc = esp_rom_crc32_le(crc, bytes + crc_off + sizeof(zero_crc),
+                           sizeof(*cfg) - crc_off - sizeof(zero_crc));
+    return crc;
 }
 
 static bool cfg_v2_is_valid(const dash_config_v2_t *cfg)
@@ -162,44 +172,6 @@ void storage_init(void)
              (unsigned)DASH_CFG_V2_MAX_BYTES);
 }
 
-void storage_load(dash_config_t *cfg)
-{
-    dash_config_v2_t v2 = {0};
-    storage_load_v2(&v2);
-    cfg->api_url[0] = '\0';
-    cfg->device_token[0] = '\0';
-    cfg->refresh_min = v2.refresh_min;
-
-    if (v2.network_count > 0 && v2.networks[0].api_count > 0) {
-        copy_str(cfg->api_url, sizeof(cfg->api_url), v2.networks[0].apis[0].api_url);
-        copy_str(cfg->device_token, sizeof(cfg->device_token),
-                 v2.networks[0].apis[0].device_token);
-    }
-}
-
-static void load_legacy_values(dash_config_t *legacy)
-{
-    copy_str(legacy->api_url, sizeof(legacy->api_url), CONFIG_DEVDASH_API_URL);
-    copy_str(legacy->device_token, sizeof(legacy->device_token),
-             CONFIG_DEVDASH_DEVICE_TOKEN);
-    legacy->refresh_min = clamp_refresh(CONFIG_DEVDASH_REFRESH_MIN);
-
-    nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
-
-    size_t len = sizeof(legacy->api_url);
-    nvs_get_str(h, "api_url", legacy->api_url, &len);
-    len = sizeof(legacy->device_token);
-    nvs_get_str(h, "device_token", legacy->device_token, &len);
-
-    uint8_t v = 0;
-    if (nvs_get_u8(h, "refresh_min", &v) == ESP_OK) {
-        legacy->refresh_min = clamp_refresh(v);
-    }
-
-    nvs_close(h);
-}
-
 void storage_load_v2(dash_config_v2_t *cfg)
 {
     storage_cfg_v2_defaults(cfg);
@@ -218,93 +190,33 @@ void storage_load_v2(dash_config_v2_t *cfg)
         }
     }
 
-    dash_config_t legacy = {0};
-    load_legacy_values(&legacy);
-    cfg->refresh_min = legacy.refresh_min;
-
-    wifi_config_t sta = {0};
-    bool has_sta = esp_wifi_get_config(WIFI_IF_STA, &sta) == ESP_OK &&
-                   sta.sta.ssid[0] != '\0';
-    bool has_api = storage_validate_api_url(legacy.api_url);
-
-    if (has_sta || has_api) {
-        cfg->network_count = 1;
-        dash_wifi_profile_t *net = &cfg->networks[0];
-        net->id = 1;
-        net->enabled = true;
-        if (has_sta) {
-            copy_str(net->ssid, sizeof(net->ssid), (const char *)sta.sta.ssid);
-            copy_str(net->password, sizeof(net->password),
-                     (const char *)sta.sta.password);
-        }
-        if (has_api) {
-            net->api_count = 1;
-            net->apis[0].id = 2;
-            net->apis[0].enabled = true;
-            copy_str(net->apis[0].api_url, sizeof(net->apis[0].api_url),
-                     legacy.api_url);
-            copy_str(net->apis[0].device_token,
-                     sizeof(net->apis[0].device_token), legacy.device_token);
-        }
-    }
-
+    /* No (valid) cfg_v2 blob yet. Leave network_count=0 so app_main runs the
+     * provisioning flow. Defaults already cover refresh_min and the version
+     * fields. */
     storage_cfg_v2_normalize(cfg);
-    if (storage_save_v2(cfg) == ESP_OK) {
-        ESP_LOGI(TAG, "Migrated legacy config to cfg_v2");
-    }
 }
 
-void storage_save(const dash_config_t *cfg)
+esp_err_t storage_save_v2(dash_config_v2_t *cfg)
 {
-    nvs_handle_t h;
-    ESP_ERROR_CHECK(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h));
-
-    nvs_set_str(h, "api_url", cfg->api_url);
-    nvs_set_str(h, "device_token", cfg->device_token);
-    nvs_set_u8(h, "refresh_min", cfg->refresh_min);
-
-    nvs_commit(h);
-    nvs_close(h);
-
-    dash_config_v2_t v2 = {0};
-    storage_load_v2(&v2);
-    if (v2.network_count == 0) {
-        v2.network_count = 1;
-        v2.networks[0].id = 1;
-        v2.networks[0].enabled = true;
-    }
-    if (v2.networks[0].api_count == 0) {
-        v2.networks[0].api_count = 1;
-        v2.networks[0].apis[0].id = storage_next_profile_id(&v2);
-        v2.networks[0].apis[0].enabled = true;
-    }
-    copy_str(v2.networks[0].apis[0].api_url,
-             sizeof(v2.networks[0].apis[0].api_url), cfg->api_url);
-    copy_str(v2.networks[0].apis[0].device_token,
-             sizeof(v2.networks[0].apis[0].device_token), cfg->device_token);
-    v2.refresh_min = cfg->refresh_min;
-    storage_save_v2(&v2);
-}
-
-esp_err_t storage_save_v2(const dash_config_v2_t *cfg)
-{
-    dash_config_v2_t copy = *cfg;
-    storage_cfg_v2_normalize(&copy);
+    /* Normalize and update header fields in place. The previous version made
+     * a 7 KiB stack copy to keep the API const-correct, but that doubled the
+     * call's stack footprint and pushed main + Improv tasks past the WDT. */
+    storage_cfg_v2_normalize(cfg);
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    copy.write_counter++;
-    copy.crc32 = cfg_crc(&copy);
-    err = nvs_set_blob(h, CFG_V2_KEY, &copy, sizeof(copy));
+    cfg->write_counter++;
+    cfg->crc32 = cfg_crc(cfg);
+    err = nvs_set_blob(h, CFG_V2_KEY, cfg, sizeof(*cfg));
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
 }
 
-esp_err_t storage_seed_current_sta_if_empty(dash_config_v2_t *cfg)
+esp_err_t storage_seed_current_sta(dash_config_v2_t *cfg)
 {
-    if (!cfg || cfg->network_count > 0) return ESP_OK;
+    if (!cfg) return ESP_ERR_INVALID_ARG;
 
     wifi_config_t sta = {0};
     if (esp_wifi_get_config(WIFI_IF_STA, &sta) != ESP_OK ||
@@ -312,26 +224,21 @@ esp_err_t storage_seed_current_sta_if_empty(dash_config_v2_t *cfg)
         return ESP_ERR_NOT_FOUND;
     }
 
-    dash_config_t legacy = {0};
-    load_legacy_values(&legacy);
-
-    cfg->network_count = 1;
-    cfg->networks[0].id = storage_next_profile_id(cfg);
-    cfg->networks[0].enabled = true;
-    copy_str(cfg->networks[0].ssid, sizeof(cfg->networks[0].ssid),
-             (const char *)sta.sta.ssid);
-    copy_str(cfg->networks[0].password, sizeof(cfg->networks[0].password),
-             (const char *)sta.sta.password);
-    if (storage_validate_api_url(legacy.api_url)) {
-        cfg->networks[0].api_count = 1;
-        cfg->networks[0].apis[0].id = storage_next_profile_id(cfg);
-        cfg->networks[0].apis[0].enabled = true;
-        copy_str(cfg->networks[0].apis[0].api_url,
-                 sizeof(cfg->networks[0].apis[0].api_url), legacy.api_url);
-        copy_str(cfg->networks[0].apis[0].device_token,
-                 sizeof(cfg->networks[0].apis[0].device_token),
-                 legacy.device_token);
+    /* Two cases that both need seeding: never provisioned (no networks at all)
+     * or a placeholder networks[0] with an empty SSID — the latter can happen
+     * after a stale cfg_v2 blob from earlier firmware versions. Otherwise
+     * preserve whatever the user configured. */
+    if (cfg->network_count > 0 && cfg->networks[0].ssid[0] != '\0') {
+        return ESP_OK;
     }
+
+    if (cfg->network_count == 0) cfg->network_count = 1;
+    dash_wifi_profile_t *net = &cfg->networks[0];
+    if (net->id == 0) net->id = storage_next_profile_id(cfg);
+    net->enabled = true;
+    copy_str(net->ssid, sizeof(net->ssid), (const char *)sta.sta.ssid);
+    copy_str(net->password, sizeof(net->password),
+             (const char *)sta.sta.password);
     return storage_save_v2(cfg);
 }
 

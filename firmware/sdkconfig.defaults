@@ -2,8 +2,22 @@
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
+# Main task stack: default 3584 B is for trivial main tasks. app_main here
+# runs Wi-Fi scan + connect + JSON parse on the main task, which puts a
+# wifi_ap_record_t[32] (~2.7 KiB) on the stack in wifi_roam_connect. 8 KiB
+# matches typical ESP-IDF wifi-station examples.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
 # WiFi
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+
+# ESP32-S3 Super Mini exposes the built-in USB-Serial-JTAG CDC port to the
+# browser. Improv owns that RX/TX path while running, so keep ESP-IDF's
+# secondary console off the same channel to avoid log bytes interleaving with
+# Improv frames. UART0 remains the primary console for wired debug adapters.
+CONFIG_DEVDASH_IMPROV_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set
 
 # Deep sleep
 CONFIG_PM_ENABLE=y
@@ -12,8 +26,11 @@ CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 # NVS encryption off (home LAN use case)
 CONFIG_NVS_ENCRYPTION=n
 
-# HTTPD / provisioning
-CONFIG_WIFI_PROV_MGMT_ENABLE=y
+# HTTPD / provisioning portal
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
 # Log level
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Demo
+CONFIG_DEVDASH_DEMO_MODE=y

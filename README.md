@@ -125,39 +125,28 @@ idf.py build
 idf.py flash monitor
 ```
 
-On first boot the display shows a provisioning prompt. You have two ways to
-hand the device your WiFi credentials:
+On first boot the display shows a provisioning prompt:
 
-**Option A — Improv Serial (browser, USB):**
-After flashing in the web flasher (see *Web flash* below), the page offers a
-*Configure Wi-Fi* step over the same USB connection (Improv Serial protocol).
-Enter your SSID + password and the device connects and reboots into normal
-mode — no app needed.
+1. Join the SoftAP shown on the e-ink display, for example `devdash-A4F2`.
+2. Use the displayed password.
+3. Open `http://192.168.4.1`.
+4. Enter WiFi SSID, WiFi password, API URL, and device token.
+5. Save. The device restarts, joins WiFi, fetches the API, and renders.
 
-**Option B — SoftAP provisioning portal:**
-Join the SoftAP advertised by the device with the *ESP SoftAP Provisioning*
-app and supply your WiFi SSID + password. The SSID and the Proof-of-Possession
-(PoP) are derived per device from the factory MAC and shown on the e-ink
-display, e.g. `devdash-A4F2` / pop `aabbccddeeff`. Credentials are stored in
-NVS by the ESP-IDF provisioning manager.
+The SoftAP portal is the primary first-time provisioning path because it does
+not depend on ESP32-S3 USB-Serial-JTAG staying connected after reset. Improv
+Serial remains available from the web flasher as a recovery and multi-profile
+editor during the provisioning window.
 
-Both options run in parallel during the provisioning window — use whichever
-fits your setup.
-
-The API base URL, device bearer token, and refresh interval have build-time
-defaults (`idf.py menuconfig` -> *DevDash Configuration*) and are migrated into
-the runtime `cfg_v2` profile store on first boot. After that, manage up to five
-WiFi networks and up to five API endpoints per network from the web flasher over
-Improv Serial. API URLs must use `http://`; IP addresses, DNS names, and
-`.local` mDNS names are accepted.
+After first provisioning, manage up to five WiFi networks and up to five API
+endpoints per network from the web flasher over Improv Serial. API URLs must
+use `http://`; IP addresses, DNS names, and `.local` mDNS names are accepted.
 
 - API URL: `http://192.168.1.50:3000`
-- Device token: empty (firmware will display `OFFLINE` until you set one)
+- Device token: required by the provisioning portal
 - Refresh interval: 5 minutes
 
-You can also commit your values to `firmware/sdkconfig.defaults` so they are
-applied to every fresh build. The device token must match `DEVICE_TOKEN` in
-the API server's `.env`.
+The device token must match `DEVICE_TOKEN` in the API server's `.env`.
 
 If none of the stored WiFi networks are reachable, the device displays
 `OFFLINE` and returns to deep sleep. It does not erase stored credentials
@@ -255,10 +244,10 @@ Namespace `devdash`.
 | `device_token` | string | Bearer token (overrides Kconfig default) |
 | `refresh_min` | u8 | Refresh interval, 3–60 min (overrides Kconfig default) |
 
-WiFi credentials are stored separately by the IDF provisioning manager
-(`nvs.net80211` namespace). The refresh-cycle bookkeeping (`bw_fast_cycle_count`,
-`last_red_state`) lives in RTC slow memory and persists across deep-sleep
-wakeups but resets on power-on.
+WiFi credentials, API URLs, bearer tokens, and refresh settings are stored in
+the `cfg_v2` profile blob. The refresh-cycle bookkeeping
+(`bw_fast_cycle_count`, `last_red_state`) lives in RTC slow memory and persists
+across deep-sleep wakeups but resets on power-on.
 
 ---
 

@@ -24,12 +24,6 @@
 #define DASH_CFG_V2_MAX_BYTES 8192
 
 typedef struct {
-    char api_url[DASH_API_URL_MAX];
-    char device_token[DASH_DEVICE_TOKEN_MAX];
-    uint8_t refresh_min;   /* 3–60 */
-} dash_config_t;
-
-typedef struct {
     uint32_t id;
     bool enabled;
     char api_url[DASH_API_URL_MAX];
@@ -59,11 +53,9 @@ typedef struct {
 } dash_config_v2_t;
 
 void storage_init(void);
-void storage_load(dash_config_t *cfg);
-void storage_save(const dash_config_t *cfg);
 void storage_load_v2(dash_config_v2_t *cfg);
-esp_err_t storage_save_v2(const dash_config_v2_t *cfg);
-esp_err_t storage_seed_current_sta_if_empty(dash_config_v2_t *cfg);
+esp_err_t storage_save_v2(dash_config_v2_t *cfg);
+esp_err_t storage_seed_current_sta(dash_config_v2_t *cfg);
 void storage_erase(void);
 
 void storage_cfg_v2_defaults(dash_config_v2_t *cfg);

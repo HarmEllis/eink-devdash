@@ -11,9 +11,10 @@ idf_component_register(
     REQUIRES
         esp_wifi
         esp_http_client
+        esp_http_server
         nvs_flash
-        wifi_provisioning
         driver
+        esp_driver_usb_serial_jtag
         vfs
         json
         eink_weact29

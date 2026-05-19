@@ -3,10 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!--
+    style-src allows 'unsafe-inline' because esp-web-tools injects its
+    install/log dialog styles into its custom-element shadow DOM, which a
+    strict 'self'-only policy blocks. script-src stays strictly pinned with
+    SRI so the supply-chain risk codex flagged is still mitigated.
+  -->
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' https://unpkg.com/esp-web-tools@10.2.1/dist/web/; connect-src 'self'"
+  >
   <title>eink-devdash flasher</title>
   <script
     type="module"
-    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+    src="https://unpkg.com/esp-web-tools@10.2.1/dist/web/install-button.js"
+    integrity="sha384-DLSRQX8nILUsYRCKoOL+FvGRis5HoNA+9ak4QYqreENR9UVDIXUSoZrdt1Ibty96"
+    crossorigin="anonymous"
   ></script>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -18,34 +30,53 @@
     </header>
 
     <section>
-      <h2>1. Connect Device</h2>
+      <h2>1. Flash firmware (first time only)</h2>
+      <p class="hint">Install or update the firmware over USB. Skip if the device already runs eink-devdash.</p>
       <div class="row">
         <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
-        <button id="connect-button" type="button">Connect Serial</button>
       </div>
     </section>
 
     <section>
-      <h2>2. Load Current Config</h2>
+      <h2>2. First-time provisioning</h2>
+      <p class="hint">After flashing, the e-ink display shows a temporary WiFi network such as <code>devdash-A4F2</code> and its password. Join that network, open <code>http://192.168.4.1</code>, then enter WiFi SSID, WiFi password, API URL, and device token. The device saves the config, restarts, joins WiFi, fetches the API, and renders the dashboard.</p>
+    </section>
+
+    <section>
+      <h2>3. Connect Serial</h2>
+      <p class="hint">Optional recovery/editor path: open a WebSerial link to the running firmware so this page can read and write config via Improv RPCs.</p>
+      <div class="row">
+        <button id="connect-button" class="primary" type="button">Connect Serial</button>
+        <button id="disconnect-button" type="button" disabled>Disconnect</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. Load current config</h2>
+      <p class="hint">Reads the saved WiFi networks and API endpoints back from the device. Tokens come back masked as <code>****xxxx</code> — re-enter a token to overwrite, leave the masked value to keep the stored one.</p>
       <div class="row">
         <button id="load-button" type="button" disabled>Load Config</button>
-        <button id="reprovision-button" type="button" disabled>Reprovision WiFi</button>
+        <button id="reprovision-button" type="button" disabled title="Wipes stored WiFi credentials and reboots the device into its SoftAP provisioning portal. Use this if WiFi credentials are wrong or the network changed.">Reprovision WiFi</button>
+      </div>
+      <p class="hint"><em>Reprovision WiFi</em> wipes the saved WiFi/API profile and reboots the device into its built-in SoftAP portal.</p>
+    </section>
+
+    <section>
+      <h2>5. Network editor</h2>
+      <p class="hint">Edit any field — the card you are editing is highlighted and used by Save below. Each save or delete triggers a device restart; Connect Serial again afterwards.</p>
+      <div id="network-list" class="stack"></div>
+      <div class="row editor-actions">
+        <button id="add-network-button" type="button" disabled>Add Network</button>
       </div>
     </section>
 
     <section>
-      <h2>3. Network Editor</h2>
-      <div id="network-list" class="stack"></div>
-      <button id="add-network-button" type="button" disabled>Add Network</button>
-    </section>
-
-    <section>
-      <h2>4. Save / Apply</h2>
+      <h2>6. Save / apply</h2>
       <div class="row">
-        <button id="save-button" type="button" disabled>Save Selected Network</button>
+        <button id="save-button" class="primary" type="button" disabled>Save Highlighted Network</button>
         <button id="reorder-networks-button" type="button" disabled>Apply Network Order</button>
       </div>
-      <p class="note">The device restarts after each saved change.</p>
+      <p id="action-feedback" class="action-feedback" aria-live="polite"></p>
     </section>
   </main>
 

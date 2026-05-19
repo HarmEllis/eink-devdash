@@ -1,17 +1,14 @@
 menu "DevDash Configuration"
 
-config DEVDASH_API_URL
-    string "API base URL"
-    default "http://192.168.1.50:3000"
+config DEVDASH_DEMO_MODE
+    bool "Demo mode (static dashboard data, no WiFi/API)"
+    default n
     help
-        Base URL of the dashboard API server (without trailing /dashboard).
-
-config DEVDASH_DEVICE_TOKEN
-    string "Device bearer token"
-    default ""
-    help
-        Bearer token used to authenticate with the API server. Must match the
-        DEVICE_TOKEN environment variable on the server.
+        Render a hardcoded sample dashboard once at boot, then keep the chip
+        awake doing nothing. Skips NVS, WiFi provisioning, WiFi connect, and
+        the API client entirely. Use this to demo the device to other people
+        without needing network connectivity or configuration. Production
+        builds must keep this disabled.
 
 config DEVDASH_REFRESH_MIN
     int "Refresh interval (minutes)"
@@ -26,12 +23,41 @@ config DEVDASH_PROV_TIMEOUT_S
     range 0 3600
     default 600
     help
-        How long to keep the SoftAP provisioning portal open after a fresh
-        flash before giving up and going back to deep sleep.
+        How long to keep the device-hosted SoftAP HTTP provisioning portal
+        open after a fresh flash before giving up and going back to deep
+        sleep.
 
 config DEVDASH_WIFI_CONNECT_TIMEOUT_S
     int "WiFi connect timeout (seconds)"
     range 5 120
     default 30
+
+config DEVDASH_IMPROV_USB_SERIAL_JTAG
+    bool "Route Improv over USB-Serial-JTAG"
+    depends on SOC_USB_SERIAL_JTAG_SUPPORTED
+    default y
+    help
+        ESP32-S3 Super Mini boards expose the built-in USB-Serial-JTAG
+        controller to the host instead of an external UART bridge. Enable this
+        so Improv reads and writes the same CDC-ACM endpoint the browser sees.
+
+config DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
+    bool "Retry forever when WiFi or API is unreachable"
+    default n
+    help
+        Bring-up aid: when enabled, the device retries WiFi and API
+        connection in a foreground loop instead of entering deep sleep on
+        failure, so USB-CDC stays alive and the device remains flashable
+        without a manual BOOT+RESET cycle. Default is off so production
+        builds keep the battery-friendly deep-sleep-on-outage behavior.
+
+config DEVDASH_OFFLINE_RETRY_INTERVAL_S
+    int "Offline retry interval (seconds)"
+    range 5 600
+    default 30
+    depends on DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
+    help
+        Seconds to wait between retry attempts when WiFi or the API is
+        unreachable and DEVDASH_RETRY_FOREVER_WHEN_OFFLINE is enabled.
 
 endmenu

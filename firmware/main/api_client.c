@@ -175,17 +175,6 @@ static bool should_fail_over(int status, esp_err_t err)
     return false;
 }
 
-esp_err_t api_client_fetch(const dash_config_t *cfg, dashboard_data_t *out)
-{
-    memset(out, 0, sizeof(*out));
-    if (!cfg || cfg->device_token[0] == '\0') {
-        out->offline = true;
-        return ESP_ERR_INVALID_STATE;
-    }
-    int status = 0;
-    return fetch_one(cfg->api_url, cfg->device_token, out, &status);
-}
-
 esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                                          int network_idx,
                                          dashboard_data_t *out,

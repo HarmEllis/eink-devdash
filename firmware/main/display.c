@@ -16,8 +16,12 @@
 #include "eink_weact29.h"
 #include "esp_log.h"
 #include "esp_attr.h"
+#include "esp_system.h"
+#include "nvs.h"
 #include <string.h>
 #include <stdio.h>
+
+static const char *TAG = "display";
 
 /* ── 5×7 pixel font (ASCII 32–122) ─────────────────────────────────────── */
 #define FONT_W  6   /* 5 px glyph + 1 px gap */
@@ -335,10 +339,76 @@ static bool          s_initialized        = false;
 /* Refresh-cycle state lives in RTC slow memory: survives deep-sleep timer
  * wakeups (so the BW_FAST differential refresh stays valid across naps) but
  * resets on power-on / external reset (where the panel content is undefined
- * anyway and we want a FULL_COLOR refresh). No NVS writes → no flash wear. */
+ * anyway and we want a FULL_COLOR refresh). */
 static RTC_DATA_ATTR bool    s_first_refresh_done = false;
 static RTC_DATA_ATTR uint8_t s_bw_fast_cycle_count = 0;
 static RTC_DATA_ATTR bool    s_last_red_state      = false;
+
+#define DISPLAY_META_NAMESPACE "disp_meta"
+#define DISPLAY_META_KEY       "state"
+#define DISPLAY_META_MAGIC     0xD15DA5E1u
+
+typedef enum {
+    DISPLAY_FRAME_UNKNOWN = 0,
+    DISPLAY_FRAME_CONTENT = 1,
+    DISPLAY_FRAME_OFFLINE = 2,
+    DISPLAY_FRAME_QR      = 3,
+} display_frame_t;
+
+typedef struct {
+    uint32_t magic;
+    uint8_t frame;
+    uint8_t reserved[3];
+} display_meta_t;
+
+static bool display_meta_load(display_meta_t *meta)
+{
+    nvs_handle_t h;
+    if (nvs_open(DISPLAY_META_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    size_t len = sizeof(*meta);
+    esp_err_t err = nvs_get_blob(h, DISPLAY_META_KEY, meta, &len);
+    nvs_close(h);
+    return err == ESP_OK && len == sizeof(*meta) &&
+           meta->magic == DISPLAY_META_MAGIC;
+}
+
+static void display_mark_frame(display_frame_t frame)
+{
+    display_meta_t current = {0};
+    if (display_meta_load(&current) && current.frame == frame) {
+        return;
+    }
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "display metadata open failed: %s", esp_err_to_name(err));
+        return;
+    }
+    display_meta_t next = {
+        .magic = DISPLAY_META_MAGIC,
+        .frame = (uint8_t)frame,
+    };
+    err = nvs_set_blob(h, DISPLAY_META_KEY, &next, sizeof(next));
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "display metadata save failed: %s", esp_err_to_name(err));
+    }
+}
+
+static bool display_should_skip_offline_refresh(void)
+{
+    esp_reset_reason_t reset = esp_reset_reason();
+    if (reset == ESP_RST_POWERON || reset == ESP_RST_BROWNOUT) {
+        return false;
+    }
+
+    display_meta_t meta = {0};
+    return display_meta_load(&meta) && meta.frame == DISPLAY_FRAME_OFFLINE;
+}
 
 static void ensure_init(void)
 {
@@ -460,6 +530,7 @@ void display_render(const dashboard_data_t *data)
     eink_set_framebuffer(bw_buf, red_buf);
     eink_refresh(&s_eink, mode);
     eink_sleep(&s_eink);
+    display_mark_frame(offline ? DISPLAY_FRAME_OFFLINE : DISPLAY_FRAME_CONTENT);
 }
 
 void display_show_qr(const char *ssid, const char *pop)
@@ -472,18 +543,25 @@ void display_show_qr(const char *ssid, const char *pop)
     char line[40];
     snprintf(line, sizeof(line), "SSID: %s", ssid ? ssid : "devdash-XXXX");
     draw_str(6, 30, line, 0);
-    snprintf(line, sizeof(line), "PoP:  %s", pop ? pop : "(see docs)");
+    snprintf(line, sizeof(line), "Pass: %s", pop ? pop : "(see docs)");
     draw_str(6, 50, line, 0);
-    draw_str(6, 80, "Or use Improv via USB", 0);
+    draw_str(6, 70, "Open http://192.168.4.1", 0);
+    draw_str(6, 90, "USB Improv still works", 0);
 
     eink_set_framebuffer(bw_buf, red_buf);
     eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
     eink_sleep(&s_eink);
     s_first_refresh_done = true;
+    display_mark_frame(DISPLAY_FRAME_QR);
 }
 
 void display_show_offline(void)
 {
+    if (display_should_skip_offline_refresh()) {
+        ESP_LOGI(TAG, "Skipping offline refresh; offline frame already shown");
+        return;
+    }
+
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
     memset(red_buf, 0x00, sizeof(red_buf));
@@ -497,4 +575,5 @@ void display_show_offline(void)
                                       : EINK_REFRESH_FULL_COLOR);
     eink_sleep(&s_eink);
     s_first_refresh_done = true;
+    display_mark_frame(DISPLAY_FRAME_OFFLINE);
 }

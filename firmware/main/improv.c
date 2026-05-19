@@ -8,6 +8,9 @@
 #include "esp_vfs_dev.h"
 #include "esp_system.h"
 #include "driver/uart.h"
+#if CONFIG_DEVDASH_IMPROV_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"
+#endif
 #include "storage.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
@@ -28,6 +31,8 @@ static const char *TAG = "improv";
 /* Improv Serial protocol — https://www.improv-wifi.com/serial/ */
 #define IMPROV_HEADER     "IMPROV"
 #define IMPROV_VERSION    1
+#define DASH_RPC_PROTO_VERSION 3
+#define RPC_FIELD_CHUNK_SIZE 120
 
 #define TYPE_CURRENT_STATE  0x01
 #define TYPE_ERROR_STATE    0x02
@@ -43,6 +48,13 @@ static const char *TAG = "improv";
 #define CMD_REORDER_NETWORKS  0x43
 #define CMD_REORDER_APIS      0x44
 #define CMD_REPROVISION_WIFI  0x45
+#define CMD_LIST_CONFIG_NETWORK 0x46
+#define CMD_LIST_CONFIG_API     0x47
+#define CMD_LIST_CONFIG_FIELD   0x48
+#define CMD_SET_NETWORK_BEGIN   0x49
+#define CMD_SET_NETWORK_API     0x4A
+#define CMD_SET_NETWORK_FIELD   0x4B
+#define CMD_SET_NETWORK_COMMIT  0x4C
 
 #define STATE_READY         0x02
 #define STATE_PROVISIONING  0x03
@@ -54,16 +66,35 @@ static const char *TAG = "improv";
 
 static TaskHandle_t s_task = NULL;
 static int s_uart_fd = -1;
+#if CONFIG_DEVDASH_IMPROV_USB_SERIAL_JTAG
+static bool s_usb_serial_jtag_active = false;
+#endif
 static EventGroupHandle_t s_done_events = NULL;
 static EventBits_t s_done_bit = 0;
 static volatile bool s_run = false;
+static dash_config_v2_t s_edit_cfg;
+static dash_api_profile_t s_edit_original_apis[MAX_APIS_PER_NETWORK];
+static uint8_t s_edit_original_api_count = 0;
+static uint32_t s_edit_network_id = 0;
+static bool s_edit_active = false;
 
-/* Low-level UART I/O via VFS file descriptor. We deliberately avoid
- * uart_driver_install() because that would take over UART0 and break the
- * bootloader auto-reset sequence used by esptool / the web flasher. */
+/* Improv must use the same serial endpoint the browser opens. On ESP32-S3
+ * Super Mini that is the built-in USB-Serial-JTAG CDC device, not UART0.
+ *
+ * We use the USB-Serial-JTAG driver API directly instead of the VFS console
+ * path so Improv owns packet RX/TX while it is running. sdkconfig.defaults
+ * disables the secondary USB console for this reason: log bytes on the same
+ * CDC stream can corrupt Improv frames. UART0 stays as the primary console for
+ * a wired debug adapter. Non-S3 targets fall back to /dev/uart/0. */
 
 static int uart_read_one(uint8_t *byte, int timeout_ms)
 {
+#if CONFIG_DEVDASH_IMPROV_USB_SERIAL_JTAG
+    if (s_usb_serial_jtag_active) {
+        int ret = usb_serial_jtag_read_bytes(byte, 1, pdMS_TO_TICKS(timeout_ms));
+        return (ret == 1) ? 1 : 0;
+    }
+#endif
     int ret = read(s_uart_fd, byte, 1);
     if (ret == 1) return 1;
     vTaskDelay(pdMS_TO_TICKS(timeout_ms));
@@ -76,7 +107,18 @@ static int uart_read_n(uint8_t *buf, int n, int timeout_ms)
     int total = 0;
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
     while (total < n) {
-        int ret = read(s_uart_fd, buf + total, n - total);
+        int ret;
+#if CONFIG_DEVDASH_IMPROV_USB_SERIAL_JTAG
+        if (s_usb_serial_jtag_active) {
+            TickType_t now = xTaskGetTickCount();
+            if (now >= deadline) break;
+            ret = usb_serial_jtag_read_bytes(buf + total, n - total,
+                                             deadline - now);
+        } else
+#endif
+        {
+            ret = read(s_uart_fd, buf + total, n - total);
+        }
         if (ret > 0) {
             total += ret;
         } else {
@@ -91,7 +133,16 @@ static void uart_write_all(const uint8_t *data, int len)
 {
     int written = 0;
     while (written < len) {
-        int ret = write(s_uart_fd, data + written, len - written);
+        int ret;
+#if CONFIG_DEVDASH_IMPROV_USB_SERIAL_JTAG
+        if (s_usb_serial_jtag_active) {
+            ret = usb_serial_jtag_write_bytes(data + written, len - written,
+                                              pdMS_TO_TICKS(100));
+        } else
+#endif
+        {
+            ret = write(s_uart_fd, data + written, len - written);
+        }
         if (ret > 0) {
             written += ret;
             continue;
@@ -164,7 +215,7 @@ static void send_rpc_json(uint8_t command, cJSON *payload)
         return;
     }
     size_t json_len = strlen(json);
-    if (json_len > 252) {
+    if (json_len > 253) {
         ESP_LOGW(TAG, "RPC result for 0x%02X is too large (%u bytes)",
                  command, (unsigned)json_len);
         free(json);
@@ -183,7 +234,7 @@ static void send_rpc_json(uint8_t command, cJSON *payload)
 static bool payload_proto_ok(cJSON *root)
 {
     cJSON *proto = cJSON_GetObjectItemCaseSensitive(root, "proto_version");
-    return proto && cJSON_IsNumber(proto) && proto->valueint == DASH_CFG_V2_VERSION;
+    return proto && cJSON_IsNumber(proto) && proto->valueint == DASH_RPC_PROTO_VERSION;
 }
 
 static cJSON *parse_json_payload(const uint8_t *data, uint8_t len)
@@ -197,7 +248,7 @@ static cJSON *parse_json_payload(const uint8_t *data, uint8_t len)
 static cJSON *json_ack(void)
 {
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "proto_version", DASH_CFG_V2_VERSION);
+    cJSON_AddNumberToObject(root, "proto_version", DASH_RPC_PROTO_VERSION);
     cJSON_AddBoolToObject(root, "ok", true);
     return root;
 }
@@ -222,34 +273,149 @@ static void handle_list_config(const uint8_t *data, uint8_t len)
     storage_load_v2(&cfg);
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "proto_version", DASH_CFG_V2_VERSION);
+    cJSON_AddNumberToObject(root, "proto_version", DASH_RPC_PROTO_VERSION);
     cJSON_AddNumberToObject(root, "refresh_min", cfg.refresh_min);
     cJSON_AddNumberToObject(root, "last_success_network_idx",
                             cfg.last_success_network_idx);
     cJSON_AddNumberToObject(root, "last_success_api_idx",
                             cfg.last_success_api_idx);
-    cJSON *nets = cJSON_AddArrayToObject(root, "networks");
-    for (uint8_t i = 0; i < cfg.network_count; i++) {
-        const dash_wifi_profile_t *net = &cfg.networks[i];
-        cJSON *jn = cJSON_CreateObject();
-        cJSON_AddNumberToObject(jn, "id", net->id);
-        cJSON_AddBoolToObject(jn, "enabled", net->enabled);
-        cJSON_AddStringToObject(jn, "ssid", net->ssid);
-        cJSON *apis = cJSON_AddArrayToObject(jn, "apis");
-        for (uint8_t j = 0; j < net->api_count; j++) {
-            const dash_api_profile_t *api = &net->apis[j];
-            char masked[DASH_DEVICE_TOKEN_MAX] = {0};
-            storage_mask_token(api->device_token, masked, sizeof(masked));
-            cJSON *ja = cJSON_CreateObject();
-            cJSON_AddNumberToObject(ja, "id", api->id);
-            cJSON_AddBoolToObject(ja, "enabled", api->enabled);
-            cJSON_AddStringToObject(ja, "api_url", api->api_url);
-            cJSON_AddStringToObject(ja, "device_token", masked);
-            cJSON_AddItemToArray(apis, ja);
-        }
-        cJSON_AddItemToArray(nets, jn);
-    }
+    cJSON_AddNumberToObject(root, "network_count", cfg.network_count);
+    cJSON_AddNumberToObject(root, "max_wifi_networks", MAX_WIFI_NETWORKS);
+    cJSON_AddNumberToObject(root, "max_apis_per_network", MAX_APIS_PER_NETWORK);
     send_rpc_json(CMD_LIST_CONFIG, root);
+    cJSON_Delete(root);
+}
+
+static bool get_req_index(cJSON *root, const char *key, int max, uint8_t *out)
+{
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (!cJSON_IsNumber(item) || item->valueint < 0 || item->valueint >= max) {
+        return false;
+    }
+    *out = (uint8_t)item->valueint;
+    return true;
+}
+
+static bool parse_proto_request(const uint8_t *data, uint8_t len, cJSON **root)
+{
+    *root = parse_json_payload(data, len);
+    if (!*root || !payload_proto_ok(*root)) {
+        cJSON_Delete(*root);
+        *root = NULL;
+        send_error(ERROR_INVALID_RPC);
+        return false;
+    }
+    return true;
+}
+
+static void handle_list_config_network(const uint8_t *data, uint8_t len)
+{
+    cJSON *req = NULL;
+    if (!parse_proto_request(data, len, &req)) return;
+
+    dash_config_v2_t cfg = {0};
+    storage_load_v2(&cfg);
+    uint8_t network_index = 0;
+    if (!get_req_index(req, "network_index", cfg.network_count, &network_index)) {
+        cJSON_Delete(req);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    cJSON_Delete(req);
+
+    const dash_wifi_profile_t *net = &cfg.networks[network_index];
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "proto_version", DASH_RPC_PROTO_VERSION);
+    cJSON_AddNumberToObject(root, "id", net->id);
+    cJSON_AddBoolToObject(root, "enabled", net->enabled);
+    cJSON_AddStringToObject(root, "ssid", net->ssid);
+    cJSON_AddNumberToObject(root, "api_count", net->api_count);
+    send_rpc_json(CMD_LIST_CONFIG_NETWORK, root);
+    cJSON_Delete(root);
+}
+
+static void handle_list_config_api(const uint8_t *data, uint8_t len)
+{
+    cJSON *req = NULL;
+    if (!parse_proto_request(data, len, &req)) return;
+
+    dash_config_v2_t cfg = {0};
+    storage_load_v2(&cfg);
+    uint8_t network_index = 0, api_index = 0;
+    if (!get_req_index(req, "network_index", cfg.network_count, &network_index) ||
+        !get_req_index(req, "api_index", cfg.networks[network_index].api_count, &api_index)) {
+        cJSON_Delete(req);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    cJSON_Delete(req);
+
+    const dash_api_profile_t *api = &cfg.networks[network_index].apis[api_index];
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "proto_version", DASH_RPC_PROTO_VERSION);
+    cJSON_AddNumberToObject(root, "id", api->id);
+    cJSON_AddBoolToObject(root, "enabled", api->enabled);
+    send_rpc_json(CMD_LIST_CONFIG_API, root);
+    cJSON_Delete(root);
+}
+
+static const char *api_field_value(const dash_api_profile_t *api, const char *field,
+                                   char *masked, size_t masked_sz)
+{
+    if (strcmp(field, "api_url") == 0) return api->api_url;
+    if (strcmp(field, "device_token") == 0) {
+        storage_mask_token(api->device_token, masked, masked_sz);
+        return masked;
+    }
+    return NULL;
+}
+
+static void handle_list_config_field(const uint8_t *data, uint8_t len)
+{
+    cJSON *req = NULL;
+    if (!parse_proto_request(data, len, &req)) return;
+
+    dash_config_v2_t cfg = {0};
+    storage_load_v2(&cfg);
+    uint8_t network_index = 0, api_index = 0;
+    cJSON *field = cJSON_GetObjectItemCaseSensitive(req, "field");
+    cJSON *offset_item = cJSON_GetObjectItemCaseSensitive(req, "offset");
+    if (!get_req_index(req, "network_index", cfg.network_count, &network_index) ||
+        !get_req_index(req, "api_index", cfg.networks[network_index].api_count, &api_index) ||
+        !cJSON_IsString(field) || !cJSON_IsNumber(offset_item) ||
+        offset_item->valueint < 0) {
+        cJSON_Delete(req);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+
+    char masked[DASH_DEVICE_TOKEN_MAX] = {0};
+    const dash_api_profile_t *api = &cfg.networks[network_index].apis[api_index];
+    const char *value = api_field_value(api, field->valuestring, masked, sizeof(masked));
+    if (!value) {
+        cJSON_Delete(req);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+
+    size_t offset = (size_t)offset_item->valueint;
+    size_t value_len = strlen(value);
+    if (offset > value_len) {
+        cJSON_Delete(req);
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    size_t chunk_len = value_len - offset;
+    if (chunk_len > RPC_FIELD_CHUNK_SIZE) chunk_len = RPC_FIELD_CHUNK_SIZE;
+    char chunk[RPC_FIELD_CHUNK_SIZE + 1] = {0};
+    memcpy(chunk, value + offset, chunk_len);
+    cJSON_Delete(req);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "proto_version", DASH_RPC_PROTO_VERSION);
+    cJSON_AddStringToObject(root, "value", chunk);
+    cJSON_AddBoolToObject(root, "done", offset + chunk_len >= value_len);
+    send_rpc_json(CMD_LIST_CONFIG_FIELD, root);
     cJSON_Delete(root);
 }
 
@@ -263,6 +429,242 @@ static int find_network_by_id_or_ssid(const dash_config_v2_t *cfg,
         }
     }
     return -1;
+}
+
+static int find_api_by_id(const dash_api_profile_t *apis, uint8_t count, uint32_t id)
+{
+    if (id == 0) return -1;
+    for (uint8_t i = 0; i < count; i++) {
+        if (apis[i].id == id) return i;
+    }
+    return -1;
+}
+
+static dash_wifi_profile_t *edit_network(void)
+{
+    if (!s_edit_active || s_edit_network_id == 0) return NULL;
+    int idx = find_network_by_id_or_ssid(&s_edit_cfg, s_edit_network_id, NULL);
+    return idx >= 0 ? &s_edit_cfg.networks[idx] : NULL;
+}
+
+static void clear_edit_session(void)
+{
+    memset(&s_edit_cfg, 0, sizeof(s_edit_cfg));
+    memset(s_edit_original_apis, 0, sizeof(s_edit_original_apis));
+    s_edit_original_api_count = 0;
+    s_edit_network_id = 0;
+    s_edit_active = false;
+}
+
+static void handle_set_network_begin(const uint8_t *data, uint8_t len)
+{
+    cJSON *root = NULL;
+    if (!parse_proto_request(data, len, &root)) return;
+
+    cJSON *ssid = cJSON_GetObjectItemCaseSensitive(root, "ssid");
+    cJSON *password = cJSON_GetObjectItemCaseSensitive(root, "password");
+    cJSON *api_count_item = cJSON_GetObjectItemCaseSensitive(root, "api_count");
+    cJSON *id_item = cJSON_GetObjectItemCaseSensitive(root, "id");
+    cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+    if (!cJSON_IsString(ssid) || !cJSON_IsNumber(api_count_item) ||
+        api_count_item->valueint < 0 || api_count_item->valueint > MAX_APIS_PER_NETWORK ||
+        strlen(ssid->valuestring) > DASH_SSID_MAX ||
+        (password && (!cJSON_IsString(password) ||
+                      strlen(password->valuestring) > DASH_WIFI_PASSWORD_MAX))) {
+        cJSON_Delete(root);
+        clear_edit_session();
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+
+    storage_load_v2(&s_edit_cfg);
+    uint32_t id = cJSON_IsNumber(id_item) ? (uint32_t)id_item->valuedouble : 0;
+    int idx = find_network_by_id_or_ssid(&s_edit_cfg, id, ssid->valuestring);
+    if (idx < 0) {
+        if (s_edit_cfg.network_count >= MAX_WIFI_NETWORKS) {
+            cJSON_Delete(root);
+            clear_edit_session();
+            send_error(ERROR_INVALID_RPC);
+            return;
+        }
+        idx = s_edit_cfg.network_count++;
+        memset(&s_edit_cfg.networks[idx], 0, sizeof(s_edit_cfg.networks[idx]));
+        s_edit_cfg.networks[idx].id = storage_next_profile_id(&s_edit_cfg);
+    }
+
+    dash_wifi_profile_t *net = &s_edit_cfg.networks[idx];
+    memcpy(s_edit_original_apis, net->apis, sizeof(s_edit_original_apis));
+    s_edit_original_api_count = net->api_count;
+
+    net->enabled = enabled ? cJSON_IsTrue(enabled) : true;
+    strncpy(net->ssid, ssid->valuestring, sizeof(net->ssid) - 1);
+    if (cJSON_IsString(password) && password->valuestring[0] != '\0') {
+        strncpy(net->password, password->valuestring, sizeof(net->password) - 1);
+    }
+    net->api_count = (uint8_t)api_count_item->valueint;
+    memset(net->apis, 0, sizeof(net->apis));
+
+    s_edit_network_id = net->id;
+    s_edit_active = true;
+    cJSON_Delete(root);
+
+    cJSON *ack = json_ack();
+    cJSON_AddNumberToObject(ack, "id", s_edit_network_id);
+    send_rpc_json(CMD_SET_NETWORK_BEGIN, ack);
+    cJSON_Delete(ack);
+}
+
+static void handle_set_network_api(const uint8_t *data, uint8_t len)
+{
+    cJSON *root = NULL;
+    if (!parse_proto_request(data, len, &root)) return;
+
+    cJSON *network_id = cJSON_GetObjectItemCaseSensitive(root, "network_id");
+    cJSON *api_index_item = cJSON_GetObjectItemCaseSensitive(root, "api_index");
+    cJSON *id_item = cJSON_GetObjectItemCaseSensitive(root, "id");
+    cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+    dash_wifi_profile_t *net = edit_network();
+    if (!net || !cJSON_IsNumber(network_id) ||
+        (uint32_t)network_id->valuedouble != s_edit_network_id ||
+        !cJSON_IsNumber(api_index_item) || api_index_item->valueint < 0 ||
+        api_index_item->valueint >= net->api_count) {
+        cJSON_Delete(root);
+        clear_edit_session();
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+
+    uint8_t api_index = (uint8_t)api_index_item->valueint;
+    uint32_t id = cJSON_IsNumber(id_item) ? (uint32_t)id_item->valuedouble : 0;
+    int old_idx = find_api_by_id(s_edit_original_apis, s_edit_original_api_count, id);
+    dash_api_profile_t *api = &net->apis[api_index];
+    if (old_idx >= 0) {
+        *api = s_edit_original_apis[old_idx];
+    } else {
+        memset(api, 0, sizeof(*api));
+        api->id = id != 0 ? id : storage_next_profile_id(&s_edit_cfg);
+    }
+    api->enabled = enabled ? cJSON_IsTrue(enabled) : true;
+    cJSON_Delete(root);
+
+    cJSON *ack = json_ack();
+    cJSON_AddNumberToObject(ack, "id", api->id);
+    send_rpc_json(CMD_SET_NETWORK_API, ack);
+    cJSON_Delete(ack);
+}
+
+static bool api_write_field(dash_api_profile_t *api, const char *field,
+                            char **target, size_t *target_sz)
+{
+    if (strcmp(field, "api_url") == 0) {
+        *target = api->api_url;
+        *target_sz = sizeof(api->api_url);
+        return true;
+    }
+    if (strcmp(field, "device_token") == 0) {
+        *target = api->device_token;
+        *target_sz = sizeof(api->device_token);
+        return true;
+    }
+    return false;
+}
+
+static void handle_set_network_field(const uint8_t *data, uint8_t len)
+{
+    cJSON *root = NULL;
+    if (!parse_proto_request(data, len, &root)) return;
+
+    cJSON *network_id = cJSON_GetObjectItemCaseSensitive(root, "network_id");
+    cJSON *api_index_item = cJSON_GetObjectItemCaseSensitive(root, "api_index");
+    cJSON *field = cJSON_GetObjectItemCaseSensitive(root, "field");
+    cJSON *offset_item = cJSON_GetObjectItemCaseSensitive(root, "offset");
+    cJSON *value = cJSON_GetObjectItemCaseSensitive(root, "value");
+    cJSON *done = cJSON_GetObjectItemCaseSensitive(root, "done");
+    dash_wifi_profile_t *net = edit_network();
+    if (!net || !cJSON_IsNumber(network_id) ||
+        (uint32_t)network_id->valuedouble != s_edit_network_id ||
+        !cJSON_IsNumber(api_index_item) || api_index_item->valueint < 0 ||
+        api_index_item->valueint >= net->api_count || !cJSON_IsString(field) ||
+        !cJSON_IsNumber(offset_item) || offset_item->valueint < 0 ||
+        !cJSON_IsString(value)) {
+        cJSON_Delete(root);
+        clear_edit_session();
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+
+    dash_api_profile_t *api = &net->apis[(uint8_t)api_index_item->valueint];
+    char *target = NULL;
+    size_t target_sz = 0;
+    if (!api_write_field(api, field->valuestring, &target, &target_sz)) {
+        cJSON_Delete(root);
+        clear_edit_session();
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+
+    size_t offset = (size_t)offset_item->valueint;
+    size_t current_len = strlen(target);
+    size_t value_len = strlen(value->valuestring);
+    if (offset == 0) {
+        target[0] = '\0';
+        current_len = 0;
+    }
+    if (offset != current_len || offset + value_len >= target_sz ||
+        (strcmp(field->valuestring, "device_token") == 0 &&
+         offset == 0 && strncmp(value->valuestring, "****", 4) == 0)) {
+        cJSON_Delete(root);
+        clear_edit_session();
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    memcpy(target + offset, value->valuestring, value_len);
+    target[offset + value_len] = '\0';
+
+    if (cJSON_IsTrue(done) && strcmp(field->valuestring, "api_url") == 0 &&
+        !storage_validate_api_url(api->api_url)) {
+        cJSON_Delete(root);
+        clear_edit_session();
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    cJSON_Delete(root);
+
+    cJSON *ack = json_ack();
+    send_rpc_json(CMD_SET_NETWORK_FIELD, ack);
+    cJSON_Delete(ack);
+}
+
+static void handle_set_network_commit(const uint8_t *data, uint8_t len)
+{
+    cJSON *root = NULL;
+    if (!parse_proto_request(data, len, &root)) return;
+
+    cJSON *network_id = cJSON_GetObjectItemCaseSensitive(root, "network_id");
+    dash_wifi_profile_t *net = edit_network();
+    if (!net || !cJSON_IsNumber(network_id) ||
+        (uint32_t)network_id->valuedouble != s_edit_network_id) {
+        cJSON_Delete(root);
+        clear_edit_session();
+        send_error(ERROR_INVALID_RPC);
+        return;
+    }
+    for (uint8_t i = 0; i < net->api_count; i++) {
+        if (!storage_validate_api_url(net->apis[i].api_url)) {
+            cJSON_Delete(root);
+            clear_edit_session();
+            send_error(ERROR_INVALID_RPC);
+            return;
+        }
+    }
+
+    storage_save_v2(&s_edit_cfg);
+    cJSON_Delete(root);
+    clear_edit_session();
+    cJSON *ack = json_ack();
+    send_rpc_json(CMD_SET_NETWORK_COMMIT, ack);
+    cJSON_Delete(ack);
+    restart_after_ack();
 }
 
 static void handle_set_network(const uint8_t *data, uint8_t len)
@@ -575,6 +977,8 @@ static void handle_rpc(const uint8_t *data, uint8_t len)
     }
     const uint8_t *cmd_data = cmd_data_len > 0 ? data + 2 : NULL;
 
+    ESP_LOGI(TAG, "RPC 0x%02X (payload %u B)", command, cmd_data_len);
+
     switch (command) {
     case CMD_WIFI_SETTINGS:
         handle_wifi_settings(cmd_data, cmd_data_len);
@@ -589,8 +993,29 @@ static void handle_rpc(const uint8_t *data, uint8_t len)
     case CMD_LIST_CONFIG:
         handle_list_config(cmd_data, cmd_data_len);
         break;
+    case CMD_LIST_CONFIG_NETWORK:
+        handle_list_config_network(cmd_data, cmd_data_len);
+        break;
+    case CMD_LIST_CONFIG_API:
+        handle_list_config_api(cmd_data, cmd_data_len);
+        break;
+    case CMD_LIST_CONFIG_FIELD:
+        handle_list_config_field(cmd_data, cmd_data_len);
+        break;
     case CMD_SET_NETWORK:
         handle_set_network(cmd_data, cmd_data_len);
+        break;
+    case CMD_SET_NETWORK_BEGIN:
+        handle_set_network_begin(cmd_data, cmd_data_len);
+        break;
+    case CMD_SET_NETWORK_API:
+        handle_set_network_api(cmd_data, cmd_data_len);
+        break;
+    case CMD_SET_NETWORK_FIELD:
+        handle_set_network_field(cmd_data, cmd_data_len);
+        break;
+    case CMD_SET_NETWORK_COMMIT:
+        handle_set_network_commit(cmd_data, cmd_data_len);
         break;
     case CMD_DELETE_NETWORK:
         handle_delete_network(cmd_data, cmd_data_len);
@@ -614,12 +1039,21 @@ static void handle_rpc(const uint8_t *data, uint8_t len)
 static void improv_task(void *arg)
 {
     uint8_t buf[IMPROV_BUF_SIZE];
+    bool first_byte_logged = false;
 
     send_state(STATE_READY);
 
     while (s_run) {
         uint8_t b;
         if (uart_read_one(&b, 100) != 1) continue;
+        /* One-shot diagnostic: proves host->device USB-Serial-JTAG works.
+         * If RPCs hang in the browser but this never fires, the host port
+         * handle is stale (typically: chip soft-reset re-enumerated as a new
+         * USB device, browser is still writing to the old one). */
+        if (!first_byte_logged) {
+            ESP_LOGI(TAG, "First byte from host: 0x%02X", b);
+            first_byte_logged = true;
+        }
         if (b != 'I') continue;
 
         buf[0] = b;
@@ -666,6 +1100,12 @@ static void improv_task(void *arg)
         close(s_uart_fd);
         s_uart_fd = -1;
     }
+#if CONFIG_DEVDASH_IMPROV_USB_SERIAL_JTAG
+    if (s_usb_serial_jtag_active) {
+        usb_serial_jtag_driver_uninstall();
+        s_usb_serial_jtag_active = false;
+    }
+#endif
     s_task = NULL;
     vTaskDelete(NULL);
 }
@@ -677,18 +1117,43 @@ esp_err_t improv_start(EventGroupHandle_t done_events, EventBits_t done_bit)
     s_done_events = done_events;
     s_done_bit = done_bit;
 
+#if CONFIG_DEVDASH_IMPROV_USB_SERIAL_JTAG
+    usb_serial_jtag_driver_config_t usb_cfg = {
+        .tx_buffer_size = 1024,
+        .rx_buffer_size = 1024,
+    };
+    esp_err_t err = usb_serial_jtag_driver_install(&usb_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to install USB-Serial-JTAG driver: %s",
+                 esp_err_to_name(err));
+        return err;
+    }
+    s_usb_serial_jtag_active = true;
+    ESP_LOGI(TAG, "Improv ready on USB-Serial-JTAG");
+#else
     s_uart_fd = open("/dev/uart/0", O_RDWR | O_NONBLOCK);
     if (s_uart_fd < 0) {
         ESP_LOGE(TAG, "Failed to open /dev/uart/0: %d", errno);
         return ESP_FAIL;
     }
+#endif
 
     s_run = true;
-    BaseType_t ret = xTaskCreate(improv_task, "improv", 4096, NULL, 5, &s_task);
+    /* 20 KiB stack: handle_reorder_networks keeps two 7+ KiB cfg_v2 structs
+     * in flight at once; remaining headroom covers cJSON frame overhead and
+     * FreeRTOS bookkeeping. */
+    BaseType_t ret = xTaskCreate(improv_task, "improv", 20480, NULL, 5, &s_task);
     if (ret != pdPASS) {
         s_run = false;
+#if CONFIG_DEVDASH_IMPROV_USB_SERIAL_JTAG
+        if (s_usb_serial_jtag_active) {
+            usb_serial_jtag_driver_uninstall();
+            s_usb_serial_jtag_active = false;
+        }
+#else
         close(s_uart_fd);
         s_uart_fd = -1;
+#endif
         return ESP_FAIL;
     }
     return ESP_OK;
