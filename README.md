@@ -125,33 +125,39 @@ idf.py build
 idf.py flash monitor
 ```
 
-On first boot the display shows a provisioning prompt:
+On first boot the display shows the V4 provisioning screen with a QR code, the
+SoftAP name, the AP password, and `192.168.4.1`. Both first-time setup and
+later edits use the same on-device captive portal:
 
-1. Join the SoftAP shown on the e-ink display, for example `devdash-A4F2`.
-2. Use the displayed password.
-3. Open `http://192.168.4.1`.
-4. Enter WiFi SSID, WiFi password, API URL, and device token.
-5. Save. The device restarts, joins WiFi, fetches the API, and renders.
+1. **Scan the QR with your phone camera.** iOS Camera and Android Camera /
+   Google Lens both recognise the `WIFI:T:WPA;S:devdash-XXXX;P:…;;` payload
+   and offer one-tap join.
+2. **The captive-portal sheet pops up automatically** (iOS/Android/Windows).
+   If it does not, open `http://192.168.4.1` in any browser while still
+   joined to the AP.
+3. **Edit the form** — up to five WiFi networks × five API endpoints each.
+   Empty password / token fields are treated as "keep the saved value";
+   tick the matching *Clear* checkbox to erase a stored secret.
+4. **Save.** The device shows a confirmation, reboots ~4 seconds later, joins
+   WiFi, fetches the API, and renders the dashboard.
 
-The SoftAP portal is the primary first-time provisioning path because it does
-not depend on ESP32-S3 USB-Serial-JTAG staying connected after reset. Improv
-Serial remains available from the web flasher as a recovery and multi-profile
-editor during the provisioning window.
-
-After first provisioning, manage up to five WiFi networks and up to five API
-endpoints per network from the web flasher over Improv Serial. API URLs must
-use `http://`; IP addresses, DNS names, and `.local` mDNS names are accepted.
+The AP password is a 12-character random alphanumeric string generated once
+at first boot and persisted in NVS. The same password keeps working across
+reboots; a factory reset (`idf.py erase-flash`) regenerates it. API URLs
+must use `http://`; IP addresses, DNS names, and `.local` mDNS names are
+accepted. The HTTPS path is out of scope for this firmware revision.
 
 - API URL: `http://192.168.1.50:3000`
-- Device token: required by the provisioning portal
-- Refresh interval: 5 minutes
+- Device token: required for each enabled API entry
+- Refresh interval: 3–60 minutes, default 5
 
 The device token must match `DEVICE_TOKEN` in the API server's `.env`.
 
 If none of the stored WiFi networks are reachable, the device displays
 `OFFLINE` and returns to deep sleep. It does not erase stored credentials
-automatically. Hold the BOOT button while the device is asleep to wake it into
-the provisioning and Improv configuration window.
+automatically. Hold the BOOT button while the device is asleep to wake it
+into the provisioning portal — the same QR/SoftAP path is reused for
+editing later.
 
 To force re-provisioning manually anyway:
 
@@ -161,16 +167,24 @@ idf.py erase-flash
 
 ### 3. Web flash (optional)
 
-Pre-built binaries can be flashed directly from a browser via the included web flash server. Use `watch.sh` (recommended) — it starts the HTTP server and automatically updates the served binaries whenever a new build completes:
+Pre-built binaries can be flashed directly from a browser via the included
+web flash server. Use `watch.sh` (recommended) — it starts the HTTP server
+and automatically updates the served binaries whenever a new build completes:
 
 ```bash
 cd flash-server
 bash watch.sh
 ```
 
-Open `http://localhost:8080` in Chrome and click Install. After each `idf.py build` the bins are refreshed automatically; just click Install again to flash the new firmware. No need to restart the server.
+Open `http://localhost:8080` in Chrome and click Install. After flashing
+completes the page redirects to `/flashed.html` (V4 S3 design) with a
+step-by-step guide that mirrors the e-ink prompt and a troubleshooting
+accordion. After each `idf.py build` the bins are refreshed automatically;
+just click Install again to flash the new firmware. No need to restart the
+server.
 
-> `serve.sh` still works for a one-shot copy + serve, but requires a manual restart after every rebuild.
+> `serve.sh` still works for a one-shot copy + serve, but requires a manual
+> restart after every rebuild.
 
 ---
 

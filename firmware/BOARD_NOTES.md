@@ -109,3 +109,49 @@ When iterating on sleep-related code, either:
 - **Wake from deep sleep**: RTC slow memory (`RTC_DATA_ATTR`) is
   preserved; `RTC_NOINIT_ATTR` is preserved without zero-init. The wake
   cause reflects the source (`EXT0`, `TIMER`, etc.).
+
+## V4 provisioning contract (SoftAP HTTP portal)
+
+The on-device captive portal — served from `wifi_prov.c` at
+`http://192.168.4.1/` while the AP is up — pre-renders all 5 networks × 5
+APIs slots so the form is usable with JavaScript disabled. The C handler
+parses `application/x-www-form-urlencoded` body fields by positional
+prefix. Field names match `design_handoff_eink_v4_provisioning/README.md`:
+
+| Field            | Type     | Meaning                                          |
+|------------------|----------|--------------------------------------------------|
+| `wN_i`           | hidden   | Profile id of network N (0 for empty slots).     |
+| `wN_on`          | checkbox | Network N enabled. Off ⇒ remove on save.         |
+| `wN_ssid`        | text     | SSID (1..32 chars).                              |
+| `wN_pass`        | password | New password. Empty + clearpw off ⇒ keep saved.  |
+| `wN_clearpw`     | checkbox | Force-erase saved password.                      |
+| `wN_aK_i`        | hidden   | Profile id of API K under network N.             |
+| `wN_aK_on`       | checkbox | API K enabled.                                   |
+| `wN_aK_url`      | url      | `http://` only — TLS is out of scope.            |
+| `wN_aK_tok`      | password | New token. Same keep/clear/replace rules as PASS.|
+| `wN_aK_cleartok` | checkbox | Force-erase saved token.                         |
+| `iv`             | number   | Refresh interval, 3..60 (stored in cfg.refresh_min). |
+
+`N ∈ 0..4`, `K ∈ 0..4`. Validation lives in `validate_network` and mirrors
+`storage_validate_api_url`. Body cap is 24 KB — anything larger gets 413.
+`POST /save` returns the V4 saved page and schedules `esp_restart()` 4 s
+later via `esp_timer`, leaving time for the on-page spinner→check
+transition before the AP drops.
+
+The HTTP server runs with `uri_match_fn = httpd_uri_match_wildcard`. The
+explicit captive-detect routes (`/generate_204`, `/hotspot-detect.html`,
+`/ncsi.txt`, `/connecttest.txt`) and the catch-all `/*` reply 302 to
+`http://192.168.4.1/`. The wildcard must be registered last so the more
+specific URIs match first.
+
+The captive DNS responder (`captive_dns.c`) binds UDP/53 to the AP netif
+only and answers every A query with `192.168.4.1`. AAAA / HTTPS / SVCB /
+unknown types get NOERROR + ANCOUNT=0 — never a timeout — so iOS and
+Android pop the captive sheet promptly.
+
+The on-screen QR encodes the standard WiFi join string
+(`WIFI:T:WPA;S:devdash-XXXX;P:<12-char alnum>;;`). The AP password is
+generated once at first boot via `storage_get_or_init_ap_password` and
+persisted under NVS key `ap_pwd` in the `devdash` namespace. Factory
+reset (`storage_erase`) clears the key; the next boot generates a new
+password. ADR-0002 records the policy.

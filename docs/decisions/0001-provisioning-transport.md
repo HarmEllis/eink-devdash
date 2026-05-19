@@ -1,9 +1,11 @@
 # ADR-0001: Provisioning transport — BLE + SoftAP, not Web Serial
 
-- **Status:** Accepted
+- **Status:** Deferred (see [ADR-0002](0002-softap-portal-captive-qr.md))
 - **Date:** 2026-05-19
 - **Branch where adopted:** `feat/provisioning-protocomm`
 - **Supersedes:** the Improv-over-serial path on `main` (commits `9b4c201`, `1be103d`, `56969a0`) and the experimental HTTP SoftAP portal on `feat/softap-provisioning` (commit `d8513a5`).
+
+> **Deferred 2026-05-19.** Before any code landed against this ADR we pivoted to a simpler SoftAP HTTP portal + WiFi QR + captive portal approach captured in ADR-0002. The protocomm + Security 2 + BLE direction described below remains technically valid and may be revisited if a future requirement (mobile-only BLE provisioning, or single-cable Web Serial via TinyUSB CDC) justifies the complexity. The "Why Web Serial does not work here (now)" section is still load-bearing and referenced from ADR-0002.
 
 ## Context
 
