@@ -5,9 +5,7 @@
   color: #152025;
 }
 
-body {
-  margin: 0;
-}
+body { margin: 0; }
 
 main {
   width: min(960px, calc(100vw - 32px));
@@ -22,67 +20,13 @@ header {
   margin-bottom: 20px;
 }
 
-h1, h2, p {
-  margin: 0;
-}
-
-h1 {
-  font-size: 28px;
-  font-weight: 720;
-}
-
-h2 {
-  font-size: 16px;
-  margin-bottom: 12px;
-}
+h1, h2, p { margin: 0; }
+h1 { font-size: 28px; font-weight: 720; }
+h2 { font-size: 16px; margin-bottom: 12px; }
 
 section {
   border-top: 1px solid #cfd8dc;
   padding: 18px 0;
-}
-
-button {
-  min-height: 36px;
-  border: 1px solid #9fb0b8;
-  border-radius: 6px;
-  background: #ffffff;
-  color: #152025;
-  padding: 0 12px;
-  font: inherit;
-  cursor: pointer;
-}
-
-button:disabled {
-  cursor: not-allowed;
-  color: #8b989e;
-  background: #eef2f3;
-}
-
-button.primary {
-  background: #173f5f;
-  border-color: #173f5f;
-  color: #fff;
-}
-
-input[type="text"],
-input[type="password"],
-input[type="url"],
-input[type="number"] {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  border: 1px solid #b8c6cc;
-  border-radius: 6px;
-  padding: 8px 10px;
-  font: inherit;
-  background: #fff;
-}
-
-label {
-  display: grid;
-  gap: 4px;
-  font-size: 12px;
-  color: #4c5a60;
 }
 
 .row {
@@ -92,62 +36,10 @@ label {
   flex-wrap: wrap;
 }
 
-.editor-actions {
-  margin-top: 12px;
-}
-
-.stack {
-  display: grid;
-  gap: 12px;
-}
-
-.network {
-  border: 1px solid #c7d2d7;
-  border-radius: 8px;
-  background: #fff;
-  padding: 14px;
-}
-
-.network.selected {
-  outline: 2px solid #2f7d6d;
-}
-
-.network-header,
-.api-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.api {
-  border-top: 1px solid #e1e7ea;
-  padding-top: 10px;
-  margin-top: 10px;
-}
-
-.api-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: end;
-}
-
-.note,
 #status,
 .hint {
   color: #5b696f;
   font-size: 13px;
-}
-
-.hint {
   margin-bottom: 12px;
   line-height: 1.4;
 }
@@ -157,23 +49,4 @@ label {
   padding: 0 4px;
   border-radius: 3px;
   font-size: 12px;
-}
-
-.action-feedback {
-  margin-top: 10px;
-  min-height: 18px;
-  font-size: 13px;
-}
-
-.action-feedback.error { color: #b00020; }
-.action-feedback.success { color: #2f7d6d; }
-.action-feedback.busy { color: #4c5a60; }
-
-@media (max-width: 720px) {
-  header,
-  .grid,
-  .api-grid {
-    grid-template-columns: 1fr;
-    display: grid;
-  }
 }

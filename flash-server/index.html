@@ -5,9 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!--
     style-src allows 'unsafe-inline' because esp-web-tools injects its
-    install/log dialog styles into its custom-element shadow DOM, which a
-    strict 'self'-only policy blocks. script-src stays strictly pinned with
-    SRI so the supply-chain risk codex flagged is still mitigated.
+    install/log dialog styles into its custom-element shadow DOM.
+    script-src stays strictly pinned with SRI.
   -->
   <meta
     http-equiv="Content-Security-Policy"
@@ -26,60 +25,36 @@
   <main>
     <header>
       <h1>eink-devdash</h1>
-      <p id="status">Disconnected</p>
+      <p id="status">Ready to flash</p>
     </header>
 
     <section>
-      <h2>1. Flash firmware (first time only)</h2>
-      <p class="hint">Install or update the firmware over USB. Skip if the device already runs eink-devdash.</p>
+      <h2>1. Flash firmware</h2>
+      <p class="hint">Plug the device in over USB and press <em>Install</em>. Web Serial is used only for the initial flash; configuration happens on the device's SoftAP portal afterwards.</p>
       <div class="row">
-        <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+        <esp-web-install-button id="installer" manifest="manifest.json"></esp-web-install-button>
       </div>
     </section>
 
     <section>
       <h2>2. First-time provisioning</h2>
-      <p class="hint">After flashing, the e-ink display shows a temporary WiFi network such as <code>devdash-A4F2</code> and its password. Join that network, open <code>http://192.168.4.1</code>, then enter WiFi SSID, WiFi password, API URL, and device token. The device saves the config, restarts, joins WiFi, fetches the API, and renders the dashboard.</p>
-    </section>
-
-    <section>
-      <h2>3. Connect Serial</h2>
-      <p class="hint">Optional recovery/editor path: open a WebSerial link to the running firmware so this page can read and write config via Improv RPCs.</p>
-      <div class="row">
-        <button id="connect-button" class="primary" type="button">Connect Serial</button>
-        <button id="disconnect-button" type="button" disabled>Disconnect</button>
-      </div>
-    </section>
-
-    <section>
-      <h2>4. Load current config</h2>
-      <p class="hint">Reads the saved WiFi networks and API endpoints back from the device. Tokens come back masked as <code>****xxxx</code> — re-enter a token to overwrite, leave the masked value to keep the stored one.</p>
-      <div class="row">
-        <button id="load-button" type="button" disabled>Load Config</button>
-        <button id="reprovision-button" type="button" disabled title="Wipes stored WiFi credentials and reboots the device into its SoftAP provisioning portal. Use this if WiFi credentials are wrong or the network changed.">Reprovision WiFi</button>
-      </div>
-      <p class="hint"><em>Reprovision WiFi</em> wipes the saved WiFi/API profile and reboots the device into its built-in SoftAP portal.</p>
-    </section>
-
-    <section>
-      <h2>5. Network editor</h2>
-      <p class="hint">Edit any field — the card you are editing is highlighted and used by Save below. Each save or delete triggers a device restart; Connect Serial again afterwards.</p>
-      <div id="network-list" class="stack"></div>
-      <div class="row editor-actions">
-        <button id="add-network-button" type="button" disabled>Add Network</button>
-      </div>
-    </section>
-
-    <section>
-      <h2>6. Save / apply</h2>
-      <div class="row">
-        <button id="save-button" class="primary" type="button" disabled>Save Highlighted Network</button>
-        <button id="reorder-networks-button" type="button" disabled>Apply Network Order</button>
-      </div>
-      <p id="action-feedback" class="action-feedback" aria-live="polite"></p>
+      <p class="hint">When flashing finishes, the e-ink display shows a QR code and a SoftAP name like <code>devdash-A4F2</code> with a password. Scan the QR (or join the AP manually and open <code>http://192.168.4.1</code>) and fill in WiFi + API. The device saves and reboots.</p>
+      <p class="hint">Need to re-open this flow later? Hold <strong>BOOT</strong> on the device for ~1&nbsp;s on power-up — the SoftAP portal comes back up.</p>
     </section>
   </main>
 
-  <script type="module" src="config-ui.js"></script>
+  <script type="module">
+    // After a successful install, hop to /flashed for the full V4 S3
+    // success page with troubleshooting and the e-ink mockup.
+    const btn = document.getElementById('installer');
+    btn.addEventListener('state-changed', (ev) => {
+      const detail = ev.detail || {};
+      if (detail.state === 'FINISHED') {
+        window.location.href = '/flashed.html';
+      }
+      const s = document.getElementById('status');
+      if (s && detail.message) s.textContent = detail.message;
+    });
+  </script>
 </body>
 </html>
