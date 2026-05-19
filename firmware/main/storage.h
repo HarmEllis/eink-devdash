@@ -63,3 +63,11 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg);
 bool storage_validate_api_url(const char *url);
 uint32_t storage_next_profile_id(const dash_config_v2_t *cfg);
 void storage_mask_token(const char *token, char *out, size_t out_sz);
+
+/* AP password used for the SoftAP provisioning portal. On first call after
+ * a fresh flash (or after storage_erase), a 12-character mixed-case
+ * alphanumeric string is generated from esp_fill_random and persisted in
+ * NVS under key "ap_pwd". All subsequent calls return the persisted value.
+ * Writes `out` with a NUL-terminated 12-char string (out_sz must be >= 13).
+ * Returns ESP_OK on success. */
+esp_err_t storage_get_or_init_ap_password(char *out, size_t out_sz);

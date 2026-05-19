@@ -18,6 +18,8 @@
 #include "esp_attr.h"
 #include "esp_system.h"
 #include "nvs.h"
+#include "qrcode.h"
+#include "wifi_prov.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -279,6 +281,48 @@ static void icon_cross_sync(int ox, int oy)
     for (int i = 0; i < 7; i++) lpix(ox + d2[i*2], oy + d2[i*2+1], 1, 1);
 }
 
+/* WiFi icon (10×10) — three arcs + dot. V4 README §S1 icon bitmaps. */
+static void icon_wifi(int ox, int oy)
+{
+    fill_rect(ox+2, oy+2, 6, 1, 1, 0);
+    fill_rect(ox+1, oy+3, 1, 1, 1, 0);
+    fill_rect(ox+8, oy+3, 1, 1, 1, 0);
+    fill_rect(ox+2, oy+5, 1, 1, 1, 0);
+    fill_rect(ox+3, oy+5, 4, 1, 1, 0);
+    fill_rect(ox+7, oy+5, 1, 1, 1, 0);
+    fill_rect(ox+4, oy+7, 2, 1, 1, 0);
+    fill_rect(ox+4, oy+9, 2, 1, 1, 0);
+}
+
+/* Globe icon (10×10) — ringed circle with one latitude + one meridian. */
+static void icon_globe(int ox, int oy)
+{
+    /* outer ring */
+    fill_rect(ox+3, oy+0, 4, 1, 1, 0);
+    fill_rect(ox+2, oy+1, 6, 1, 1, 0);
+    fill_rect(ox+1, oy+2, 2, 6, 1, 0);
+    fill_rect(ox+7, oy+2, 2, 6, 1, 0);
+    fill_rect(ox+2, oy+8, 6, 1, 1, 0);
+    fill_rect(ox+3, oy+9, 4, 1, 1, 0);
+    /* horizontal latitudes */
+    fill_rect(ox+2, oy+3, 6, 1, 1, 0);
+    fill_rect(ox+2, oy+6, 6, 1, 1, 0);
+    /* vertical meridian with white cuts at the horizontals */
+    fill_rect(ox+4, oy+1, 2, 8, 1, 0);
+    fill_rect(ox+4, oy+2, 2, 1, 0, 0);
+    fill_rect(ox+4, oy+4, 2, 2, 0, 0);
+    fill_rect(ox+4, oy+7, 2, 1, 0, 0);
+}
+
+/* Big-X (19×19) error glyph, RED. Two diagonals share (9,9). */
+static void icon_big_cross_red(int ox, int oy)
+{
+    for (int i = 0; i < 19; i++) {
+        lpix(ox + i,        oy + i,        1, 1);
+        if (i != 9) lpix(ox + i, oy + 18 - i, 1, 1);
+    }
+}
+
 /* ── segmented bar ──────────────────────────────────────────────────────── */
 /* 30 segments × 3 px wide × 7 px tall, 1 px gap.
    Segments past column 24 (=80%) render RED when pct > 80.            */
@@ -433,6 +477,8 @@ void display_render(const dashboard_data_t *data)
         ? data->claude.weekly.used  * 100 / data->claude.weekly.limit  : 0;
     int codex_ses  = (data->codex.daily_limit > 0)
         ? data->codex.daily_used    * 100 / data->codex.daily_limit    : 0;
+    int codex_wk   = (data->codex.weekly_limit > 0)
+        ? data->codex.weekly_used   * 100 / data->codex.weekly_limit   : 0;
 
     bool offline    = data->offline || data->stale;
     bool deps_alert = data->github.dependabot > 0;
@@ -491,7 +537,7 @@ void display_render(const dashboard_data_t *data)
 
     /* ── Right column — provider bars ── */
     draw_provider(124, 18, "CLAUDE", claude_ses, claude_wk);
-    draw_provider(124, 66, "CODEX",  codex_ses,  0);
+    draw_provider(124, 66, "CODEX",  codex_ses, codex_wk);
 
     /* Footer right */
     if (offline) {
@@ -509,7 +555,8 @@ void display_render(const dashboard_data_t *data)
      * boot that prior state is undefined, so a fast refresh produces garbage
      * (typically a near-solid black smear). */
     bool need_red = deps_alert || auth_err || offline
-                    || claude_ses > 80 || claude_wk > 80 || codex_ses > 80;
+                    || claude_ses > 80 || claude_wk > 80
+                    || codex_ses > 80  || codex_wk  > 80;
     eink_refresh_mode_t mode;
     if (need_red || !s_first_refresh_done) {
         mode = EINK_REFRESH_FULL_COLOR;
@@ -533,20 +580,156 @@ void display_render(const dashboard_data_t *data)
     display_mark_frame(offline ? DISPLAY_FRAME_OFFLINE : DISPLAY_FRAME_CONTENT);
 }
 
+/* QR-render callback. Paints the QR matrix at the painted-area origin given
+ * via user_data. The painted area is 89×89 starting at (12,20); we centre
+ * the QR modules inside it and leave a 1-px white quiet zone. */
+typedef struct {
+    int origin_x;   /* left edge of the 89×89 painted area */
+    int origin_y;   /* top  edge of the 89×89 painted area */
+    int paint_sz;   /* always 89 in V4 S1 */
+} qr_paint_ctx_t;
+
+static void qr_paint_cb(esp_qrcode_handle_t qr, void *user_data)
+{
+    const qr_paint_ctx_t *ctx = (const qr_paint_ctx_t *)user_data;
+    int n = esp_qrcode_get_size(qr);            /* modules per side */
+    int module_px = 3;                          /* V4 spec */
+    int modules_px = n * module_px;
+    /* If the encoder picked a larger version than v3 (rare for our 40-char
+     * WIFI string), shrink so we still fit. Quiet zone stays at 1 px. */
+    while (modules_px > ctx->paint_sz - 2) {
+        module_px--;
+        if (module_px < 1) return;
+        modules_px = n * module_px;
+    }
+    int offset_x = ctx->origin_x + (ctx->paint_sz - modules_px) / 2;
+    int offset_y = ctx->origin_y + (ctx->paint_sz - modules_px) / 2;
+    for (int my = 0; my < n; my++) {
+        for (int mx = 0; mx < n; mx++) {
+            if (!esp_qrcode_get_module(qr, mx, my)) continue;
+            fill_rect(offset_x + mx * module_px,
+                      offset_y + my * module_px,
+                      module_px, module_px, 1, 0);
+        }
+    }
+}
+
+/* Shared header + footer + outer border for the V4 S1 setup screen. */
+static void draw_s1_chrome(void)
+{
+    /* Outer 1-px border */
+    hline(1,   1,   294);
+    hline(1,   126, 294);
+    vline(1,   1,   126);
+    vline(294, 1,   126);
+
+    /* Header (y 2..14) */
+    icon_box_logo(6, 4);
+    draw_str(19, 5, "DEVDASH", 0);
+    static const char *SETUP = "SETUP";
+    draw_str(290 - str_w(SETUP), 5, SETUP, 0);
+
+    /* Header bottom hairline + footer top hairline */
+    hline(2, 15,  292);
+    hline(2, 113, 292);
+
+    /* Footer caption — "Scan with phone camera", centred on y=117 */
+    static const char *CAP = "Scan with phone camera";
+    int cap_w = str_w(CAP);
+    draw_str((296 - cap_w) / 2, 117, CAP, 0);
+}
+
+/* Render the V4 S1 info column at x≈113..292 with three labelled rows and
+ * the two hint lines. Pass NULL/empty for values you want to blank out. */
+static void draw_s1_info_column(const char *ssid,
+                                const char *pwd,
+                                const char *url,
+                                bool show_hints)
+{
+    /* Row 1: SSID */
+    icon_wifi(113, 22);
+    draw_str(125, 26, "SSID", 0);
+    draw_str(155, 26, ssid ? ssid : "—", 0);
+
+    /* Row 2: PASS */
+    icon_key(113, 44, 0);
+    draw_str(125, 48, "PASS", 0);
+    draw_str(155, 48, pwd ? pwd : "—", 0);
+
+    /* Row 3: URL */
+    icon_globe(113, 66);
+    draw_str(125, 70, "URL", 0);
+    draw_str(155, 70, url ? url : "—", 0);
+
+    if (show_hints) {
+        draw_str(115, 92,  "join & popup opens", 0);
+        draw_str(115, 101, "- or visit URL.",    0);
+    }
+}
+
+/* V4 S1 — pixel-exact e-ink provisioning prompt. ssid/pwd are the SoftAP
+ * credentials; the QR encodes the standard WIFI:T:WPA;… join string. */
 void display_show_qr(const char *ssid, const char *pop)
 {
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
     memset(red_buf, 0x00, sizeof(red_buf));
-    draw_str(6, 10, "Provision WiFi:", 0);
 
-    char line[40];
-    snprintf(line, sizeof(line), "SSID: %s", ssid ? ssid : "devdash-XXXX");
-    draw_str(6, 30, line, 0);
-    snprintf(line, sizeof(line), "Pass: %s", pop ? pop : "(see docs)");
-    draw_str(6, 50, line, 0);
-    draw_str(6, 70, "Open http://192.168.4.1", 0);
-    draw_str(6, 90, "USB Improv still works", 0);
+    draw_s1_chrome();
+    draw_s1_info_column(ssid ? ssid : "devdash-XXXX",
+                        pop  ? pop  : "(see docs)",
+                        "192.168.4.1",
+                        true);
+
+    /* QR painted area: 89×89 starting at (12,20). Already white from memset;
+     * we draw black modules with a 1-px quiet zone via qr_paint_cb. */
+    char qr_text[80];
+    size_t qr_len = wifi_net_get_wifi_qr(qr_text, sizeof(qr_text));
+    if (qr_len > 0) {
+        qr_paint_ctx_t ctx = { .origin_x = 12, .origin_y = 20, .paint_sz = 89 };
+        esp_qrcode_config_t cfg = {
+            .display_func_with_cb = qr_paint_cb,
+            .max_qrcode_version   = 4,           /* leaves headroom past v3-L */
+            .qrcode_ecc_level     = ESP_QRCODE_ECC_LOW,
+            .user_data            = &ctx,
+        };
+        esp_err_t err = esp_qrcode_generate(&cfg, qr_text);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "QR encode failed (%d); slot left blank", err);
+        }
+    }
+
+    eink_set_framebuffer(bw_buf, red_buf);
+    eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
+    eink_sleep(&s_eink);
+    s_first_refresh_done = true;
+    display_mark_frame(DISPLAY_FRAME_QR);
+}
+
+/* V4 S1 error variant — drawn when the SoftAP failed to start. The QR slot
+ * is replaced by a 19×19 red X plus two-line "SETUP / FAILED" red caption
+ * and a black "check serial" hint. Info column gets em-dash placeholders. */
+void display_show_setup_failed(void)
+{
+    ensure_init();
+    memset(bw_buf,  0xFF, sizeof(bw_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
+
+    draw_s1_chrome();
+    draw_s1_info_column(NULL, NULL, NULL, false);
+
+    /* BigCross 19×19 centred horizontally in the 89×89 QR slot. The slot
+     * starts at x=12 and is 89 wide; (89-19)/2 = 35 → cross origin x = 47. */
+    icon_big_cross_red(47, 32);
+    /* SETUP / FAILED two-line red, centred under the cross. */
+    static const char *S1 = "SETUP";
+    static const char *S2 = "FAILED";
+    int qr_centre_x = 12 + 89 / 2;
+    draw_str(qr_centre_x - str_w(S1) / 2, 60, S1, 1);
+    draw_str(qr_centre_x - str_w(S2) / 2, 70, S2, 1);
+    /* Black "check serial" hint below. */
+    static const char *S3 = "check serial";
+    draw_str(qr_centre_x - str_w(S3) / 2, 84, S3, 0);
 
     eink_set_framebuffer(bw_buf, red_buf);
     eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);

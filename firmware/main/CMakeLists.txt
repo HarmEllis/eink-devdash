@@ -4,7 +4,7 @@ idf_component_register(
         "display.c"
         "wifi_prov.c"
         "wifi_roam.c"
-        "improv.c"
+        "captive_dns.c"
         "api_client.c"
         "storage.c"
     INCLUDE_DIRS "."
@@ -12,10 +12,11 @@ idf_component_register(
         esp_wifi
         esp_http_client
         esp_http_server
+        esp_timer
         nvs_flash
         driver
-        esp_driver_usb_serial_jtag
         vfs
         json
         eink_weact29
+        espressif__qrcode
 )

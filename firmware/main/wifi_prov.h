@@ -18,16 +18,20 @@ bool wifi_net_is_provisioned(void);
  * time the call returns. */
 esp_err_t wifi_net_provision_if_needed(void);
 
-/* Open the SoftAP provisioning and Improv Serial configuration window even
- * when credentials already exist. Used for GPIO0 wake-up and explicit rescue
- * flows. */
+/* Open the SoftAP HTTP portal configuration window even when credentials
+ * already exist. Used for GPIO0 wake-up and explicit rescue flows. */
 esp_err_t wifi_net_open_config_window(void);
 
 /* Stop WiFi (call before deep sleep). */
 void wifi_net_stop(void);
 
-/* Get the SoftAP provisioning SSID and AP password that will be advertised by
- * wifi_net_provision_if_needed(). Both are derived from the factory MAC, so
- * they are stable per device. Use this to render them on the e-ink display. */
+/* Get the SoftAP provisioning SSID (MAC-derived, stable per device) and AP
+ * password (random 12-char alphanumeric, generated once at first boot and
+ * persisted in NVS). Use this to render them on the e-ink display. */
 void wifi_net_get_prov_info(char *ssid, size_t ssid_sz,
                             char *pop, size_t pop_sz);
+
+/* Build the standard WiFi join string for QR encoding:
+ *     WIFI:T:WPA;S:<ssid>;P:<password>;;
+ * Returns the number of characters written (excluding NUL). */
+size_t wifi_net_get_wifi_qr(char *out, size_t out_sz);

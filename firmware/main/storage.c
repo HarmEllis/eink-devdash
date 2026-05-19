@@ -45,7 +45,7 @@ static uint32_t cfg_crc(const dash_config_v2_t *cfg)
     /* Piecewise CRC over the struct with the crc32 field treated as zero,
      * matching the original "copy struct, zero crc32 field, CRC the whole
      * thing" semantics — without a 7 KiB stack copy that would overflow the
-     * default main/Improv task stacks. */
+     * default main task stack. */
     const uint8_t *bytes = (const uint8_t *)cfg;
     const size_t crc_off = offsetof(dash_config_v2_t, crc32);
     static const uint8_t zero_crc[sizeof(((dash_config_v2_t *)0)->crc32)] = {0};
@@ -200,7 +200,7 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
 {
     /* Normalize and update header fields in place. The previous version made
      * a 7 KiB stack copy to keep the API const-correct, but that doubled the
-     * call's stack footprint and pushed main + Improv tasks past the WDT. */
+     * call's stack footprint and pushed the main task past the WDT. */
     storage_cfg_v2_normalize(cfg);
 
     nvs_handle_t h;
@@ -250,4 +250,38 @@ void storage_erase(void)
         nvs_commit(h);
         nvs_close(h);
     }
+}
+
+esp_err_t storage_get_or_init_ap_password(char *out, size_t out_sz)
+{
+    static const char ALNUM[62] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz"
+        "0123456789";
+    static const char *KEY = "ap_pwd";
+    enum { AP_PWD_LEN = 12 };
+
+    if (!out || out_sz < AP_PWD_LEN + 1) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+
+    size_t len = out_sz;
+    err = nvs_get_str(h, KEY, out, &len);
+    if (err == ESP_OK && len >= AP_PWD_LEN + 1) {
+        nvs_close(h);
+        return ESP_OK;
+    }
+
+    uint8_t rnd[AP_PWD_LEN];
+    extern void esp_fill_random(void *buf, size_t len);
+    esp_fill_random(rnd, sizeof(rnd));
+    for (int i = 0; i < AP_PWD_LEN; i++) out[i] = ALNUM[rnd[i] % 62];
+    out[AP_PWD_LEN] = '\0';
+
+    err = nvs_set_str(h, KEY, out);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
 }

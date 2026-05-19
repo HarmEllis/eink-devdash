@@ -32,15 +32,6 @@ config DEVDASH_WIFI_CONNECT_TIMEOUT_S
     range 5 120
     default 30
 
-config DEVDASH_IMPROV_USB_SERIAL_JTAG
-    bool "Route Improv over USB-Serial-JTAG"
-    depends on SOC_USB_SERIAL_JTAG_SUPPORTED
-    default y
-    help
-        ESP32-S3 Super Mini boards expose the built-in USB-Serial-JTAG
-        controller to the host instead of an external UART bridge. Enable this
-        so Improv reads and writes the same CDC-ACM endpoint the browser sees.
-
 config DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
     bool "Retry forever when WiFi or API is unreachable"
     default n

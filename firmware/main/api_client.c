@@ -93,8 +93,10 @@ static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
     }
 
     cJSON *cx = cJSON_GetObjectItemCaseSensitive(root, "codex");
-    out->codex.daily_used  = json_int(cx, "dailyUsed");
-    out->codex.daily_limit = json_int(cx, "dailyLimit");
+    out->codex.daily_used   = json_int(cx, "dailyUsed");
+    out->codex.daily_limit  = json_int(cx, "dailyLimit");
+    out->codex.weekly_used  = json_int(cx, "weeklyUsed");
+    out->codex.weekly_limit = json_int(cx, "weeklyLimit");
 
     cJSON *ua = cJSON_GetObjectItemCaseSensitive(root, "updatedAt");
     if (ua && cJSON_IsString(ua)) {

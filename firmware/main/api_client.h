@@ -23,6 +23,8 @@ typedef struct {
 typedef struct {
     int daily_used;
     int daily_limit;
+    int weekly_used;
+    int weekly_limit;
 } codex_data_t;
 
 typedef struct {
