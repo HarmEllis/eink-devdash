@@ -153,14 +153,28 @@ accepted. The HTTPS path is out of scope for this firmware revision.
 The device token must match `DEVICE_TOKEN` in the API server's `.env`.
 
 If none of the stored WiFi networks are reachable, the device displays
-`OFFLINE` and returns to deep sleep. It does not erase stored credentials
-automatically. Hold the BOOT button while the device is asleep to wake it
-into the provisioning portal — the same QR/SoftAP path is reused for
-editing later.
+`OFFLINE` and returns to deep sleep (or keeps retrying with
+`CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE=y`). Stored credentials are
+never erased automatically.
 
-To force re-provisioning manually anyway:
+**Re-enter the captive portal at any time** by holding the BOOT button
+(GPIO0) for ~5 seconds. The same threshold applies whether the device
+is in deep sleep, fetching, rendering, or stuck in the offline retry
+loop — `CONFIG_DEVDASH_BOOT_LONGPRESS_MS` (default 5000 ms) is the
+single source of truth. A short press of BOOT while in deep sleep
+wakes the device for an immediate refresh, without entering the
+portal. The portal itself does not auto-close while open; it stays
+available until the user saves credentials or power-cycles the device.
+
+Known limitation: holding BOOT while applying USB power (cold boot)
+puts the ESP32-S3 into ROM download mode at the hardware level, before
+the firmware runs. Power on first, then long-press BOOT.
+
+To wipe stored credentials and force a fresh portal session over USB:
 
 ```bash
+parttool.py -p /dev/ttyACM0 erase_partition --partition-name=nvs
+# or, full erase:
 idf.py erase-flash
 ```
 

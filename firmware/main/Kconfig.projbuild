@@ -21,11 +21,25 @@ config DEVDASH_REFRESH_MIN
 config DEVDASH_PROV_TIMEOUT_S
     int "Provisioning timeout (seconds, 0 = no timeout)"
     range 0 3600
-    default 600
+    default 0
     help
         How long to keep the device-hosted SoftAP HTTP provisioning portal
-        open after a fresh flash before giving up and going back to deep
-        sleep.
+        open before giving up and going back to deep sleep. The default
+        of 0 disables the timeout so the SoftAP stays available until the
+        user saves credentials or power-cycles the device — required by
+        the long-press recovery flow, where the device may have been
+        running for a long time before the user reaches it.
+
+config DEVDASH_BOOT_LONGPRESS_MS
+    int "BOOT long-press duration (ms) to force provisioning portal"
+    range 1000 15000
+    default 5000
+    help
+        Holding the BOOT button (GPIO0) for this many milliseconds while
+        the device is awake — or after waking from deep sleep — forces a
+        reboot into the captive provisioning portal. The same threshold
+        is re-verified after an EXT0 wake so a short press is treated as
+        a refresh-only event and does not enter the portal.
 
 config DEVDASH_WIFI_CONNECT_TIMEOUT_S
     int "WiFi connect timeout (seconds)"

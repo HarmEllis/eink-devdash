@@ -7,6 +7,7 @@ idf_component_register(
         "captive_dns.c"
         "api_client.c"
         "storage.c"
+        "boot_button.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi

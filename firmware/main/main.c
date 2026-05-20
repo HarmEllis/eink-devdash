@@ -11,24 +11,11 @@
 #include "wifi_roam.h"
 #include "api_client.h"
 #include "display.h"
+#include "boot_button.h"
 #include <string.h>
 
 static const char *TAG = "main";
 #define BOOT_WAKE_GPIO GPIO_NUM_0
-
-static bool boot_button_pressed(void)
-{
-    gpio_config_t io = {
-        .pin_bit_mask = 1ULL << BOOT_WAKE_GPIO,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io);
-    vTaskDelay(pdMS_TO_TICKS(50));
-    return gpio_get_level(BOOT_WAKE_GPIO) == 0;
-}
 
 static void enter_deep_sleep(uint8_t minutes)
 {
@@ -78,6 +65,7 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
 
     storage_init();
+    boot_button_init();
 
     ESP_ERROR_CHECK(wifi_net_init());
     /* cfg is 7+ KiB. Keep it in BSS instead of on the main task stack
@@ -88,19 +76,41 @@ void app_main(void)
 
     esp_sleep_wakeup_cause_t wake = esp_sleep_get_wakeup_cause();
     esp_reset_reason_t reset = esp_reset_reason();
-    bool boot_wake = wake == ESP_SLEEP_WAKEUP_EXT0 && boot_button_pressed();
 
-    ESP_LOGI(TAG, "Boot: networks=%u refresh=%u reset=%d wake=%d boot_button=%d",
-             cfg.network_count, cfg.refresh_min, reset, wake, boot_wake);
+    /* EXT0 wake from deep sleep fires on the first edge of GPIO0 going low.
+     * Require the button to remain held for CONFIG_DEVDASH_BOOT_LONGPRESS_MS
+     * before we treat the wake as a provisioning request. A short press
+     * therefore acts as a free "force refresh now" trigger. */
+    bool boot_wake = false;
+    if (wake == ESP_SLEEP_WAKEUP_EXT0 && boot_button_is_pressed()) {
+        if (boot_button_wait_longpress(CONFIG_DEVDASH_BOOT_LONGPRESS_MS)) {
+            boot_button_wait_release();
+            boot_wake = true;
+        } else {
+            ESP_LOGI(TAG, "Short BOOT wake — refresh cycle, no portal");
+        }
+    }
 
-    if (boot_wake || cfg.network_count == 0) {
+    /* Force-provisioning flag set by the in-app long-press monitor before
+     * esp_restart(). Stored in RTC_NOINIT memory inside boot_button.c so it
+     * survives the soft reset but zero-initialises on cold boot (BOARD_NOTES). */
+    bool force_prov = boot_button_force_prov_consume();
+
+    ESP_LOGI(TAG, "Boot: networks=%u refresh=%u reset=%d wake=%d boot_wake=%d force_prov=%d",
+             cfg.network_count, cfg.refresh_min, reset, wake, boot_wake, force_prov);
+
+    if (boot_wake || force_prov || cfg.network_count == 0) {
         char prov_ssid[32], prov_pop[16];
         wifi_net_get_prov_info(prov_ssid, sizeof(prov_ssid),
                                prov_pop, sizeof(prov_pop));
         display_show_qr(prov_ssid, prov_pop);
 
-        err = boot_wake ? wifi_net_open_config_window()
-                        : wifi_net_provision_if_needed();
+        /* config_window keeps the portal open against an already-configured
+         * device (long-press recovery and EXT0 wake). provision_if_needed
+         * is the fresh-flash path that exits early if creds already exist. */
+        bool reconfigure = boot_wake || force_prov;
+        err = reconfigure ? wifi_net_open_config_window()
+                          : wifi_net_provision_if_needed();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Provisioning/config window err=%d", err);
             /* ESP_ERR_TIMEOUT = user did not finish in time; the portal was
@@ -122,12 +132,16 @@ void app_main(void)
     static dashboard_data_t data;   /* keep off the stack, like cfg above */
     memset(&data, 0, sizeof(data));
 
+    /* From here on we are in the normal connect/fetch/render path. Start
+     * the BOOT long-press monitor so a 5s hold can force the captive
+     * portal at any time — including while stuck in the offline retry
+     * loop below. The monitor writes the RTC force_prov flag and calls
+     * esp_restart(); on next boot we land in the portal branch above. */
+    boot_button_monitor_start();
+
     /* On failure either retry in a foreground loop (bring-up — keeps
      * USB-CDC alive so we can reflash) or drop to deep sleep (battery-
-     * friendly default for production). Toggle via Kconfig.
-     *
-     * Recovery config is reached by holding BOOT on power-up to force-enter
-     * the SoftAP portal (see wifi_net_open_config_window). */
+     * friendly default for production). Toggle via Kconfig. */
     bool offline_shown = false;
     for (;;) {
         err = wifi_roam_connect(&cfg, &network_idx);
