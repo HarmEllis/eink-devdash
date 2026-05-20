@@ -24,6 +24,8 @@ typedef struct {
     int short_pct;
     int long_pct;
     bool reached;
+    int short_reset_in_seconds;
+    int long_reset_in_seconds;
 } codex_data_t;
 
 typedef struct {

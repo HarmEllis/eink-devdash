@@ -114,6 +114,8 @@ static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
 
         out->codex.short_pct = round_percent(json_double(short_window, "usedPercent"));
         out->codex.long_pct  = round_percent(json_double(long_window,  "usedPercent"));
+        out->codex.short_reset_in_seconds = json_int(short_window, "resetInSeconds");
+        out->codex.long_reset_in_seconds  = json_int(long_window,  "resetInSeconds");
         out->codex.reached   = reached && cJSON_IsString(reached);
     }
 

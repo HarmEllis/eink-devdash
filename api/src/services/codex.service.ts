@@ -9,6 +9,7 @@ type CodexWindow = {
   usedPercent: number
   label: string
   resetsAt: number | null
+  resetInSeconds: number
 }
 
 type CodexUsage = {
@@ -38,8 +39,8 @@ function emptyChatGptUsage(): CodexUsage {
   return {
     source: 'chatgpt',
     planType: null,
-    short: { usedPercent: 0, label: '5h', resetsAt: null },
-    long: { usedPercent: 0, label: '7d', resetsAt: null },
+    short: { usedPercent: 0, label: '5h', resetsAt: null, resetInSeconds: 0 },
+    long: { usedPercent: 0, label: '7d', resetsAt: null, resetInSeconds: 0 },
     reachedLimit: null,
   }
 }
@@ -51,7 +52,10 @@ function numberOrNull(value: unknown): number | null {
 function windowFromRateLimit(window: RateLimitWindow | undefined, label: string): CodexWindow {
   const usedPercent = numberOrNull(window?.used_percent) ?? 0
   const resetsAt = numberOrNull(window?.resets_at)
-  return { usedPercent, label, resetsAt }
+  const resetInSeconds = resetsAt !== null
+    ? Math.max(0, Math.round(resetsAt - Date.now() / 1000))
+    : 0
+  return { usedPercent, label, resetsAt, resetInSeconds }
 }
 
 function normalizeReachedLimit(value: unknown): CodexLimitReached {

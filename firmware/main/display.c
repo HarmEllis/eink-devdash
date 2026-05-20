@@ -262,6 +262,18 @@ static void icon_key(int ox, int oy, int use_red)
     fill_rect(ox+8, oy+5, 1, 2, 1, use_red);
 }
 
+/* Hourglass icon (7×7) — used in provider title rows next to reset countdown. */
+static void icon_hourglass(int ox, int oy, int use_red)
+{
+    fill_rect(ox+0, oy+0, 7, 1, 1, use_red);
+    fill_rect(ox+1, oy+1, 5, 1, 1, use_red);
+    fill_rect(ox+2, oy+2, 3, 1, 1, use_red);
+    fill_rect(ox+3, oy+3, 1, 1, 1, use_red);
+    fill_rect(ox+2, oy+4, 3, 1, 1, use_red);
+    fill_rect(ox+1, oy+5, 5, 1, 1, use_red);
+    fill_rect(ox+0, oy+6, 7, 1, 1, use_red);
+}
+
 /* Sync glyph: two open arrows forming a refresh circle */
 static void icon_sync(int ox, int oy)
 {
@@ -345,14 +357,57 @@ static void draw_bar(int ox, int oy, int pct)
     }
 }
 
-/* ── provider bar block ─────────────────────────────────────────────────── */
-static void draw_provider(int ox, int oy, const char *title, int ses, int wk)
+/* Format remaining seconds as a compact countdown string ("0h47", "2h14",
+ * "2d 9h", "5d12h", "10+d", "--"). Buffer must be at least 6 bytes. */
+static void format_reset_countdown(char *out, size_t out_sz, int seconds)
 {
-    char pct_s[8];
+    if (seconds <= 0) { snprintf(out, out_sz, "--"); return; }
+    int total_min = seconds / 60;
+    if (total_min < 60) {
+        snprintf(out, out_sz, "0h%02d", total_min);
+        return;
+    }
+    if (total_min < 24 * 60) {
+        int h = total_min / 60;
+        int m = total_min % 60;
+        snprintf(out, out_sz, "%dh%02d", h, m);
+        return;
+    }
+    int total_hours = total_min / 60;
+    int d = total_hours / 24;
+    int h = total_hours % 24;
+    if (d > 9) { snprintf(out, out_sz, "10+d"); return; }
+    if (h < 10) snprintf(out, out_sz, "%dd %dh", d, h);
+    else        snprintf(out, out_sz, "%dd%dh", d, h);
+}
+
+/* ── provider bar block ─────────────────────────────────────────────────── */
+/* Title row: title (left) + hourglass + "<ses_reset> / <wk_reset>" right-
+ * anchored at x=290. Countdown text follows its bar's red state. */
+static void draw_provider(int ox, int oy, const char *title,
+                          int ses, int wk,
+                          int ses_reset_s, int wk_reset_s)
+{
+    char pct_s[8], ses_s[8], wk_s[8];
 
     draw_str(ox, oy, title, 0);
 
-    draw_str(ox, oy + 11, "SES", 0);
+    format_reset_countdown(ses_s, sizeof(ses_s), ses_reset_s);
+    format_reset_countdown(wk_s,  sizeof(wk_s),  wk_reset_s);
+
+    const int text_gap = 2;
+    const int hg_gap   = 4;
+    const int hg_w     = 7;
+    int x_wk    = 290 - str_w(wk_s);
+    int x_slash = x_wk - text_gap - str_w("/");
+    int x_ses   = x_slash - text_gap - str_w(ses_s);
+    int x_hg    = x_ses - hg_gap - hg_w;
+    icon_hourglass(x_hg, oy, 0);
+    draw_str(x_ses,   oy, ses_s, ses > 80);
+    draw_str(x_slash, oy, "/",   0);
+    draw_str(x_wk,    oy, wk_s,  wk  > 80);
+
+    draw_str(ox, oy + 11, "5H", 0);
     draw_bar(ox + 18, oy + 11, ses);
     snprintf(pct_s, sizeof(pct_s), "%d%%", ses);
     draw_str(290 - str_w(pct_s), oy + 11, pct_s, ses > 80);
@@ -495,9 +550,20 @@ void display_render(const dashboard_data_t *data)
     } else {
         icon_box_logo(6, 4);
         draw_str(19, 5, "DEVDASH", 0);
-        icon_sync(251, 4);
-        /* clock right-aligned, ends at x=290 */
-        draw_str(290 - str_w(data->updated_at), 5, data->updated_at, 0);
+        /* Right-anchored cluster: [sync] [HH:MM] [+5m], all 5×7 font.
+         * Coordinates pinned: sync 228..235, clock 240..269, +5m 272..289. */
+        static const char *NEXT = "+5m";
+        const int next_w  = str_w(NEXT);
+        const int clock_w = str_w(data->updated_at);
+        const int text_gap = 2;
+        const int icon_gap = 4;
+        const int sync_w   = 8;
+        const int x_next   = 290 - next_w;
+        const int x_clock  = x_next - text_gap - clock_w;
+        const int x_sync   = x_clock - icon_gap - sync_w;
+        icon_sync(x_sync, 4);
+        draw_str(x_clock, 5, data->updated_at, 0);
+        draw_str(x_next,  5, NEXT, 0);
     }
 
     /* Header bottom hairline at y=15 */
@@ -530,36 +596,29 @@ void display_render(const dashboard_data_t *data)
                       auth_err ? "ERR" : "OK", auth_err);
     }
 
-    /* Footer left: repo name, bottom-aligned */
-    draw_str(6, 118, "weact/devdash", 0);
-
-    /* ── Right column — provider bars ── */
-    draw_provider(124, 18, "CLAUDE", claude_ses, claude_wk);
-    draw_provider(124, 66, "CODEX",  codex_ses, codex_wk);
-
-    /* Footer right */
-    if (offline) {
-        draw_str(124, 114, "no sync", 0);
-    } else {
-        char upd[40];
-        snprintf(upd, sizeof(upd), "upd %s", data->updated_at);
-        draw_str(124, 114, upd, 0);
-        draw_str(290 - str_w("next 5m"), 114, "next 5m", 0);
-    }
+    /* ── Right column — provider bars (now include reset countdowns) ── */
+    draw_provider(124, 18, "CLAUDE", claude_ses, claude_wk,
+                  data->claude.five_hour.reset_in_seconds,
+                  data->claude.weekly.reset_in_seconds);
+    draw_provider(124, 66, "CODEX",  codex_ses, codex_wk,
+                  data->codex.short_reset_in_seconds,
+                  data->codex.long_reset_in_seconds);
 
     /* ── Refresh mode ──
-     * The first refresh after power-on MUST be FULL_COLOR. BW_FAST/partial is
-     * a differential LUT relative to the previously displayed frame; on a cold
-     * boot that prior state is undefined, so a fast refresh produces garbage
-     * (typically a near-solid black smear). */
+     * FULL_COLOR is forced on three conditions:
+     *   1. need_red          — this frame paints red
+     *   2. !first_refresh    — cold boot, BW_FAST diff is undefined
+     *   3. s_last_red_state  — previous frame had red; BW_FAST can't clear it
+     * Otherwise use BW_FAST, with a periodic FULL_COLOR every 10 cycles to
+     * heal accumulated drift. s_last_red_state is tracked globally across all
+     * display_* entry points so the red plane stays consistent. */
     bool need_red = deps_alert || auth_err || offline
                     || claude_ses > 80 || claude_wk > 80
                     || codex_ses > 80  || codex_wk  > 80
                     || data->codex.reached;
     eink_refresh_mode_t mode;
-    if (need_red || !s_first_refresh_done) {
+    if (need_red || !s_first_refresh_done || s_last_red_state) {
         mode = EINK_REFRESH_FULL_COLOR;
-        s_last_red_state      = need_red;
         s_bw_fast_cycle_count = 0;
     } else {
         s_bw_fast_cycle_count++;
@@ -569,8 +628,8 @@ void display_render(const dashboard_data_t *data)
         } else {
             mode = EINK_REFRESH_BW_FAST;
         }
-        s_last_red_state = false;
     }
+    s_last_red_state     = need_red;
     s_first_refresh_done = true;
 
     eink_set_framebuffer(bw_buf, red_buf);
@@ -702,6 +761,7 @@ void display_show_qr(const char *ssid, const char *pop)
     eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
     eink_sleep(&s_eink);
     s_first_refresh_done = true;
+    s_last_red_state     = false;   /* S1 prompt paints no red */
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
@@ -734,6 +794,7 @@ void display_show_setup_failed(void)
     eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
     eink_sleep(&s_eink);
     s_first_refresh_done = true;
+    s_last_red_state     = true;    /* big-cross + SETUP/FAILED are red */
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
@@ -752,10 +813,11 @@ void display_show_offline(void)
     hline(2, 15, 292);
     draw_str(6, 30, "API unreachable", 0);
     eink_set_framebuffer(bw_buf, red_buf);
-    eink_refresh(&s_eink,
-                 s_first_refresh_done ? EINK_REFRESH_BW_FAST
-                                      : EINK_REFRESH_FULL_COLOR);
+    /* The offline frame paints red; BW_FAST cannot write the red plane, so
+     * always use FULL_COLOR here. */
+    eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
     eink_sleep(&s_eink);
     s_first_refresh_done = true;
+    s_last_red_state     = true;
     display_mark_frame(DISPLAY_FRAME_OFFLINE);
 }
