@@ -4,6 +4,7 @@
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 #include "storage.h"
@@ -23,9 +24,20 @@ static void enter_deep_sleep(uint8_t minutes)
     if (minutes > 60) minutes = 60;
     uint64_t us = (uint64_t)minutes * 60ULL * 1000000ULL;
     ESP_LOGI(TAG, "Deep sleep %u min", minutes);
-    esp_sleep_enable_timer_wakeup(us);
-    gpio_pullup_en(BOOT_WAKE_GPIO);
-    esp_sleep_enable_ext0_wakeup(BOOT_WAKE_GPIO, 0);
+
+    ESP_ERROR_CHECK(rtc_gpio_init(BOOT_WAKE_GPIO));
+    ESP_ERROR_CHECK(rtc_gpio_set_direction(BOOT_WAKE_GPIO,
+                                          RTC_GPIO_MODE_INPUT_ONLY));
+    ESP_ERROR_CHECK(rtc_gpio_set_direction_in_sleep(BOOT_WAKE_GPIO,
+                                                   RTC_GPIO_MODE_INPUT_ONLY));
+    ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(BOOT_WAKE_GPIO));
+    ESP_ERROR_CHECK(rtc_gpio_pullup_en(BOOT_WAKE_GPIO));
+    ESP_ERROR_CHECK(gpio_sleep_sel_dis(BOOT_WAKE_GPIO));
+
+    ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(us));
+    ESP_ERROR_CHECK(esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH,
+                                        ESP_PD_OPTION_ON));
+    ESP_ERROR_CHECK(esp_sleep_enable_ext0_wakeup(BOOT_WAKE_GPIO, 0));
     esp_deep_sleep_start();
 }
 
@@ -77,7 +89,7 @@ void app_main(void)
     esp_sleep_wakeup_cause_t wake = esp_sleep_get_wakeup_cause();
     esp_reset_reason_t reset = esp_reset_reason();
 
-    /* EXT0 wake from deep sleep fires on the first edge of GPIO0 going low.
+    /* EXT0 wake from deep sleep fires when GPIO0 is held LOW.
      * Require the button to remain held for CONFIG_DEVDASH_BOOT_LONGPRESS_MS
      * before we treat the wake as a provisioning request. A short press
      * therefore acts as a free "force refresh now" trigger. */
