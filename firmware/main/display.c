@@ -475,10 +475,8 @@ void display_render(const dashboard_data_t *data)
         ? data->claude.five_hour.used * 100 / data->claude.five_hour.limit : 0;
     int claude_wk  = (data->claude.weekly.limit > 0)
         ? data->claude.weekly.used  * 100 / data->claude.weekly.limit  : 0;
-    int codex_ses  = (data->codex.daily_limit > 0)
-        ? data->codex.daily_used    * 100 / data->codex.daily_limit    : 0;
-    int codex_wk   = (data->codex.weekly_limit > 0)
-        ? data->codex.weekly_used   * 100 / data->codex.weekly_limit   : 0;
+    int codex_ses  = data->codex.short_pct;
+    int codex_wk   = data->codex.long_pct;
 
     bool offline    = data->offline || data->stale;
     bool deps_alert = data->github.dependabot > 0;
@@ -556,7 +554,8 @@ void display_render(const dashboard_data_t *data)
      * (typically a near-solid black smear). */
     bool need_red = deps_alert || auth_err || offline
                     || claude_ses > 80 || claude_wk > 80
-                    || codex_ses > 80  || codex_wk  > 80;
+                    || codex_ses > 80  || codex_wk  > 80
+                    || data->codex.reached;
     eink_refresh_mode_t mode;
     if (need_red || !s_first_refresh_done) {
         mode = EINK_REFRESH_FULL_COLOR;

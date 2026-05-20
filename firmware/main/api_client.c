@@ -46,6 +46,20 @@ static bool json_bool(const cJSON *obj, const char *key)
     return v && cJSON_IsTrue(v);
 }
 
+static double json_double(const cJSON *obj, const char *key)
+{
+    if (!obj) return 0.0;
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
+    return (v && cJSON_IsNumber(v)) ? v->valuedouble : 0.0;
+}
+
+static int round_percent(double value)
+{
+    if (value < 0.0) return 0;
+    if (value > 100.0) return 100;
+    return (int)(value + 0.5);
+}
+
 /* Extract "HH:MM" from an ISO-8601 timestamp like "2026-05-16T14:32:00Z".
  * Falls back to copying as-is when the input is shorter / not ISO. */
 static void copy_updated_at(char *dst, size_t dst_sz, const char *src)
@@ -93,10 +107,15 @@ static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
     }
 
     cJSON *cx = cJSON_GetObjectItemCaseSensitive(root, "codex");
-    out->codex.daily_used   = json_int(cx, "dailyUsed");
-    out->codex.daily_limit  = json_int(cx, "dailyLimit");
-    out->codex.weekly_used  = json_int(cx, "weeklyUsed");
-    out->codex.weekly_limit = json_int(cx, "weeklyLimit");
+    if (cx) {
+        cJSON *short_window = cJSON_GetObjectItemCaseSensitive(cx, "short");
+        cJSON *long_window  = cJSON_GetObjectItemCaseSensitive(cx, "long");
+        cJSON *reached      = cJSON_GetObjectItemCaseSensitive(cx, "reachedLimit");
+
+        out->codex.short_pct = round_percent(json_double(short_window, "usedPercent"));
+        out->codex.long_pct  = round_percent(json_double(long_window,  "usedPercent"));
+        out->codex.reached   = reached && cJSON_IsString(reached);
+    }
 
     cJSON *ua = cJSON_GetObjectItemCaseSensitive(root, "updatedAt");
     if (ua && cJSON_IsString(ua)) {

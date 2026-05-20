@@ -7,7 +7,7 @@ A physical developer dashboard on a 2.9" black/red e-ink display, driven by an E
 │  GitHub          Claude Code    │
 │  Issues: 3       5h: 42/50      │
 │  PRs:    1       Week: 210/1000 │
-│  Alerts: 0  ███  Codex: 12/100  │
+│  Alerts: 0  ███  Codex 5h: 37%  │
 │  Updated: 14:32                 │
 └─────────────────────────────────┘
 ```
@@ -48,7 +48,7 @@ Red ink highlights alerts: Dependabot findings, usage above 80%, or auth errors.
 │  │  API server  (Fastify / TypeScript, port 3000)       │   │
 │  │  ├── GitHub service  (PAT → issues, PRs, Dependabot) │   │
 │  │  ├── Claude service  (OAuth token → rate limits)     │   │
-│  │  └── Codex service   (OpenAI usage API)              │   │
+│  │  └── Codex service   (ChatGPT-auth Codex sessions)   │   │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
           ▲  Bearer token over HTTP (LAN only)
@@ -80,7 +80,7 @@ Minimum refresh interval: 3 minutes (configurable 3–60 min).
 - Docker + Docker Compose (for the API server)
 - [ESP-IDF v5.3](https://docs.espressif.com/projects/esp-idf/en/v5.3/) or the included dev container
 - A GitHub Personal Access Token with `repo` and `security_events` scopes
-- An OpenAI API key (for Codex usage stats)
+- Codex CLI authenticated with ChatGPT on the API host
 
 ### 1. API server
 
@@ -88,7 +88,6 @@ Create a `.env` file in the repo root:
 
 ```env
 GITHUB_TOKEN=ghp_...
-OPENAI_API_KEY=sk-...
 DEVICE_TOKEN=<random 32-char secret you generate>
 MDNS_ENABLED=true
 MDNS_NAME=devdash-api
@@ -208,8 +207,11 @@ Returns current dashboard data. Requires `Authorization: Bearer <token>`.
     "authError": false
   },
   "codex": {
-    "dailyUsed": 12,
-    "dailyLimit": 100
+    "source": "chatgpt",
+    "planType": "plus",
+    "short": { "usedPercent": 37, "label": "5h", "resetsAt": 1779232450 },
+    "long": { "usedPercent": 27, "label": "7d", "resetsAt": 1779641619 },
+    "reachedLimit": null
   },
   "updatedAt": "2026-05-16T14:32:00Z"
 }
@@ -271,7 +273,7 @@ across deep-sleep wakeups but resets on power-on.
 |--------|-----|
 | GitHub | REST API v3 via PAT (`repo` + `security_events` scopes) |
 | Claude Code | Reads `~/.claude/.credentials.json` (OAuth token) for rate-limit headers — no Anthropic API key required |
-| Codex | OpenAI `/v1/organization/usage/completions` (OPENAI_API_KEY) |
+| Codex | Latest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count.rate_limits` event from ChatGPT-auth Codex CLI |
 
 The API container mounts `~/.claude` and `~/.codex` read-only from the host so no secrets need to be embedded in the image.
 

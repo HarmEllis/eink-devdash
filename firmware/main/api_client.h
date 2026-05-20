@@ -21,10 +21,9 @@ typedef struct {
 } claude_data_t;
 
 typedef struct {
-    int daily_used;
-    int daily_limit;
-    int weekly_used;
-    int weekly_limit;
+    int short_pct;
+    int long_pct;
+    bool reached;
 } codex_data_t;
 
 typedef struct {

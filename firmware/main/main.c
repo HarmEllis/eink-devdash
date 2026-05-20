@@ -57,8 +57,9 @@ void app_main(void)
             .auth_error = false,
         },
         .codex = {
-            .daily_used = 92, .daily_limit = 250,
-            .weekly_used = 410, .weekly_limit = 1500,
+            .short_pct = 37,
+            .long_pct = 27,
+            .reached = false,
         },
         .updated_at = "2026-05-18 21:35",
         .stale = false,

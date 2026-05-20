@@ -1,119 +1,161 @@
-import { readdir, readFile } from 'fs/promises'
+import { open, readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
+type CodexSource = 'chatgpt' | 'api-key'
+type CodexLimitReached = 'short' | 'long' | null
+
+type CodexWindow = {
+  usedPercent: number
+  label: string
+  resetsAt: number | null
+}
+
 type CodexUsage = {
-  dailyUsed: number
-  dailyLimit: number
-  weeklyUsed: number
-  weeklyLimit: number
+  source: CodexSource
+  planType: string | null
+  short: CodexWindow
+  long: CodexWindow
+  reachedLimit: CodexLimitReached
 }
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY
-const CODEX_DAILY_LIMIT  = parseInt(process.env.CODEX_DAILY_LIMIT  ?? '0', 10) || 0
-const CODEX_WEEKLY_LIMIT = parseInt(process.env.CODEX_WEEKLY_LIMIT ?? '0', 10) || 0
-const CODEX_DIR = join(homedir(), '.codex')
-
-async function fetchWindowFromApi(startTime: number): Promise<number | null> {
-  if (!OPENAI_API_KEY) return null
-  /* Usage endpoint returns time-bucketed data; per-bucket request counts
-   * live under `bucket.results[].num_model_requests`. We sum across every
-   * result of every bucket. The response is paginated; chase next_page
-   * until exhausted or until we hit the safety cap below. */
-  let total = 0
-  let nextPage: string | undefined = undefined
-  let safety = 0
-  do {
-    const params = new URLSearchParams({
-      start_time: String(startTime),
-      limit: '200',
-    })
-    if (nextPage) params.set('page', nextPage)
-    const url = `https://api.openai.com/v1/organization/usage/completions?${params}`
-    try {
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-      })
-      if (!res.ok) {
-        console.warn(`[codex] usage API ${res.status} for window starting ${startTime}`)
-        return null
-      }
-      const json = await res.json() as any
-      const buckets: any[] = Array.isArray(json?.data) ? json.data : []
-      for (const b of buckets) {
-        const results: any[] = Array.isArray(b?.results) ? b.results : []
-        for (const r of results) {
-          total += (r?.num_model_requests ?? 0)
-        }
-      }
-      nextPage = json?.next_page
-    } catch (err) {
-      console.warn('[codex] usage API failed', err)
-      return null
-    }
-  } while (nextPage && ++safety < 20)
-  return total
+type RateLimitWindow = {
+  used_percent?: unknown
+  resets_at?: unknown
 }
 
-async function fetchFromApi(): Promise<CodexUsage | null> {
-  const now = new Date()
-  const startOfDay = new Date(now)
-  startOfDay.setUTCHours(0, 0, 0, 0)
-  const startOfWeek = new Date(startOfDay.getTime() - 6 * 24 * 60 * 60 * 1000)
+type RateLimits = {
+  primary?: RateLimitWindow
+  secondary?: RateLimitWindow
+  plan_type?: unknown
+  rate_limit_reached_type?: unknown
+}
 
-  const [daily, weekly] = await Promise.all([
-    fetchWindowFromApi(Math.floor(startOfDay.getTime() / 1000)),
-    fetchWindowFromApi(Math.floor(startOfWeek.getTime() / 1000)),
-  ])
-  if (daily === null && weekly === null) return null
+const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions')
+const READ_CHUNK_BYTES = 64 * 1024
 
+function emptyChatGptUsage(): CodexUsage {
   return {
-    dailyUsed:   daily  ?? 0,
-    dailyLimit:  CODEX_DAILY_LIMIT,
-    weeklyUsed:  weekly ?? 0,
-    weeklyLimit: CODEX_WEEKLY_LIMIT,
+    source: 'chatgpt',
+    planType: null,
+    short: { usedPercent: 0, label: '5h', resetsAt: null },
+    long: { usedPercent: 0, label: '7d', resetsAt: null },
+    reachedLimit: null,
   }
 }
 
-async function parseFromLogs(): Promise<CodexUsage> {
-  try {
-    const files = await readdir(CODEX_DIR)
-    const today = new Date().toISOString().split('T')[0]
-    const weekStart = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)
-      .toISOString().split('T')[0]
-    let dailyCount = 0
-    let weeklyCount = 0
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
 
-    for (const file of files) {
-      if (!file.endsWith('.json') && !file.endsWith('.log')) continue
-      try {
-        const content = await readFile(join(CODEX_DIR, file), 'utf8')
-        for (const line of content.split('\n')) {
-          if (!line.includes('completion')) continue
-          if (line.includes(today)) dailyCount++
-          /* Cheap "this week" check: ISO date prefix lexicographically
-           * compares correctly within the same year. */
-          const dateMatch = line.match(/\d{4}-\d{2}-\d{2}/)
-          if (dateMatch && dateMatch[0] >= weekStart) weeklyCount++
-        }
-      } catch { /* skip unreadable files */ }
-    }
-    return {
-      dailyUsed:   dailyCount,
-      dailyLimit:  CODEX_DAILY_LIMIT,
-      weeklyUsed:  weeklyCount,
-      weeklyLimit: CODEX_WEEKLY_LIMIT,
-    }
-  } catch {
-    return {
-      dailyUsed: 0, dailyLimit: CODEX_DAILY_LIMIT,
-      weeklyUsed: 0, weeklyLimit: CODEX_WEEKLY_LIMIT,
+function windowFromRateLimit(window: RateLimitWindow | undefined, label: string): CodexWindow {
+  const usedPercent = numberOrNull(window?.used_percent) ?? 0
+  const resetsAt = numberOrNull(window?.resets_at)
+  return { usedPercent, label, resetsAt }
+}
+
+function normalizeReachedLimit(value: unknown): CodexLimitReached {
+  if (value === 'primary' || value === 'short') return 'short'
+  if (value === 'secondary' || value === 'long') return 'long'
+  return null
+}
+
+function usageFromRateLimits(rateLimits: RateLimits): CodexUsage {
+  return {
+    source: 'chatgpt',
+    planType: typeof rateLimits.plan_type === 'string' ? rateLimits.plan_type : null,
+    short: windowFromRateLimit(rateLimits.primary, '5h'),
+    long: windowFromRateLimit(rateLimits.secondary, '7d'),
+    reachedLimit: normalizeReachedLimit(rateLimits.rate_limit_reached_type),
+  }
+}
+
+async function listNewestSessionFiles(): Promise<string[]> {
+  const files: Array<{ path: string; mtimeMs: number }> = []
+
+  async function walk(dir: string, depth: number): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (depth < 3) await walk(fullPath, depth + 1)
+        continue
+      }
+      if (!entry.isFile() || !entry.name.startsWith('rollout-') || !entry.name.endsWith('.jsonl')) {
+        continue
+      }
+      const info = await stat(fullPath)
+      files.push({ path: fullPath, mtimeMs: info.mtimeMs })
     }
   }
+
+  await walk(CODEX_SESSIONS_DIR, 0)
+  return files
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .map((file) => file.path)
+}
+
+function parseRateLimitsLine(line: string): RateLimits | null {
+  try {
+    const parsed = JSON.parse(line) as any
+    const payload = parsed?.payload
+    if (payload?.type !== 'token_count' || !payload.rate_limits) return null
+    return payload.rate_limits as RateLimits
+  } catch {
+    return null
+  }
+}
+
+async function findLastRateLimits(filePath: string): Promise<RateLimits | null> {
+  const handle = await open(filePath, 'r')
+  try {
+    const info = await handle.stat()
+    let position = info.size
+    let carry = ''
+
+    while (position > 0) {
+      const readSize = Math.min(READ_CHUNK_BYTES, position)
+      position -= readSize
+
+      const buffer = Buffer.allocUnsafe(readSize)
+      const { bytesRead } = await handle.read(buffer, 0, readSize, position)
+      const text = buffer.subarray(0, bytesRead).toString('utf8')
+      const lines = `${text}${carry}`.split('\n')
+      carry = lines.shift() ?? ''
+
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim()
+        if (!line.includes('"token_count"') || !line.includes('"rate_limits"')) continue
+        const rateLimits = parseRateLimitsLine(line)
+        if (rateLimits) return rateLimits
+      }
+    }
+
+    const firstLine = carry.trim()
+    if (firstLine.includes('"token_count"') && firstLine.includes('"rate_limits"')) {
+      return parseRateLimitsLine(firstLine)
+    }
+    return null
+  } finally {
+    await handle.close()
+  }
+}
+
+async function getChatGptUsage(): Promise<CodexUsage> {
+  try {
+    for (const filePath of await listNewestSessionFiles()) {
+      const rateLimits = await findLastRateLimits(filePath)
+      if (rateLimits) return usageFromRateLimits(rateLimits)
+    }
+  } catch (err) {
+    console.warn('[codex] failed to read ChatGPT session usage', err)
+  }
+  return emptyChatGptUsage()
 }
 
 export async function getCodexUsage(): Promise<CodexUsage> {
-  const apiResult = await fetchFromApi()
-  if (apiResult) return apiResult
-  return parseFromLogs()
+  /* v1 supports the ChatGPT-auth Codex CLI path only. A future api-key adapter
+   * can auto-select when OPENAI_API_KEY is present and map spend budgets onto
+   * the same short/long wire shape. */
+  return getChatGptUsage()
 }
