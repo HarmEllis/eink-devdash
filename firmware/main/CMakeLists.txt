@@ -20,3 +20,10 @@ idf_component_register(
         eink_weact29
         espressif__qrcode
 )
+
+# Catch large automatic stack frames in this component before they hit
+# hardware. The SoftAP provisioning crash on ESP32-S3 was a 7+ KB
+# dash_config_v2_t local in the HTTP request handler — see
+# .co-develop/SOFTAP_DHCP_CONTEXT_SWITCH_CRASH_BRIEF.md. 2048 bytes is a
+# generous warn threshold; tighten if it ever fires.
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wframe-larger-than=2048)

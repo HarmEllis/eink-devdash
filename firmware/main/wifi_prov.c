@@ -8,6 +8,7 @@
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_pm.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -86,9 +87,14 @@ esp_err_t wifi_net_init(void)
 
 bool wifi_net_is_provisioned(void)
 {
-    dash_config_v2_t cfg = {0};
-    storage_load_v2(&cfg);
-    return cfg.network_count > 0 && cfg.networks[0].ssid[0] != '\0';
+    /* Heap-allocate to keep the ~7 KB cfg off the caller's stack — see the
+     * SoftAP crash brief in .co-develop/ for the cautionary tale. */
+    dash_config_v2_t *cfg = calloc(1, sizeof(*cfg));
+    if (!cfg) return false;
+    storage_load_v2(cfg);
+    bool ok = cfg->network_count > 0 && cfg->networks[0].ssid[0] != '\0';
+    free(cfg);
+    return ok;
 }
 
 /* Build the SoftAP SSID from the last two MAC octets — stable per device,
@@ -534,8 +540,16 @@ static void render_network(httpd_req_t *req, int n,
 
 static void render_portal_page(httpd_req_t *req)
 {
-    dash_config_v2_t cfg = {0};
-    storage_load_v2(&cfg);
+    /* dash_config_v2_t is ~7 KB; heap-allocate so the httpd task stack
+     * stays within budget. See .co-develop/SOFTAP_DHCP_CONTEXT_SWITCH_CRASH_BRIEF.md
+     * for the root-cause analysis. */
+    dash_config_v2_t *cfg = calloc(1, sizeof(*cfg));
+    if (!cfg) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Out of memory.");
+        return;
+    }
+    storage_load_v2(cfg);
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     CHUNK(req,
@@ -558,12 +572,12 @@ static void render_portal_page(httpd_req_t *req)
 
     for (int n = 0; n < MAX_WIFI_NETWORKS; n++) {
         const dash_wifi_profile_t *net =
-            (n < cfg.network_count) ? &cfg.networks[n] : NULL;
+            (n < cfg->network_count) ? &cfg->networks[n] : NULL;
         render_network(req, n, net);
     }
 
     char iv_buf[1024];
-    int iv = cfg.refresh_min ? cfg.refresh_min : 5;
+    int iv = cfg->refresh_min ? cfg->refresh_min : 5;
     snprintf(iv_buf, sizeof(iv_buf),
         "</section>"
         "<section class=\"block\" id=\"display-block\">"
@@ -599,6 +613,8 @@ static void render_portal_page(httpd_req_t *req)
     CHUNK(req, V4_JS);
     CHUNK(req, "</body></html>");
     CHUNK(req, NULL);
+
+    free(cfg);
 }
 
 /* The successful POST /save response: full V4 #saved page. The spinner runs
@@ -645,22 +661,26 @@ static void schedule_restart(uint32_t ms)
     esp_timer_start_once(timer, (uint64_t)ms * 1000ULL);
 }
 
+/* Caller owns both `prev` (the previous on-disk config, loaded by
+ * handler_save) and `cfg` (the rebuilt config we write back). Splitting
+ * ownership out keeps the per-request heap allocations in one place and
+ * avoids stack-copying ~7 KB inside this function. */
 static esp_err_t apply_form_to_cfg(const portal_form_t *form,
+                                   const dash_config_v2_t *prev,
                                    dash_config_v2_t *cfg)
 {
-    dash_config_v2_t prev = *cfg;
     storage_cfg_v2_defaults(cfg);
 
     /* Seed the next-id counter from the previous config so every new slot
      * minted during this save gets a distinct id. storage_next_profile_id
      * walks `cfg`, which is empty mid-rebuild, so it would otherwise hand
      * out the same id to every new entry. */
-    uint32_t next_id = storage_next_profile_id(&prev);
+    uint32_t next_id = storage_next_profile_id(prev);
 
     if (form->iv_present && form->iv >= 3 && form->iv <= 60) {
         cfg->refresh_min = (uint8_t)form->iv;
     } else {
-        cfg->refresh_min = prev.refresh_min ? prev.refresh_min : 5;
+        cfg->refresh_min = prev->refresh_min ? prev->refresh_min : 5;
     }
 
     int out_n = 0;
@@ -671,9 +691,9 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
         /* Find the matching old network by id for secret preservation. */
         const dash_wifi_profile_t *old = NULL;
         if (nf->id != 0) {
-            for (int p = 0; p < prev.network_count; p++) {
-                if (prev.networks[p].id == nf->id) {
-                    old = &prev.networks[p];
+            for (int p = 0; p < prev->network_count; p++) {
+                if (prev->networks[p].id == nf->id) {
+                    old = &prev->networks[p];
                     break;
                 }
             }
@@ -762,22 +782,25 @@ static esp_err_t handler_save(httpd_req_t *req)
     }
     body[received] = '\0';
 
-    portal_form_t form = {0};
-    parse_form_body(body, &form);
+    /* portal_form_t is ~7 KB; keep it off the httpd task stack. */
+    portal_form_t *form = calloc(1, sizeof(*form));
+    if (!form) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Out of memory.");
+        return ESP_OK;
+    }
+    parse_form_body(body, form);
     free(body);
 
-    /* Validate. If anything fails, re-render the portal page with no error
-     * banner (the inline placeholders already show what's expected) — a full
-     * inline-error pass would double the renderer size; revisit if needed. */
     /* Validate the whole form. On failure return a brief plain-text reason
      * — the V4 design's inline-error rendering would double the renderer
      * size; this keeps the caller informed without a full second pass. */
     const char *reason = NULL;
-    if (form.iv_present && (form.iv < 3 || form.iv > 60)) {
+    if (form->iv_present && (form->iv < 3 || form->iv > 60)) {
         reason = "Refresh interval must be between 3 and 60.";
     }
     for (int n = 0; n < MAX_WIFI_NETWORKS && !reason; n++) {
-        const net_form_t *nf = &form.nets[n];
+        const net_form_t *nf = &form->nets[n];
         if (!nf->enabled) continue;
         if (nf->overflow) {
             reason = "A WiFi field is longer than this device accepts.";
@@ -805,16 +828,27 @@ static esp_err_t handler_save(httpd_req_t *req)
         }
     }
     if (reason) {
+        free(form);
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_set_type(req, "text/plain; charset=utf-8");
         httpd_resp_sendstr(req, reason);
         return ESP_OK;
     }
 
-    dash_config_v2_t cfg = {0};
-    storage_load_v2(&cfg);
-    apply_form_to_cfg(&form, &cfg);
-    esp_err_t err = storage_save_v2(&cfg);
+    /* Two ~7 KB cfg copies — keep both off the httpd task stack. `prev` is
+     * loaded from NVS; `cfg` is rebuilt by apply_form_to_cfg. */
+    dash_config_v2_t *prev = calloc(1, sizeof(*prev));
+    dash_config_v2_t *cfg  = calloc(1, sizeof(*cfg));
+    if (!prev || !cfg) {
+        free(form); free(prev); free(cfg);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Out of memory.");
+        return ESP_OK;
+    }
+    storage_load_v2(prev);
+    apply_form_to_cfg(form, prev, cfg);
+    esp_err_t err = storage_save_v2(cfg);
+    free(form); free(prev); free(cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "storage_save_v2 failed: %d", err);
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -849,7 +883,11 @@ static esp_err_t start_portal_server(httpd_handle_t *server)
     config.lru_purge_enable = true;
     config.uri_match_fn     = httpd_uri_match_wildcard;
     config.max_uri_handlers = 12;
-    config.stack_size       = 8192;
+    /* Defensive margin. The request locals are heap-allocated (see
+     * render_portal_page / handler_save), so 16 KB is belt-and-suspenders
+     * for inner renderers and httpd internals, not the primary correctness
+     * fix for the SoftAP crash. */
+    config.stack_size       = 16384;
     esp_err_t err = httpd_start(server, &config);
     if (err != ESP_OK) return err;
 
@@ -871,17 +909,53 @@ static esp_err_t start_portal_server(httpd_handle_t *server)
     return ESP_OK;
 }
 
+/* PM lock held for the duration of the provisioning window. Originally added
+ * as an experiment against a suspected PM/tickless-idle race during SoftAP
+ * STA-join — that hypothesis was disproven (the lock does not change the
+ * crash, and `esp_pm_configure()` is not called in this project, so PM is
+ * effectively inert). The lock stays in place because it is the right shape
+ * if `esp_pm_configure()` is ever wired in, and removing it would only save
+ * a few bytes of code. The lock is created lazily on first call and reused
+ * across teardown/restart cycles. */
+static esp_pm_lock_handle_t s_prov_pm_lock = NULL;
+
+static void prov_pm_lock_acquire(void)
+{
+#if CONFIG_PM_ENABLE
+    if (!s_prov_pm_lock) {
+        esp_err_t err = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP,
+                                            0, "devdash_prov",
+                                            &s_prov_pm_lock);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_pm_lock_create failed: %s", esp_err_to_name(err));
+            s_prov_pm_lock = NULL;
+            return;
+        }
+    }
+    esp_pm_lock_acquire(s_prov_pm_lock);
+#endif
+}
+
+static void prov_pm_lock_release(void)
+{
+#if CONFIG_PM_ENABLE
+    if (s_prov_pm_lock) esp_pm_lock_release(s_prov_pm_lock);
+#endif
+}
+
 static esp_err_t run_provisioning_window(void)
 {
     xEventGroupClearBits(s_wifi_events, BIT_PROV_DONE);
+    prov_pm_lock_acquire();
 
     esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
-    if (!ap_netif) return ESP_FAIL;
+    if (!ap_netif) { prov_pm_lock_release(); return ESP_FAIL; }
 
     derive_ap_ssid(s_portal_ssid, sizeof(s_portal_ssid));
     if (storage_get_or_init_ap_password(s_portal_password,
                                         sizeof(s_portal_password)) != ESP_OK) {
         ESP_LOGE(TAG, "AP password load/init failed");
+        prov_pm_lock_release();
         return ESP_FAIL;
     }
 
@@ -907,8 +981,10 @@ static esp_err_t run_provisioning_window(void)
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(start_portal_server(&server));
 
-    ESP_LOGI(TAG, "Starting SoftAP HTTP provisioning portal: ssid=%s password=%s url=http://192.168.4.1",
-             s_portal_ssid, s_portal_password);
+    /* Password intentionally not logged — it lands in serial buffers and would
+     * leak the SoftAP PoP. Read it from the e-ink QR or the SETUP screen. */
+    ESP_LOGI(TAG, "Starting SoftAP HTTP provisioning portal: ssid=%s url=http://192.168.4.1",
+             s_portal_ssid);
 
     /* Wait up to the configured timeout for the user to save credentials
      * via the HTTP portal (POST /save sets BIT_PROV_DONE before the deferred
@@ -923,6 +999,7 @@ static esp_err_t run_provisioning_window(void)
     esp_wifi_stop();
     esp_wifi_set_mode(WIFI_MODE_STA);
     if (ap_netif) esp_netif_destroy_default_wifi(ap_netif);
+    prov_pm_lock_release();
 
     return (bits & BIT_PROV_DONE) ? ESP_OK : ESP_ERR_TIMEOUT;
 }
