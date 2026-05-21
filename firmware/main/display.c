@@ -462,11 +462,15 @@ static RTC_DATA_ATTR bool    s_first_refresh_done = false;
 static RTC_DATA_ATTR uint8_t s_bw_fast_cycle_count = 0;
 static RTC_DATA_ATTR bool    s_last_red_state      = false;
 static RTC_DATA_ATTR bool    s_last_content_valid  = false;
-static RTC_DATA_ATTR dashboard_data_t s_last_content_data;
 
 #define DISPLAY_META_NAMESPACE "disp_meta"
 #define DISPLAY_META_KEY       "state"
 #define DISPLAY_META_MAGIC     0xD15DA5E1u
+
+#define HEADER_STATUS_X 220
+#define HEADER_STATUS_Y 2
+#define HEADER_STATUS_W 74
+#define HEADER_STATUS_H 13
 
 typedef enum {
     DISPLAY_FRAME_UNKNOWN = 0,
@@ -565,6 +569,17 @@ static void ensure_init(void)
         ESP_ERROR_CHECK(eink_init(&s_eink));
         s_initialized = true;
     }
+}
+
+static void refresh_logical_bw_area(int lx, int ly, int w, int h)
+{
+    int phys_x = ly;
+    int phys_y = (EINK_HEIGHT - 1) - (lx + w - 1);
+    int phys_w = h;
+    int phys_h = w;
+
+    eink_set_framebuffer(bw_buf, NULL);
+    eink_refresh_bw_area(&s_eink, phys_x, phys_y, phys_w, phys_h);
 }
 
 /* ── public API ─────────────────────────────────────────────────────────── */
@@ -731,7 +746,6 @@ void display_render(const dashboard_data_t *data)
     eink_refresh(&s_eink, mode);
     eink_sleep(&s_eink);
     if (!data->offline && !data->stale) {
-        s_last_content_data = *data;
         s_last_content_valid = true;
     }
     display_mark_frame((data->offline || data->stale)
@@ -751,12 +765,17 @@ static bool display_show_compact_status(const char *status)
     }
 
     ensure_init();
-    bool need_red = draw_dashboard_frame(&s_last_content_data, status);
-    eink_set_framebuffer(bw_buf, red_buf);
-    eink_refresh(&s_eink, EINK_REFRESH_BW_FAST);
+    memset(bw_buf,  0xFF, sizeof(bw_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
+    fill_rect(HEADER_STATUS_X, HEADER_STATUS_Y,
+              HEADER_STATUS_W, HEADER_STATUS_H, 0, 0);
+    hline(HEADER_STATUS_X, 1, HEADER_STATUS_W);
+    hline(HEADER_STATUS_X, 15, HEADER_STATUS_W);
+    draw_str(290 - str_w(status), 5, status, 0);
+    refresh_logical_bw_area(HEADER_STATUS_X, HEADER_STATUS_Y,
+                            HEADER_STATUS_W, HEADER_STATUS_H);
     eink_sleep(&s_eink);
     s_first_refresh_done = true;
-    s_last_red_state = need_red;
     return true;
 }
 

@@ -40,5 +40,9 @@ void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf);
 /* Trigger a display update. */
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode);
 
+/* Trigger a BW-only update for a physical panel area. The x range is expanded
+ * to byte boundaries because SSD1680 RAM addresses pixels in 8-pixel columns. */
+void eink_refresh_bw_area(eink_handle_t *h, int x, int y, int width, int height);
+
 /* Send panel to deep sleep (call after every refresh). */
 void eink_sleep(eink_handle_t *h);

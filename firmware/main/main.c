@@ -160,12 +160,16 @@ void app_main(void)
     bool offline_shown = false;
     bool compact_status = (wake == ESP_SLEEP_WAKEUP_TIMER ||
                            wake == ESP_SLEEP_WAKEUP_EXT0);
-    display_show_connecting(compact_status);
+    if (compact_status) {
+        display_show_refreshing(true);
+    } else {
+        display_show_connecting(false);
+    }
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
         err = wifi_roam_connect(&cfg, &network_idx);
         if (err == ESP_OK) {
-            display_show_refreshing(compact_status);
+            if (!compact_status) display_show_refreshing(false);
             err = api_client_fetch_with_failover(&cfg, network_idx,
                                                  &data, &api_idx);
             wifi_net_stop();
