@@ -80,7 +80,7 @@ Minimum refresh interval: 3 minutes (configurable 3–60 min).
 - Docker + Docker Compose (for the API server)
 - [ESP-IDF v5.3](https://docs.espressif.com/projects/esp-idf/en/v5.3/) or the included dev container
 - A GitHub Personal Access Token with `repo` and `security_events` scopes
-- Codex CLI authenticated with ChatGPT on the API host
+- Codex CLI authenticated with ChatGPT in the mounted `~/.codex` directory
 
 ### 1. API server
 
@@ -208,7 +208,13 @@ server.
 Returns current dashboard data. Requires `Authorization: Bearer <token>`.
 The `github` object is omitted when `GITHUB_TOKEN` is unset or empty.
 Set `CODEX_PLAN_TYPE=team` or `CODEX_PLAN_TYPE=plus` to pin Codex usage to a
-specific ChatGPT plan when multiple accounts have local session history.
+specific ChatGPT plan when multiple accounts have local session history or
+multiple live rate-limit buckets are available. Codex live usage is read
+through `codex app-server` first; the API falls back to local session JSONL
+files when the CLI, auth, or live endpoint is unavailable. Set
+`CODEX_LIVE_USAGE=false` to disable the live probe, `CODEX_CLI_PATH` to use a
+custom CLI binary, or `CODEX_APP_SERVER_TIMEOUT_MS` to tune the app-server
+request timeout.
 
 ```json
 {
@@ -302,9 +308,11 @@ across deep-sleep wakeups but resets on power-on.
 |--------|-----|
 | GitHub | REST API v3 via PAT (`repo` + `security_events` scopes) |
 | Claude Code | Reads `~/.claude/.credentials.json` (OAuth token) for rate-limit headers — no Anthropic API key required |
-| Codex | Latest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count.rate_limits` event from ChatGPT-auth Codex CLI |
+| Codex | Live `codex app-server` `account/rateLimits/read` response, falling back to the latest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count.rate_limits` event |
 
-The API container mounts `~/.claude` and `~/.codex` read-only from the host so no secrets need to be embedded in the image.
+The API container mounts `~/.claude` read-only and `~/.codex` read-write from
+the host. Codex needs write access so the app-server can use the normal Codex
+auth and refresh flow. No secrets are embedded in the image.
 
 ---
 
