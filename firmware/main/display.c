@@ -649,8 +649,8 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
         .pct_w = 28,
     };
     static const provider_layout_t wide_provider = {
-        .title_row_h = 18,
-        .row_gap = 3,
+        .title_row_h = 15,
+        .row_gap = 1,
         .bar_row_h = 14,
         .bar_h = 12,
         .seg_w = 4,
