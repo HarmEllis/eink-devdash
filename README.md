@@ -88,6 +88,10 @@ Create a `.env` file in the repo root:
 
 ```env
 GITHUB_TOKEN=ghp_...
+CODEX_PLAN_TYPE=
+CODEX_LIVE_USAGE=true
+CODEX_CLI_PATH=
+CODEX_APP_SERVER_TIMEOUT_MS=8000
 DEVICE_TOKEN=<random 32-char secret you generate>
 MDNS_ENABLED=true
 MDNS_NAME=devdash-api

@@ -7,11 +7,11 @@ services:
       - ${HOME}/.claude:/home/node/.claude:ro
       - ${HOME}/.codex:/home/node/.codex
     environment:
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE:-}
       - CODEX_LIVE_USAGE=${CODEX_LIVE_USAGE:-true}
-      - CODEX_CLI_PATH=${CODEX_CLI_PATH}
-      - CODEX_APP_SERVER_TIMEOUT_MS=${CODEX_APP_SERVER_TIMEOUT_MS}
+      - CODEX_CLI_PATH=${CODEX_CLI_PATH:-}
+      - CODEX_APP_SERVER_TIMEOUT_MS=${CODEX_APP_SERVER_TIMEOUT_MS:-}
       - DEVICE_TOKEN=${DEVICE_TOKEN}
       - MDNS_ENABLED=${MDNS_ENABLED:-true}
       - MDNS_NAME=${MDNS_NAME:-devdash-api}
@@ -26,11 +26,11 @@ services:
       - ${HOME}/.claude:/home/node/.claude:ro
       - ${HOME}/.codex:/home/node/.codex
     environment:
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE:-}
       - CODEX_LIVE_USAGE=${CODEX_LIVE_USAGE:-true}
-      - CODEX_CLI_PATH=${CODEX_CLI_PATH}
-      - CODEX_APP_SERVER_TIMEOUT_MS=${CODEX_APP_SERVER_TIMEOUT_MS}
+      - CODEX_CLI_PATH=${CODEX_CLI_PATH:-}
+      - CODEX_APP_SERVER_TIMEOUT_MS=${CODEX_APP_SERVER_TIMEOUT_MS:-}
       - DEVICE_TOKEN=${DEVICE_TOKEN}
       - MDNS_ENABLED=${MDNS_ENABLED:-true}
       - MDNS_NAME=${MDNS_NAME:-devdash-api}
