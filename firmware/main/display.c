@@ -473,6 +473,7 @@ typedef enum {
     DISPLAY_FRAME_QR      = 3,
     DISPLAY_FRAME_OFFLINE_WIFI = 4,
     DISPLAY_FRAME_OFFLINE_SETUP_TIMEOUT = 5,
+    DISPLAY_FRAME_CONNECTING = 6,
 } display_frame_t;
 
 typedef struct {
@@ -717,6 +718,43 @@ void display_render(const dashboard_data_t *data)
     eink_refresh(&s_eink, mode);
     eink_sleep(&s_eink);
     display_mark_frame(offline ? DISPLAY_FRAME_OFFLINE_API : DISPLAY_FRAME_CONTENT);
+}
+
+void display_show_connecting(void)
+{
+    ensure_init();
+    memset(bw_buf,  0xFF, sizeof(bw_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
+
+    hline(1,   1,   294);
+    hline(1,   126, 294);
+    vline(1,   1,   126);
+    vline(294, 1,   126);
+
+    icon_box_logo(6, 4);
+    draw_str(19, 5, "DEVDASH", 0);
+    static const char *STATUS = "CONNECT";
+    draw_str(290 - str_w(STATUS), 5, STATUS, 0);
+    hline(2, 15, 292);
+
+    icon_wifi(24, 44);
+    static const char *TITLE = "Joining WiFi";
+    draw_str2x((296 - str2x_w(TITLE)) / 2, 38, TITLE, 0);
+    static const char *SUB = "Scanning saved networks";
+    draw_str((296 - str_w(SUB)) / 2, 66, SUB, 0);
+    static const char *HINT = "Please wait";
+    draw_str((296 - str_w(HINT)) / 2, 82, HINT, 0);
+
+    eink_refresh_mode_t mode =
+        (!s_first_refresh_done || s_last_red_state)
+            ? EINK_REFRESH_FULL_COLOR
+            : EINK_REFRESH_BW_FAST;
+    eink_set_framebuffer(bw_buf, red_buf);
+    eink_refresh(&s_eink, mode);
+    eink_sleep(&s_eink);
+    s_first_refresh_done = true;
+    s_last_red_state     = false;
+    display_mark_frame(DISPLAY_FRAME_CONNECTING);
 }
 
 /* QR-render callback. Paints the QR matrix at the painted-area origin given

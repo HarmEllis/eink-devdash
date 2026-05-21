@@ -158,6 +158,7 @@ void app_main(void)
      * USB-CDC alive so we can reflash) or drop to deep sleep (battery-
      * friendly default for production). Toggle via Kconfig. */
     bool offline_shown = false;
+    display_show_connecting();
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
         err = wifi_roam_connect(&cfg, &network_idx);
