@@ -25,6 +25,7 @@ static const char *TAG = "eink";
 
 static uint8_t bw_framebuf[EINK_BUF_SIZE];
 static uint8_t red_framebuf[EINK_BUF_SIZE];
+static uint8_t previous_bw_framebuf[EINK_BUF_SIZE];
 
 static void wait_busy(const eink_handle_t *h)
 {
@@ -162,6 +163,11 @@ void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf)
     if (red_buf) memcpy(red_framebuf, red_buf, EINK_BUF_SIZE);
 }
 
+void eink_set_previous_bw_framebuffer(const uint8_t *bw_buf)
+{
+    if (bw_buf) memcpy(previous_bw_framebuf, bw_buf, EINK_BUF_SIZE);
+}
+
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
 {
     if (h->asleep) {
@@ -243,13 +249,26 @@ void eink_refresh_bw_area(eink_handle_t *h, int x, int y, int width, int height)
     send_byte(h, y0 & 0xFF);
     send_byte(h, (y0 >> 8) & 0xFF);
 
+    /* In monochrome partial mode command 0x26 is the "previous" BW plane.
+       On full color refreshes the same command is the red plane. */
+    send_cmd(h, CMD_WRITE_RED_RAM);
+    for (int row = y0; row <= y1; row++) {
+        send_data(h, previous_bw_framebuf + row * stride + xb0, row_bytes);
+    }
+
+    send_cmd(h, CMD_SET_RAM_X_COUNT);
+    send_byte(h, xb0);
+    send_cmd(h, CMD_SET_RAM_Y_COUNT);
+    send_byte(h, y0 & 0xFF);
+    send_byte(h, (y0 >> 8) & 0xFF);
+
     send_cmd(h, CMD_WRITE_BW_RAM);
     for (int row = y0; row <= y1; row++) {
         send_data(h, bw_framebuf + row * stride + xb0, row_bytes);
     }
 
     send_cmd(h, CMD_DISP_UPDATE_CTRL);
-    send_byte(h, 0xFF);
+    send_byte(h, 0xFC);
     send_cmd(h, CMD_MASTER_ACTIVATE);
     wait_busy(h);
 

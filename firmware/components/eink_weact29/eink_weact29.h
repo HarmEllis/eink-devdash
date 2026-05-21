@@ -37,6 +37,11 @@ esp_err_t eink_init(eink_handle_t *h);
 /* Copy buffers into internal framebuffers (NULL = keep current). */
 void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf);
 
+/* Copy the previous black/white framebuffer used by differential partial
+ * refreshes. The SSD1680 uses command 0x26 as the previous BW plane in
+ * monochrome partial mode. */
+void eink_set_previous_bw_framebuffer(const uint8_t *bw_buf);
+
 /* Trigger a display update. */
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode);
 

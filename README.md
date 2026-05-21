@@ -66,8 +66,8 @@ Red ink highlights alerts: Dependabot findings, usage above 80%, or auth errors.
 
 | Mode | Duration | Trigger |
 |------|----------|---------|
-| BW fast (Mode 2 LUT) | ~2–4 s | Every normal cycle |
-| Full 3-color (Mode 1 LUT) | ~15–27 s | Red content changed, or every 10th BW cycle, or 24 h |
+| BW partial | panel-dependent | Header/status and dashboard diffs when both the previous and current frame are black/white-only |
+| Full 3-color (Mode 1 LUT) | ~15–27 s | Red content changed, previous frame had red, large/unsafe diffs, or after five partial refreshes |
 
 Minimum refresh interval: 3 minutes (configurable 3–60 min).
 
