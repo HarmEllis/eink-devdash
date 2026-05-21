@@ -206,6 +206,9 @@ server.
 ### `GET /dashboard`
 
 Returns current dashboard data. Requires `Authorization: Bearer <token>`.
+The `github` object is omitted when `GITHUB_TOKEN` is unset or empty.
+Set `CODEX_PLAN_TYPE=team` or `CODEX_PLAN_TYPE=plus` to pin Codex usage to a
+specific ChatGPT plan when multiple accounts have local session history.
 
 ```json
 {
@@ -224,8 +227,18 @@ Returns current dashboard data. Requires `Authorization: Bearer <token>`.
   "codex": {
     "source": "chatgpt",
     "planType": "plus",
-    "short": { "usedPercent": 37, "label": "5h", "resetsAt": 1779232450 },
-    "long": { "usedPercent": 27, "label": "7d", "resetsAt": 1779641619 },
+    "short": {
+      "usedPercent": 37,
+      "label": "5h",
+      "resetsAt": 1779232450,
+      "resetInSeconds": 1823
+    },
+    "long": {
+      "usedPercent": 27,
+      "label": "7d",
+      "resetsAt": 1779641619,
+      "resetInSeconds": 302400
+    },
     "reachedLimit": null
   },
   "updatedAt": "2026-05-16T14:32:00Z",

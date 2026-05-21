@@ -25,13 +25,15 @@ export async function dashboardRoute(app: FastifyInstance) {
       getCodexUsage(),
     ])
 
-    return reply.send({
+    const body = {
       schemaVersion: 1,
-      github,
+      ...(github ? { github } : {}),
       claude,
       codex,
       updatedAt: now.toISOString(),
       updatedAtLocal: formatLocalUpdatedAt(now),
-    })
+    }
+
+    return reply.send(body)
   })
 }

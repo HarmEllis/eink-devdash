@@ -8,6 +8,7 @@ services:
       - ${HOME}/.codex:/home/node/.codex:ro
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE}
       - DEVICE_TOKEN=${DEVICE_TOKEN}
       - MDNS_ENABLED=${MDNS_ENABLED:-true}
       - MDNS_NAME=${MDNS_NAME:-devdash-api}
@@ -23,6 +24,7 @@ services:
       - ${HOME}/.codex:/home/node/.codex:ro
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE}
       - DEVICE_TOKEN=${DEVICE_TOKEN}
       - MDNS_ENABLED=${MDNS_ENABLED:-true}
       - MDNS_NAME=${MDNS_NAME:-devdash-api}

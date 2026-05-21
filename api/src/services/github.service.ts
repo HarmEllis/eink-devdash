@@ -50,8 +50,8 @@ async function fetchFresh(): Promise<GitHubStats> {
   return { issues, prs, dependabot, authError: false }
 }
 
-export async function getGitHubStats(): Promise<GitHubStats> {
-  if (!GITHUB_TOKEN) return { issues: 0, prs: 0, dependabot: 0, authError: true }
+export async function getGitHubStats(): Promise<GitHubStats | null> {
+  if (!GITHUB_TOKEN) return null
   if (cache && Date.now() - cache.ts < CACHE_TTL_MS) return cache.data
 
   try {

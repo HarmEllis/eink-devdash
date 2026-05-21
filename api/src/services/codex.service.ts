@@ -34,6 +34,7 @@ type RateLimits = {
 
 const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions')
 const READ_CHUNK_BYTES = 64 * 1024
+const CODEX_PLAN_TYPE = process.env.CODEX_PLAN_TYPE?.trim().toLowerCase() || null
 
 function emptyChatGptUsage(): CodexUsage {
   return {
@@ -62,6 +63,23 @@ function normalizeReachedLimit(value: unknown): CodexLimitReached {
   if (value === 'primary' || value === 'short') return 'short'
   if (value === 'secondary' || value === 'long') return 'long'
   return null
+}
+
+function isStaleRateLimitWindow(window: RateLimitWindow | undefined, nowSeconds: number): boolean {
+  const resetsAt = numberOrNull(window?.resets_at)
+  return resetsAt !== null && resetsAt <= nowSeconds
+}
+
+function isStaleRateLimits(rateLimits: RateLimits): boolean {
+  const nowSeconds = Date.now() / 1000
+  return isStaleRateLimitWindow(rateLimits.primary, nowSeconds)
+    && isStaleRateLimitWindow(rateLimits.secondary, nowSeconds)
+}
+
+function matchesConfiguredPlan(rateLimits: RateLimits): boolean {
+  if (!CODEX_PLAN_TYPE) return true
+  return typeof rateLimits.plan_type === 'string'
+    && rateLimits.plan_type.toLowerCase() === CODEX_PLAN_TYPE
 }
 
 function usageFromRateLimits(rateLimits: RateLimits): CodexUsage {
@@ -149,7 +167,9 @@ async function getChatGptUsage(): Promise<CodexUsage> {
   try {
     for (const filePath of await listNewestSessionFiles()) {
       const rateLimits = await findLastRateLimits(filePath)
-      if (rateLimits) return usageFromRateLimits(rateLimits)
+      if (rateLimits && matchesConfiguredPlan(rateLimits) && !isStaleRateLimits(rateLimits)) {
+        return usageFromRateLimits(rateLimits)
+      }
     }
   } catch (err) {
     console.warn('[codex] failed to read ChatGPT session usage', err)
