@@ -158,18 +158,16 @@ void app_main(void)
      * USB-CDC alive so we can reflash) or drop to deep sleep (battery-
      * friendly default for production). Toggle via Kconfig. */
     bool offline_shown = false;
-    bool compact_status = (wake == ESP_SLEEP_WAKEUP_TIMER ||
-                           wake == ESP_SLEEP_WAKEUP_EXT0);
-    if (compact_status) {
-        display_show_refreshing(true);
-    } else {
+    bool wake_refresh = (wake == ESP_SLEEP_WAKEUP_TIMER ||
+                         wake == ESP_SLEEP_WAKEUP_EXT0);
+    if (!wake_refresh) {
         display_show_connecting(false);
     }
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
         err = wifi_roam_connect(&cfg, &network_idx);
         if (err == ESP_OK) {
-            if (!compact_status) display_show_refreshing(false);
+            if (!wake_refresh) display_show_refreshing(false);
             err = api_client_fetch_with_failover(&cfg, network_idx,
                                                  &data, &api_idx);
             wifi_net_stop();

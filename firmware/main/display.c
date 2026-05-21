@@ -463,6 +463,8 @@ static RTC_DATA_ATTR uint8_t s_bw_fast_cycle_count = 0;
 static RTC_DATA_ATTR bool    s_last_red_state      = false;
 static RTC_DATA_ATTR bool    s_last_content_valid  = false;
 static RTC_DATA_ATTR bool    s_last_bw_valid       = false;
+static RTC_DATA_ATTR bool    s_last_data_valid     = false;
+static RTC_DATA_ATTR dashboard_data_t s_last_data;
 static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
 
 #define MAX_BW_FAST_REFRESHES_BEFORE_FULL 10
@@ -579,6 +581,33 @@ static void remember_current_bw_frame(void)
 {
     memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
     s_last_bw_valid = true;
+}
+
+static bool dashboard_data_stable_equal(const dashboard_data_t *a,
+                                        const dashboard_data_t *b)
+{
+    return a->schema_version == b->schema_version &&
+           a->github_present == b->github_present &&
+           a->github.issues == b->github.issues &&
+           a->github.prs == b->github.prs &&
+           a->github.dependabot == b->github.dependabot &&
+           a->github.auth_error == b->github.auth_error &&
+           a->claude.five_hour.used == b->claude.five_hour.used &&
+           a->claude.five_hour.limit == b->claude.five_hour.limit &&
+           a->claude.weekly.used == b->claude.weekly.used &&
+           a->claude.weekly.limit == b->claude.weekly.limit &&
+           a->claude.auth_error == b->claude.auth_error &&
+           a->codex.short_pct == b->codex.short_pct &&
+           a->codex.long_pct == b->codex.long_pct &&
+           a->codex.reached == b->codex.reached &&
+           a->stale == b->stale &&
+           a->offline == b->offline;
+}
+
+static bool dashboard_data_volatile_only_changed(const dashboard_data_t *data)
+{
+    return s_last_data_valid &&
+           dashboard_data_stable_equal(&s_last_data, data);
 }
 
 /* ── public API ─────────────────────────────────────────────────────────── */
@@ -716,11 +745,17 @@ void display_render(const dashboard_data_t *data)
 {
     ensure_init();
     bool need_red = draw_dashboard_frame(data, NULL);
+    bool displayed_frame_matches_buffer = true;
 
     if (s_last_bw_valid && !need_red && !s_last_red_state &&
         memcmp(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf)) == 0) {
         ESP_LOGI(TAG, "Dashboard unchanged; skipping refresh");
         eink_sleep(&s_eink);
+    } else if (s_last_bw_valid &&
+               dashboard_data_volatile_only_changed(data)) {
+        ESP_LOGI(TAG, "Dashboard metrics unchanged; skipping volatile-only refresh");
+        eink_sleep(&s_eink);
+        displayed_frame_matches_buffer = false;
     } else {
         eink_refresh_mode_t mode;
         if (need_red || !s_first_refresh_done ||
@@ -744,11 +779,15 @@ void display_render(const dashboard_data_t *data)
                  mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
     }
 
-    remember_current_bw_frame();
+    if (displayed_frame_matches_buffer) {
+        remember_current_bw_frame();
+    }
     s_last_red_state     = need_red;
     s_first_refresh_done = true;
     if (!data->offline && !data->stale) {
         s_last_content_valid = true;
+        memcpy(&s_last_data, data, sizeof(s_last_data));
+        s_last_data_valid = true;
     }
     display_mark_frame((data->offline || data->stale)
                        ? DISPLAY_FRAME_OFFLINE_API

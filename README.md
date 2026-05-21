@@ -66,8 +66,10 @@ Red ink highlights alerts: Dependabot findings, usage above 80%, or auth errors.
 
 | Mode | Duration | Trigger |
 |------|----------|---------|
-| BW partial | panel-dependent | Header/status and dashboard diffs when both the previous and current frame are black/white-only |
-| Full 3-color (Mode 1 LUT) | ~15–27 s | Red content changed, previous frame had red, large/unsafe diffs, or after five partial refreshes |
+| BW fast monochrome | ~2-4 s | Dashboard metrics changed while both the previous and current frame are black/white-only |
+| Full 3-color (Mode 1 LUT) | ~15-27 s | Red content changed, previous frame had red, first render, controller wake, or after ten fast monochrome refreshes |
+
+Timestamp and reset-countdown changes by themselves do not repaint the panel.
 
 Minimum refresh interval: 3 minutes (configurable 3–60 min).
 
