@@ -25,7 +25,6 @@ static const char *TAG = "eink";
 
 static uint8_t bw_framebuf[EINK_BUF_SIZE];
 static uint8_t red_framebuf[EINK_BUF_SIZE];
-static uint8_t previous_bw_framebuf[EINK_BUF_SIZE];
 
 static void wait_busy(const eink_handle_t *h)
 {
@@ -163,11 +162,6 @@ void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf)
     if (red_buf) memcpy(red_framebuf, red_buf, EINK_BUF_SIZE);
 }
 
-void eink_set_previous_bw_framebuffer(const uint8_t *bw_buf)
-{
-    if (bw_buf) memcpy(previous_bw_framebuf, bw_buf, EINK_BUF_SIZE);
-}
-
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
 {
     if (h->asleep) {
@@ -209,71 +203,6 @@ void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
 
     ESP_LOGI(TAG, "Refresh done (mode=%s)",
              mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
-}
-
-void eink_refresh_bw_area(eink_handle_t *h, int x, int y, int width, int height)
-{
-    if (width <= 0 || height <= 0) return;
-
-    int x0 = x < 0 ? 0 : x;
-    int y0 = y < 0 ? 0 : y;
-    int x1 = x + width - 1;
-    int y1 = y + height - 1;
-    if (x1 >= EINK_WIDTH) x1 = EINK_WIDTH - 1;
-    if (y1 >= EINK_HEIGHT) y1 = EINK_HEIGHT - 1;
-    if (x0 > x1 || y0 > y1) return;
-
-    int xb0 = x0 / 8;
-    int xb1 = x1 / 8;
-    int row_bytes = xb1 - xb0 + 1;
-    int stride = EINK_WIDTH / 8;
-
-    if (h->asleep) {
-        reset_controller(h);
-        ESP_LOGI(TAG, "SSD1680 woke from deep sleep");
-    }
-
-    send_cmd(h, CMD_SET_RAM_X_ADDR);
-    send_byte(h, xb0);
-    send_byte(h, xb1);
-
-    send_cmd(h, CMD_SET_RAM_Y_ADDR);
-    send_byte(h, y0 & 0xFF);
-    send_byte(h, (y0 >> 8) & 0xFF);
-    send_byte(h, y1 & 0xFF);
-    send_byte(h, (y1 >> 8) & 0xFF);
-
-    send_cmd(h, CMD_SET_RAM_X_COUNT);
-    send_byte(h, xb0);
-    send_cmd(h, CMD_SET_RAM_Y_COUNT);
-    send_byte(h, y0 & 0xFF);
-    send_byte(h, (y0 >> 8) & 0xFF);
-
-    /* In monochrome partial mode command 0x26 is the "previous" BW plane.
-       On full color refreshes the same command is the red plane. */
-    send_cmd(h, CMD_WRITE_RED_RAM);
-    for (int row = y0; row <= y1; row++) {
-        send_data(h, previous_bw_framebuf + row * stride + xb0, row_bytes);
-    }
-
-    send_cmd(h, CMD_SET_RAM_X_COUNT);
-    send_byte(h, xb0);
-    send_cmd(h, CMD_SET_RAM_Y_COUNT);
-    send_byte(h, y0 & 0xFF);
-    send_byte(h, (y0 >> 8) & 0xFF);
-
-    send_cmd(h, CMD_WRITE_BW_RAM);
-    for (int row = y0; row <= y1; row++) {
-        send_data(h, bw_framebuf + row * stride + xb0, row_bytes);
-    }
-
-    send_cmd(h, CMD_DISP_UPDATE_CTRL);
-    send_byte(h, 0xFC);
-    send_cmd(h, CMD_MASTER_ACTIVATE);
-    wait_busy(h);
-
-    ESP_LOGI(TAG, "Partial BW refresh done (x=%d..%d y=%d..%d)",
-             xb0 * 8, xb1 * 8 + 7, y0, y1);
 }
 
 void eink_sleep(eink_handle_t *h)

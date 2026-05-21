@@ -463,12 +463,9 @@ static RTC_DATA_ATTR uint8_t s_bw_fast_cycle_count = 0;
 static RTC_DATA_ATTR bool    s_last_red_state      = false;
 static RTC_DATA_ATTR bool    s_last_content_valid  = false;
 static RTC_DATA_ATTR bool    s_last_bw_valid       = false;
-static RTC_DATA_ATTR uint8_t s_status_partial_count = 0;
-static RTC_DATA_ATTR uint8_t s_content_partial_count = 0;
 static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
 
-#define MAX_PARTIAL_REFRESHES_BEFORE_FULL 5
-#define PARTIAL_AREA_FULL_THRESHOLD ((EINK_WIDTH * EINK_HEIGHT * 3) / 4)
+#define MAX_BW_FAST_REFRESHES_BEFORE_FULL 10
 
 #define DISPLAY_META_NAMESPACE "disp_meta"
 #define DISPLAY_META_KEY       "state"
@@ -578,61 +575,10 @@ static void ensure_init(void)
     }
 }
 
-static void refresh_logical_bw_area(int lx, int ly, int w, int h)
-{
-    int phys_x = ly;
-    int phys_y = (EINK_HEIGHT - 1) - (lx + w - 1);
-    int phys_w = h;
-    int phys_h = w;
-
-    eink_set_framebuffer(bw_buf, NULL);
-    eink_refresh_bw_area(&s_eink, phys_x, phys_y, phys_w, phys_h);
-}
-
-typedef struct {
-    int x;
-    int y;
-    int w;
-    int h;
-} physical_area_t;
-
 static void remember_current_bw_frame(void)
 {
     memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
     s_last_bw_valid = true;
-}
-
-static bool find_bw_diff_area(const uint8_t *previous,
-                              const uint8_t *current,
-                              physical_area_t *area)
-{
-    int min_x = EINK_WIDTH;
-    int min_y = EINK_HEIGHT;
-    int max_x = -1;
-    int max_y = -1;
-    int stride = EINK_WIDTH / 8;
-
-    for (int y = 0; y < EINK_HEIGHT; y++) {
-        for (int xb = 0; xb < stride; xb++) {
-            uint8_t diff = previous[y * stride + xb] ^ current[y * stride + xb];
-            if (!diff) continue;
-            int byte_x0 = xb * 8;
-            if (byte_x0 < min_x) min_x = byte_x0;
-            if (byte_x0 + 7 > max_x) max_x = byte_x0 + 7;
-            if (y < min_y) min_y = y;
-            if (y > max_y) max_y = y;
-        }
-    }
-
-    if (max_x < 0) {
-        return false;
-    }
-
-    area->x = min_x;
-    area->y = min_y;
-    area->w = max_x - min_x + 1;
-    area->h = max_y - min_y + 1;
-    return true;
 }
 
 /* ── public API ─────────────────────────────────────────────────────────── */
@@ -771,38 +717,31 @@ void display_render(const dashboard_data_t *data)
     ensure_init();
     bool need_red = draw_dashboard_frame(data, NULL);
 
-    display_meta_t meta = {0};
-    bool previous_frame_is_content =
-        display_meta_load(&meta) && meta.frame == DISPLAY_FRAME_CONTENT;
-    physical_area_t diff_area = {0};
-    bool has_diff = find_bw_diff_area(s_last_bw_buf, bw_buf, &diff_area);
-    bool can_partial = !need_red && !s_last_red_state && s_last_bw_valid &&
-                       previous_frame_is_content && has_diff &&
-                       s_content_partial_count < MAX_PARTIAL_REFRESHES_BEFORE_FULL;
-    int diff_pixels = diff_area.w * diff_area.h;
-    if (!has_diff && s_last_bw_valid && !need_red && !s_last_red_state) {
+    if (s_last_bw_valid && !need_red && !s_last_red_state &&
+        memcmp(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf)) == 0) {
         ESP_LOGI(TAG, "Dashboard unchanged; skipping refresh");
         eink_sleep(&s_eink);
-    } else if (can_partial && diff_pixels <= PARTIAL_AREA_FULL_THRESHOLD) {
-        eink_set_previous_bw_framebuffer(s_last_bw_buf);
-        eink_set_framebuffer(bw_buf, NULL);
-        eink_refresh_bw_area(&s_eink, diff_area.x, diff_area.y,
-                             diff_area.w, diff_area.h);
-        eink_sleep(&s_eink);
-        s_content_partial_count++;
-        s_bw_fast_cycle_count = s_content_partial_count;
-        ESP_LOGI(TAG, "Dashboard partial refresh %u/%u (area=%dx%d)",
-                 s_content_partial_count,
-                 MAX_PARTIAL_REFRESHES_BEFORE_FULL,
-                 diff_area.w, diff_area.h);
     } else {
+        eink_refresh_mode_t mode;
+        if (need_red || !s_first_refresh_done ||
+            s_last_red_state || s_eink.asleep) {
+            mode = EINK_REFRESH_FULL_COLOR;
+            s_bw_fast_cycle_count = 0;
+        } else {
+            s_bw_fast_cycle_count++;
+            if (s_bw_fast_cycle_count >= MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
+                mode = EINK_REFRESH_FULL_COLOR;
+                s_bw_fast_cycle_count = 0;
+            } else {
+                mode = EINK_REFRESH_BW_FAST;
+            }
+        }
+
         eink_set_framebuffer(bw_buf, red_buf);
-        eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
+        eink_refresh(&s_eink, mode);
         eink_sleep(&s_eink);
-        s_content_partial_count = 0;
-        s_status_partial_count = 0;
-        s_bw_fast_cycle_count = 0;
-        ESP_LOGI(TAG, "Dashboard full refresh");
+        ESP_LOGI(TAG, "Dashboard refresh (mode=%s)",
+                 mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
     }
 
     remember_current_bw_frame();
@@ -819,8 +758,7 @@ void display_render(const dashboard_data_t *data)
 static bool display_show_compact_status(const char *status)
 {
     if (!s_last_content_valid || !s_first_refresh_done ||
-        !s_last_bw_valid || s_last_red_state ||
-        s_status_partial_count >= MAX_PARTIAL_REFRESHES_BEFORE_FULL) {
+        !s_last_bw_valid || s_last_red_state) {
         return false;
     }
 
@@ -837,15 +775,21 @@ static bool display_show_compact_status(const char *status)
     hline(HEADER_STATUS_X, 1, HEADER_STATUS_W);
     hline(HEADER_STATUS_X, 15, HEADER_STATUS_W);
     draw_str(290 - str_w(status), 5, status, 0);
-    eink_set_previous_bw_framebuffer(s_last_bw_buf);
-    refresh_logical_bw_area(HEADER_STATUS_X, HEADER_STATUS_Y,
-                            HEADER_STATUS_W, HEADER_STATUS_H);
+    eink_refresh_mode_t mode = s_eink.asleep
+        ? EINK_REFRESH_FULL_COLOR
+        : EINK_REFRESH_BW_FAST;
+    eink_set_framebuffer(bw_buf, red_buf);
+    eink_refresh(&s_eink, mode);
     eink_sleep(&s_eink);
     remember_current_bw_frame();
-    s_status_partial_count++;
     s_first_refresh_done = true;
-    ESP_LOGI(TAG, "Status partial refresh %u/%u",
-             s_status_partial_count, MAX_PARTIAL_REFRESHES_BEFORE_FULL);
+    if (mode == EINK_REFRESH_BW_FAST) {
+        s_bw_fast_cycle_count++;
+    } else {
+        s_bw_fast_cycle_count = 0;
+    }
+    ESP_LOGI(TAG, "Status refresh (mode=%s)",
+             mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
     return true;
 }
 
@@ -879,8 +823,6 @@ static void display_show_wait_page(const char *header_status,
     remember_current_bw_frame();
     s_first_refresh_done = true;
     s_last_red_state     = false;
-    s_status_partial_count = 0;
-    s_content_partial_count = 0;
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
 }
@@ -1026,8 +968,6 @@ void display_show_qr(const char *ssid, const char *pop)
     remember_current_bw_frame();
     s_first_refresh_done = true;
     s_last_red_state     = false;   /* S1 prompt paints no red */
-    s_status_partial_count = 0;
-    s_content_partial_count = 0;
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
 }
@@ -1063,8 +1003,6 @@ void display_show_setup_failed(void)
     remember_current_bw_frame();
     s_first_refresh_done = true;
     s_last_red_state     = true;    /* big-cross + SETUP/FAILED are red */
-    s_status_partial_count = 0;
-    s_content_partial_count = 0;
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
 }
@@ -1092,8 +1030,6 @@ void display_show_offline(display_offline_reason_t reason)
     remember_current_bw_frame();
     s_first_refresh_done = true;
     s_last_red_state     = true;
-    s_status_partial_count = 0;
-    s_content_partial_count = 0;
     s_bw_fast_cycle_count = 0;
     display_mark_frame(frame);
 }
