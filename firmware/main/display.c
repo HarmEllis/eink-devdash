@@ -461,6 +461,8 @@ static bool          s_initialized        = false;
 static RTC_DATA_ATTR bool    s_first_refresh_done = false;
 static RTC_DATA_ATTR uint8_t s_bw_fast_cycle_count = 0;
 static RTC_DATA_ATTR bool    s_last_red_state      = false;
+static RTC_DATA_ATTR bool    s_last_content_valid  = false;
+static RTC_DATA_ATTR dashboard_data_t s_last_content_data;
 
 #define DISPLAY_META_NAMESPACE "disp_meta"
 #define DISPLAY_META_KEY       "state"
@@ -567,9 +569,9 @@ static void ensure_init(void)
 
 /* ── public API ─────────────────────────────────────────────────────────── */
 
-void display_render(const dashboard_data_t *data)
+static bool draw_dashboard_frame(const dashboard_data_t *data,
+                                 const char *header_status)
 {
-    ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));   /* all white */
     memset(red_buf, 0x00, sizeof(red_buf));  /* no red    */
 
@@ -599,20 +601,24 @@ void display_render(const dashboard_data_t *data)
     } else {
         icon_box_logo(6, 4);
         draw_str(19, 5, "DEVDASH", 0);
-        /* Right-anchored cluster: [sync] [HH:MM] [+5m], all 5×7 font.
-         * Coordinates pinned: sync 228..235, clock 240..269, +5m 272..289. */
-        static const char *NEXT = "+5m";
-        const int next_w  = str_w(NEXT);
-        const int clock_w = str_w(data->updated_at);
-        const int text_gap = 2;
-        const int icon_gap = 4;
-        const int sync_w   = 8;
-        const int x_next   = 290 - next_w;
-        const int x_clock  = x_next - text_gap - clock_w;
-        const int x_sync   = x_clock - icon_gap - sync_w;
-        icon_sync(x_sync, 4);
-        draw_str(x_clock, 5, data->updated_at, 0);
-        draw_str(x_next,  5, NEXT, 0);
+        if (header_status && header_status[0]) {
+            draw_str(290 - str_w(header_status), 5, header_status, 0);
+        } else {
+            /* Right-anchored cluster: [sync] [HH:MM] [+5m], all 5×7 font.
+             * Coordinates pinned: sync 228..235, clock 240..269, +5m 272..289. */
+            static const char *NEXT = "+5m";
+            const int next_w  = str_w(NEXT);
+            const int clock_w = str_w(data->updated_at);
+            const int text_gap = 2;
+            const int icon_gap = 4;
+            const int sync_w   = 8;
+            const int x_next   = 290 - next_w;
+            const int x_clock  = x_next - text_gap - clock_w;
+            const int x_sync   = x_clock - icon_gap - sync_w;
+            icon_sync(x_sync, 4);
+            draw_str(x_clock, 5, data->updated_at, 0);
+            draw_str(x_next,  5, NEXT, 0);
+        }
     }
 
     /* Header bottom hairline at y=15 */
@@ -686,6 +692,17 @@ void display_render(const dashboard_data_t *data)
                       data->codex.long_reset_in_seconds);
     }
 
+    return deps_alert || auth_err || offline
+           || claude_ses > 80 || claude_wk > 80
+           || codex_ses > 80  || codex_wk  > 80
+           || data->codex.reached;
+}
+
+void display_render(const dashboard_data_t *data)
+{
+    ensure_init();
+    bool need_red = draw_dashboard_frame(data, NULL);
+
     /* ── Refresh mode ──
      * FULL_COLOR is forced on three conditions:
      *   1. need_red          — this frame paints red
@@ -694,10 +711,6 @@ void display_render(const dashboard_data_t *data)
      * Otherwise use BW_FAST, with a periodic FULL_COLOR every 10 cycles to
      * heal accumulated drift. s_last_red_state is tracked globally across all
      * display_* entry points so the red plane stays consistent. */
-    bool need_red = deps_alert || auth_err || offline
-                    || claude_ses > 80 || claude_wk > 80
-                    || codex_ses > 80  || codex_wk  > 80
-                    || data->codex.reached;
     eink_refresh_mode_t mode;
     if (need_red || !s_first_refresh_done || s_last_red_state) {
         mode = EINK_REFRESH_FULL_COLOR;
@@ -717,10 +730,39 @@ void display_render(const dashboard_data_t *data)
     eink_set_framebuffer(bw_buf, red_buf);
     eink_refresh(&s_eink, mode);
     eink_sleep(&s_eink);
-    display_mark_frame(offline ? DISPLAY_FRAME_OFFLINE_API : DISPLAY_FRAME_CONTENT);
+    if (!data->offline && !data->stale) {
+        s_last_content_data = *data;
+        s_last_content_valid = true;
+    }
+    display_mark_frame((data->offline || data->stale)
+                       ? DISPLAY_FRAME_OFFLINE_API
+                       : DISPLAY_FRAME_CONTENT);
 }
 
-void display_show_connecting(void)
+static bool display_show_compact_status(const char *status)
+{
+    if (!s_last_content_valid || !s_first_refresh_done) {
+        return false;
+    }
+
+    display_meta_t meta = {0};
+    if (!display_meta_load(&meta) || meta.frame != DISPLAY_FRAME_CONTENT) {
+        return false;
+    }
+
+    ensure_init();
+    bool need_red = draw_dashboard_frame(&s_last_content_data, status);
+    eink_set_framebuffer(bw_buf, red_buf);
+    eink_refresh(&s_eink, EINK_REFRESH_BW_FAST);
+    eink_sleep(&s_eink);
+    s_first_refresh_done = true;
+    s_last_red_state = need_red;
+    return true;
+}
+
+static void display_show_wait_page(const char *header_status,
+                                   const char *title,
+                                   const char *sub)
 {
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
@@ -733,15 +775,12 @@ void display_show_connecting(void)
 
     icon_box_logo(6, 4);
     draw_str(19, 5, "DEVDASH", 0);
-    static const char *STATUS = "CONNECT";
-    draw_str(290 - str_w(STATUS), 5, STATUS, 0);
+    draw_str(290 - str_w(header_status), 5, header_status, 0);
     hline(2, 15, 292);
 
     icon_wifi(24, 44);
-    static const char *TITLE = "Joining WiFi";
-    draw_str2x((296 - str2x_w(TITLE)) / 2, 38, TITLE, 0);
-    static const char *SUB = "Scanning saved networks";
-    draw_str((296 - str_w(SUB)) / 2, 66, SUB, 0);
+    draw_str2x((296 - str2x_w(title)) / 2, 38, title, 0);
+    draw_str((296 - str_w(sub)) / 2, 66, sub, 0);
     static const char *HINT = "Please wait";
     draw_str((296 - str_w(HINT)) / 2, 82, HINT, 0);
 
@@ -755,6 +794,22 @@ void display_show_connecting(void)
     s_first_refresh_done = true;
     s_last_red_state     = false;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
+}
+
+void display_show_connecting(bool compact)
+{
+    if (compact && display_show_compact_status("connecting")) {
+        return;
+    }
+    display_show_wait_page("CONNECT", "Joining WiFi", "Scanning saved networks");
+}
+
+void display_show_refreshing(bool compact)
+{
+    if (compact && display_show_compact_status("refreshing")) {
+        return;
+    }
+    display_show_wait_page("REFRESH", "Refreshing", "Fetching dashboard data");
 }
 
 /* QR-render callback. Paints the QR matrix at the painted-area origin given
