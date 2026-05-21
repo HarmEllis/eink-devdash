@@ -469,8 +469,10 @@ static RTC_DATA_ATTR bool    s_last_red_state      = false;
 typedef enum {
     DISPLAY_FRAME_UNKNOWN = 0,
     DISPLAY_FRAME_CONTENT = 1,
-    DISPLAY_FRAME_OFFLINE = 2,
+    DISPLAY_FRAME_OFFLINE_API = 2,
     DISPLAY_FRAME_QR      = 3,
+    DISPLAY_FRAME_OFFLINE_WIFI = 4,
+    DISPLAY_FRAME_OFFLINE_SETUP_TIMEOUT = 5,
 } display_frame_t;
 
 typedef struct {
@@ -517,7 +519,7 @@ static void display_mark_frame(display_frame_t frame)
     }
 }
 
-static bool display_should_skip_offline_refresh(void)
+static bool display_should_skip_offline_refresh(display_frame_t frame)
 {
     esp_reset_reason_t reset = esp_reset_reason();
     if (reset == ESP_RST_POWERON || reset == ESP_RST_BROWNOUT) {
@@ -525,7 +527,33 @@ static bool display_should_skip_offline_refresh(void)
     }
 
     display_meta_t meta = {0};
-    return display_meta_load(&meta) && meta.frame == DISPLAY_FRAME_OFFLINE;
+    return display_meta_load(&meta) && meta.frame == frame;
+}
+
+static display_frame_t offline_frame_for_reason(display_offline_reason_t reason)
+{
+    switch (reason) {
+    case DISPLAY_OFFLINE_REASON_WIFI:
+        return DISPLAY_FRAME_OFFLINE_WIFI;
+    case DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT:
+        return DISPLAY_FRAME_OFFLINE_SETUP_TIMEOUT;
+    case DISPLAY_OFFLINE_REASON_API:
+    default:
+        return DISPLAY_FRAME_OFFLINE_API;
+    }
+}
+
+static const char *offline_message_for_reason(display_offline_reason_t reason)
+{
+    switch (reason) {
+    case DISPLAY_OFFLINE_REASON_WIFI:
+        return "WiFi unreachable";
+    case DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT:
+        return "Setup timed out";
+    case DISPLAY_OFFLINE_REASON_API:
+    default:
+        return "API unreachable";
+    }
 }
 
 static void ensure_init(void)
@@ -688,7 +716,7 @@ void display_render(const dashboard_data_t *data)
     eink_set_framebuffer(bw_buf, red_buf);
     eink_refresh(&s_eink, mode);
     eink_sleep(&s_eink);
-    display_mark_frame(offline ? DISPLAY_FRAME_OFFLINE : DISPLAY_FRAME_CONTENT);
+    display_mark_frame(offline ? DISPLAY_FRAME_OFFLINE_API : DISPLAY_FRAME_CONTENT);
 }
 
 /* QR-render callback. Paints the QR matrix at the painted-area origin given
@@ -851,9 +879,10 @@ void display_show_setup_failed(void)
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
-void display_show_offline(void)
+void display_show_offline(display_offline_reason_t reason)
 {
-    if (display_should_skip_offline_refresh()) {
+    display_frame_t frame = offline_frame_for_reason(reason);
+    if (display_should_skip_offline_refresh(frame)) {
         ESP_LOGI(TAG, "Skipping offline refresh; offline frame already shown");
         return;
     }
@@ -864,7 +893,7 @@ void display_show_offline(void)
     icon_cross_sync(6, 4);
     draw_str(19, 5, "OFFLINE", 1);
     hline(2, 15, 292);
-    draw_str(6, 30, "API unreachable", 0);
+    draw_str(6, 30, offline_message_for_reason(reason), 0);
     eink_set_framebuffer(bw_buf, red_buf);
     /* The offline frame paints red; BW_FAST cannot write the red plane, so
      * always use FULL_COLOR here. */
@@ -872,5 +901,5 @@ void display_show_offline(void)
     eink_sleep(&s_eink);
     s_first_refresh_done = true;
     s_last_red_state     = true;
-    display_mark_frame(DISPLAY_FRAME_OFFLINE);
+    display_mark_frame(frame);
 }

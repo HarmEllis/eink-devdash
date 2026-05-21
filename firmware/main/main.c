@@ -129,7 +129,9 @@ void app_main(void)
             /* ESP_ERR_TIMEOUT = user did not finish in time; the portal was
              * up. Anything else (FAIL etc.) means the SoftAP itself did not
              * start, so paint the V4 S1 red error variant. */
-            if (err == ESP_ERR_TIMEOUT) display_show_offline();
+            if (err == ESP_ERR_TIMEOUT) {
+                display_show_offline(DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT);
+            }
             else                        display_show_setup_failed();
             wifi_net_stop();
             enter_deep_sleep(cfg.refresh_min);
@@ -157,12 +159,14 @@ void app_main(void)
      * friendly default for production). Toggle via Kconfig. */
     bool offline_shown = false;
     for (;;) {
+        display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
         err = wifi_roam_connect(&cfg, &network_idx);
         if (err == ESP_OK) {
             err = api_client_fetch_with_failover(&cfg, network_idx,
                                                  &data, &api_idx);
             wifi_net_stop();
             if (err == ESP_OK) break;
+            offline_reason = DISPLAY_OFFLINE_REASON_API;
             ESP_LOGE(TAG, "API fetch failed");
         } else {
             ESP_LOGW(TAG, "No configured WiFi network available");
@@ -175,7 +179,7 @@ void app_main(void)
          * without ghosting, so silently retry in the background after
          * that. display_render() on the next success will repaint. */
         if (!offline_shown) {
-            display_show_offline();
+            display_show_offline(offline_reason);
             offline_shown = true;
         }
         ESP_LOGW(TAG, "Offline, retrying in %ds",
@@ -183,7 +187,7 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S * 1000));
         continue;
 #else
-        display_show_offline();
+        display_show_offline(offline_reason);
         enter_deep_sleep(cfg.refresh_min);
         return;
 #endif

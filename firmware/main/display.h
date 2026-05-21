@@ -9,4 +9,11 @@ void display_render(const dashboard_data_t *data);
 void display_show_qr(const char *ssid, const char *pop);
 /* V4 S1 error variant — drawn when the SoftAP fails to start. */
 void display_show_setup_failed(void);
-void display_show_offline(void);
+
+typedef enum {
+    DISPLAY_OFFLINE_REASON_API,
+    DISPLAY_OFFLINE_REASON_WIFI,
+    DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT,
+} display_offline_reason_t;
+
+void display_show_offline(display_offline_reason_t reason);
