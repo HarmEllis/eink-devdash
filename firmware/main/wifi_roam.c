@@ -1,75 +1,184 @@
 #include "wifi_roam.h"
+#include "esp_event.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "wifi_roam";
 
-#define FAST_PATH_TIMEOUT_MS 3000
-#define CONNECT_TIMEOUT_MS 8000
+#define CONNECT_TIMEOUT_MS (CONFIG_DEVDASH_WIFI_CONNECT_TIMEOUT_S * 1000)
+#define DISCONNECT_RETRY_DELAY_MIN_MS 1000
+#define DISCONNECT_RETRY_DELAY_MAX_MS 8000
+#define DISCONNECT_SETTLE_MS 500
 #define MAX_SCAN_APS 32
 
 typedef struct {
     uint8_t idx;
     int8_t rssi;
+    uint8_t channel;
+    uint8_t bssid[6];
 } candidate_t;
 
-static esp_err_t wait_for_ip(int timeout_ms)
+typedef struct {
+    volatile bool associated;
+    volatile bool disconnected;
+    volatile uint8_t disconnect_reason;
+    volatile TickType_t disconnected_at;
+} connect_state_t;
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    connect_state_t *state = (connect_state_t *)arg;
+    if (!state || event_base != WIFI_EVENT) return;
+
+    if (event_id == WIFI_EVENT_STA_CONNECTED) {
+        state->associated = true;
+        state->disconnected = false;
+    } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *event =
+            (wifi_event_sta_disconnected_t *)event_data;
+        state->associated = false;
+        state->disconnected = true;
+        state->disconnect_reason = event ? event->reason : 0;
+        state->disconnected_at = xTaskGetTickCount();
+    }
+}
+
+static bool sta_has_ip(void)
 {
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
-    while (xTaskGetTickCount() < deadline) {
-        if (sta) {
-            esp_netif_ip_info_t ip = {0};
-            if (esp_netif_get_ip_info(sta, &ip) == ESP_OK && ip.ip.addr != 0) {
-                return ESP_OK;
-            }
+    if (sta) {
+        esp_netif_ip_info_t ip = {0};
+        if (esp_netif_get_ip_info(sta, &ip) == ESP_OK && ip.ip.addr != 0) {
+            return true;
         }
+    }
+    return false;
+}
+
+static TickType_t retry_delay_ticks(uint8_t retry_count)
+{
+    uint32_t delay_ms = DISCONNECT_RETRY_DELAY_MIN_MS;
+    while (retry_count-- > 0 && delay_ms < DISCONNECT_RETRY_DELAY_MAX_MS) {
+        delay_ms *= 2;
+    }
+    if (delay_ms > DISCONNECT_RETRY_DELAY_MAX_MS) {
+        delay_ms = DISCONNECT_RETRY_DELAY_MAX_MS;
+    }
+    return pdMS_TO_TICKS(delay_ms);
+}
+
+static esp_err_t wait_for_ip_with_retries(const char *ssid, int timeout_ms,
+                                          connect_state_t *state)
+{
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+    const TickType_t start = xTaskGetTickCount();
+    uint8_t retry_count = 0;
+
+    while ((xTaskGetTickCount() - start) < timeout_ticks) {
+        if (sta_has_ip()) return ESP_OK;
+
+        TickType_t now = xTaskGetTickCount();
+        if (state->disconnected &&
+            (now - state->disconnected_at) >= retry_delay_ticks(retry_count)) {
+            ESP_LOGI(TAG, "Disconnected from SSID %s (reason %u); retrying connect",
+                     ssid, state->disconnect_reason);
+            state->disconnected = false;
+            esp_err_t err = esp_wifi_connect();
+            if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) return err;
+            if (retry_count < 8) retry_count++;
+        }
+
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     return ESP_ERR_TIMEOUT;
 }
 
-static esp_err_t connect_one(const dash_wifi_profile_t *net, int timeout_ms)
+static void cancel_connect_attempt(void)
+{
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(DISCONNECT_SETTLE_MS));
+}
+
+static esp_err_t connect_one(const dash_wifi_profile_t *net, int timeout_ms,
+                             const candidate_t *candidate)
 {
     if (!net->enabled || net->ssid[0] == '\0') return ESP_ERR_INVALID_ARG;
+
+    cancel_connect_attempt();
 
     wifi_config_t wcfg = {0};
     strncpy((char *)wcfg.sta.ssid, net->ssid, sizeof(wcfg.sta.ssid) - 1);
     strncpy((char *)wcfg.sta.password, net->password,
             sizeof(wcfg.sta.password) - 1);
     wcfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    wcfg.sta.pmf_cfg.capable = true;
+    wcfg.sta.pmf_cfg.required = false;
+    if (candidate) {
+        memcpy(wcfg.sta.bssid, candidate->bssid, sizeof(wcfg.sta.bssid));
+        wcfg.sta.bssid_set = true;
+        wcfg.sta.channel = candidate->channel;
+    }
 
-    esp_wifi_disconnect();
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wcfg);
     if (err != ESP_OK) return err;
 
-    ESP_LOGI(TAG, "Connecting to configured SSID: %s", net->ssid);
-    err = esp_wifi_connect();
-    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) return err;
+    connect_state_t state = {0};
+    esp_event_handler_instance_t event_instance = NULL;
+    err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                              wifi_event_handler, &state,
+                                              &event_instance);
+    if (err != ESP_OK) return err;
 
-    err = wait_for_ip(timeout_ms);
+    if (candidate) {
+        ESP_LOGI(TAG, "Connecting to configured SSID: %s via "
+                 MACSTR " channel %u (RSSI %d)",
+                 net->ssid, MAC2STR(candidate->bssid), candidate->channel,
+                 candidate->rssi);
+    } else {
+        ESP_LOGI(TAG, "Connecting to configured SSID: %s", net->ssid);
+    }
+    err = esp_wifi_connect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) goto out;
+
+    err = wait_for_ip_with_retries(net->ssid, timeout_ms, &state);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Connect timeout for SSID: %s", net->ssid);
+        ESP_LOGW(TAG, "Connect timeout for SSID: %s after %ds",
+                 net->ssid, timeout_ms / 1000);
+    }
+
+out:
+    if (err != ESP_OK) cancel_connect_attempt();
+
+    if (event_instance) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                              event_instance);
     }
     return err;
 }
 
-static int find_scanned_rssi(const wifi_ap_record_t *aps, uint16_t ap_count,
-                             const char *ssid)
+static bool find_best_scanned_ap(const wifi_ap_record_t *aps, uint16_t ap_count,
+                                 const char *ssid, candidate_t *candidate)
 {
     bool found = false;
-    int best = -128;
     for (uint16_t i = 0; i < ap_count; i++) {
         if (strncmp((const char *)aps[i].ssid, ssid, sizeof(aps[i].ssid)) == 0) {
-            if (!found || aps[i].rssi > best) best = aps[i].rssi;
-            found = true;
+            if (!found || aps[i].rssi > candidate->rssi) {
+                candidate->rssi = aps[i].rssi;
+                candidate->channel = aps[i].primary;
+                memcpy(candidate->bssid, aps[i].bssid, sizeof(candidate->bssid));
+                found = true;
+            }
         }
     }
-    return found ? best : -128;
+    return found;
 }
 
 static void sort_candidates(candidate_t *candidates, uint8_t count)
@@ -96,16 +205,7 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg, int *network_idx_out)
     esp_err_t err = esp_wifi_start();
     if (err == ESP_ERR_WIFI_NOT_STOPPED) err = ESP_OK;
     ESP_ERROR_CHECK(err);
-
-    if (cfg->last_success_network_idx >= 0 &&
-        cfg->last_success_network_idx < (int8_t)cfg->network_count) {
-        uint8_t idx = (uint8_t)cfg->last_success_network_idx;
-        err = connect_one(&cfg->networks[idx], FAST_PATH_TIMEOUT_MS);
-        if (err == ESP_OK) {
-            if (network_idx_out) *network_idx_out = idx;
-            return ESP_OK;
-        }
-    }
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     wifi_scan_config_t scan_cfg = {
         .show_hidden = false,
@@ -115,29 +215,46 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg, int *network_idx_out)
     err = esp_wifi_scan_start(&scan_cfg, true);
     if (err != ESP_OK) return err;
 
-    wifi_ap_record_t aps[MAX_SCAN_APS] = {0};
+    wifi_ap_record_t *aps = calloc(MAX_SCAN_APS, sizeof(*aps));
+    if (!aps) return ESP_ERR_NO_MEM;
+
     uint16_t ap_count = MAX_SCAN_APS;
-    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&ap_count, aps));
+    err = esp_wifi_scan_get_ap_records(&ap_count, aps);
+    if (err != ESP_OK) {
+        free(aps);
+        return err;
+    }
 
     candidate_t candidates[MAX_WIFI_NETWORKS] = {0};
     uint8_t candidate_count = 0;
     for (uint8_t i = 0; i < cfg->network_count; i++) {
         const dash_wifi_profile_t *net = &cfg->networks[i];
         if (!net->enabled || net->ssid[0] == '\0') continue;
-        int rssi = find_scanned_rssi(aps, ap_count, net->ssid);
-        if (rssi == -128) continue;
-        candidates[candidate_count++] = (candidate_t){ .idx = i, .rssi = rssi };
+        candidate_t candidate = { .idx = i, .rssi = -128 };
+        if (!find_best_scanned_ap(aps, ap_count, net->ssid, &candidate)) continue;
+        candidates[candidate_count++] = candidate;
     }
+    free(aps);
     sort_candidates(candidates, candidate_count);
 
     for (uint8_t i = 0; i < candidate_count; i++) {
         uint8_t idx = candidates[i].idx;
-        ESP_LOGI(TAG, "Trying SSID %s (RSSI %d)",
-                 cfg->networks[idx].ssid, candidates[i].rssi);
-        err = connect_one(&cfg->networks[idx], CONNECT_TIMEOUT_MS);
+        err = connect_one(&cfg->networks[idx], CONNECT_TIMEOUT_MS,
+                          &candidates[i]);
         if (err == ESP_OK) {
             cfg->last_success_network_idx = idx;
             storage_save_v2(cfg);
+            if (network_idx_out) *network_idx_out = idx;
+            return ESP_OK;
+        }
+    }
+
+    if (candidate_count == 0 && cfg->last_success_network_idx >= 0 &&
+        cfg->last_success_network_idx < (int8_t)cfg->network_count) {
+        uint8_t idx = (uint8_t)cfg->last_success_network_idx;
+        ESP_LOGW(TAG, "No visible configured WiFi network found; trying last successful SSID");
+        err = connect_one(&cfg->networks[idx], CONNECT_TIMEOUT_MS, NULL);
+        if (err == ESP_OK) {
             if (network_idx_out) *network_idx_out = idx;
             return ESP_OK;
         }

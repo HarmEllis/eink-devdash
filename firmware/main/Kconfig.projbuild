@@ -45,6 +45,11 @@ config DEVDASH_WIFI_CONNECT_TIMEOUT_S
     int "WiFi connect timeout (seconds)"
     range 5 120
     default 30
+    help
+        Maximum time spent trying one configured WiFi network before moving
+        on to the next scanned candidate or reporting offline. The station
+        may retry the same SSID within this window when association drops
+        before DHCP completes.
 
 config DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
     bool "Retry forever when WiFi or API is unreachable"

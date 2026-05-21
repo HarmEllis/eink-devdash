@@ -3,9 +3,9 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
 # Main task stack: default 3584 B is for trivial main tasks. app_main here
-# runs Wi-Fi scan + connect + JSON parse on the main task, which puts a
-# wifi_ap_record_t[32] (~2.7 KiB) on the stack in wifi_roam_connect. 8 KiB
-# matches typical ESP-IDF wifi-station examples.
+# runs Wi-Fi setup, API fetch, JSON parse, and display rendering on the main
+# task. 8 KiB matches typical ESP-IDF wifi-station examples and leaves room
+# for the dashboard fetch/render path.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # WiFi
