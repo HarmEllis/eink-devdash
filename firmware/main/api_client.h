@@ -6,6 +6,7 @@ typedef struct {
     int issues;
     int prs;
     int dependabot;
+    bool auth_error;
 } github_data_t;
 
 typedef struct {
@@ -30,6 +31,7 @@ typedef struct {
 
 typedef struct {
     int schema_version;
+    bool github_present;
     github_data_t github;
     claude_data_t claude;
     codex_data_t codex;

@@ -49,6 +49,7 @@ void app_main(void)
      * device to other people without needing network configuration. */
     static dashboard_data_t demo = {
         .schema_version = 1,
+        .github_present = true,
         .github = { .issues = 7, .prs = 3, .dependabot = 2 },
         .claude = {
             .five_hour = { .used = 84, .limit = 200, .reset_in_seconds = 5400 },

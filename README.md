@@ -213,7 +213,8 @@ Returns current dashboard data. Requires `Authorization: Bearer <token>`.
   "github": {
     "issues": 3,
     "prs": 1,
-    "dependabot": 0
+    "dependabot": 0,
+    "authError": false
   },
   "claude": {
     "fiveHour": { "used": 42, "limit": 50, "resetInSeconds": 1823 },
@@ -227,7 +228,8 @@ Returns current dashboard data. Requires `Authorization: Bearer <token>`.
     "long": { "usedPercent": 27, "label": "7d", "resetsAt": 1779641619 },
     "reachedLimit": null
   },
-  "updatedAt": "2026-05-16T14:32:00Z"
+  "updatedAt": "2026-05-16T14:32:00Z",
+  "updatedAtLocal": "16:32"
 }
 ```
 

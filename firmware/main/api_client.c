@@ -87,9 +87,11 @@ static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
     out->schema_version = json_int(root, "schemaVersion");
 
     cJSON *gh = cJSON_GetObjectItemCaseSensitive(root, "github");
+    out->github_present = gh && cJSON_IsObject(gh);
     out->github.issues     = json_int(gh, "issues");
     out->github.prs        = json_int(gh, "prs");
     out->github.dependabot = json_int(gh, "dependabot");
+    out->github.auth_error = json_bool(gh, "authError");
 
     cJSON *cl = cJSON_GetObjectItemCaseSensitive(root, "claude");
     if (cl) {
@@ -119,7 +121,10 @@ static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
         out->codex.reached   = reached && cJSON_IsString(reached);
     }
 
-    cJSON *ua = cJSON_GetObjectItemCaseSensitive(root, "updatedAt");
+    cJSON *ua = cJSON_GetObjectItemCaseSensitive(root, "updatedAtLocal");
+    if (!ua) {
+        ua = cJSON_GetObjectItemCaseSensitive(root, "updatedAt");
+    }
     if (ua && cJSON_IsString(ua)) {
         copy_updated_at(out->updated_at, sizeof(out->updated_at), ua->valuestring);
     }

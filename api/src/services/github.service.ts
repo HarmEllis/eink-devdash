@@ -2,7 +2,12 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN
 const BASE = 'https://api.github.com'
 const CACHE_TTL_MS = 60_000
 
-type GitHubStats = { issues: number; prs: number; dependabot: number }
+type GitHubStats = {
+  issues: number
+  prs: number
+  dependabot: number
+  authError: boolean
+}
 let cache: { data: GitHubStats; ts: number } | null = null
 
 async function ghFetch(path: string) {
@@ -42,11 +47,11 @@ async function fetchFresh(): Promise<GitHubStats> {
     }))
   }
 
-  return { issues, prs, dependabot }
+  return { issues, prs, dependabot, authError: false }
 }
 
 export async function getGitHubStats(): Promise<GitHubStats> {
-  if (!GITHUB_TOKEN) return { issues: 0, prs: 0, dependabot: 0 }
+  if (!GITHUB_TOKEN) return { issues: 0, prs: 0, dependabot: 0, authError: true }
   if (cache && Date.now() - cache.ts < CACHE_TTL_MS) return cache.data
 
   try {
@@ -55,6 +60,7 @@ export async function getGitHubStats(): Promise<GitHubStats> {
     return data
   } catch (err) {
     console.error('GitHub fetch error:', err)
-    return cache?.data ?? { issues: 0, prs: 0, dependabot: 0 }
+    if (cache) return { ...cache.data, authError: true }
+    return { issues: 0, prs: 0, dependabot: 0, authError: true }
   }
 }
