@@ -54,47 +54,8 @@ static void send_byte(const eink_handle_t *h, uint8_t byte)
     send_data(h, &byte, 1);
 }
 
-esp_err_t eink_init(eink_handle_t *h)
+static void reset_controller(eink_handle_t *h)
 {
-    h->dc_pin   = EINK_PIN_DC;
-    h->rst_pin  = EINK_PIN_RST;
-    h->busy_pin = EINK_PIN_BUSY;
-
-    /* GPIO config for DC, RST, BUSY */
-    gpio_config_t out_cfg = {
-        .pin_bit_mask = (1ULL << EINK_PIN_DC) | (1ULL << EINK_PIN_RST),
-        .mode         = GPIO_MODE_OUTPUT,
-    };
-    ESP_ERROR_CHECK(gpio_config(&out_cfg));
-
-    gpio_config_t in_cfg = {
-        .pin_bit_mask = (1ULL << EINK_PIN_BUSY),
-        .mode         = GPIO_MODE_INPUT,
-    };
-    ESP_ERROR_CHECK(gpio_config(&in_cfg));
-
-    /* SPI bus — MISO unused. max_transfer_sz must be >= EINK_BUF_SIZE (4736);
-       default is 4096 which silently drops the framebuffer write. */
-    spi_bus_config_t bus = {
-        .mosi_io_num    = EINK_PIN_MOSI,
-        .miso_io_num    = -1,
-        .sclk_io_num    = EINK_PIN_SCK,
-        .quadwp_io_num  = -1,
-        .quadhd_io_num  = -1,
-        .max_transfer_sz = EINK_BUF_SIZE,
-    };
-    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO));
-
-    /* SPI device — CS managed manually via DC line convention,
-       but we still register CS pin so the driver controls it */
-    spi_device_interface_config_t dev = {
-        .clock_speed_hz = 4 * 1000 * 1000,  /* 4 MHz — SSD1680 max 20 MHz, conservative start */
-        .mode           = 0,
-        .spics_io_num   = EINK_PIN_CS,
-        .queue_size     = 1,
-    };
-    ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &dev, &h->spi));
-
     /* Hardware reset */
     gpio_set_level(h->rst_pin, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -142,6 +103,52 @@ esp_err_t eink_init(eink_handle_t *h)
     send_cmd(h, CMD_TEMP_SENSOR_CTRL);
     send_byte(h, 0x80);
 
+    h->asleep = false;
+}
+
+esp_err_t eink_init(eink_handle_t *h)
+{
+    h->dc_pin   = EINK_PIN_DC;
+    h->rst_pin  = EINK_PIN_RST;
+    h->busy_pin = EINK_PIN_BUSY;
+
+    /* GPIO config for DC, RST, BUSY */
+    gpio_config_t out_cfg = {
+        .pin_bit_mask = (1ULL << EINK_PIN_DC) | (1ULL << EINK_PIN_RST),
+        .mode         = GPIO_MODE_OUTPUT,
+    };
+    ESP_ERROR_CHECK(gpio_config(&out_cfg));
+
+    gpio_config_t in_cfg = {
+        .pin_bit_mask = (1ULL << EINK_PIN_BUSY),
+        .mode         = GPIO_MODE_INPUT,
+    };
+    ESP_ERROR_CHECK(gpio_config(&in_cfg));
+
+    /* SPI bus — MISO unused. max_transfer_sz must be >= EINK_BUF_SIZE (4736);
+       default is 4096 which silently drops the framebuffer write. */
+    spi_bus_config_t bus = {
+        .mosi_io_num    = EINK_PIN_MOSI,
+        .miso_io_num    = -1,
+        .sclk_io_num    = EINK_PIN_SCK,
+        .quadwp_io_num  = -1,
+        .quadhd_io_num  = -1,
+        .max_transfer_sz = EINK_BUF_SIZE,
+    };
+    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO));
+
+    /* SPI device — CS managed manually via DC line convention,
+       but we still register CS pin so the driver controls it */
+    spi_device_interface_config_t dev = {
+        .clock_speed_hz = 4 * 1000 * 1000,  /* 4 MHz — SSD1680 max 20 MHz, conservative start */
+        .mode           = 0,
+        .spics_io_num   = EINK_PIN_CS,
+        .queue_size     = 1,
+    };
+    ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &dev, &h->spi));
+
+    reset_controller(h);
+
     ESP_LOGI(TAG, "SSD1680 initialized (MOSI=%d SCK=%d CS=%d DC=%d RST=%d BUSY=%d)",
              EINK_PIN_MOSI, EINK_PIN_SCK, EINK_PIN_CS,
              EINK_PIN_DC, EINK_PIN_RST, EINK_PIN_BUSY);
@@ -157,6 +164,14 @@ void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf)
 
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
 {
+    if (h->asleep) {
+        reset_controller(h);
+        if (mode == EINK_REFRESH_BW_FAST) {
+            mode = EINK_REFRESH_FULL_COLOR;
+        }
+        ESP_LOGI(TAG, "SSD1680 woke from deep sleep");
+    }
+
     /* Set RAM X address window: 0 .. (WIDTH/8 - 1) */
     send_cmd(h, CMD_SET_RAM_X_ADDR);
     send_byte(h, 0x00);
@@ -194,4 +209,5 @@ void eink_sleep(eink_handle_t *h)
 {
     send_cmd(h, CMD_DEEP_SLEEP);
     send_byte(h, 0x01);
+    h->asleep = true;
 }

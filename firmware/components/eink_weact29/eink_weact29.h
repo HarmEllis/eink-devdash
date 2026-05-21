@@ -2,6 +2,7 @@
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include <stdbool.h>
 
 /* WeAct 2.9" Black/Red — SSD1680, 128×296 px */
 #define EINK_WIDTH    128
@@ -27,6 +28,7 @@ typedef struct {
     gpio_num_t dc_pin;
     gpio_num_t rst_pin;
     gpio_num_t busy_pin;
+    bool asleep;
 } eink_handle_t;
 
 /* Initializes SPI bus + device and resets the panel. */
