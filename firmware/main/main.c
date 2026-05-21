@@ -16,6 +16,8 @@
 #include <string.h>
 
 static const char *TAG = "main";
+static const char *BUILD_MARKER =
+    "diag-api-display-2026-05-21T21:25+02:00";
 #define BOOT_WAKE_GPIO GPIO_NUM_0
 
 static void enter_deep_sleep(uint8_t minutes)
@@ -43,6 +45,8 @@ static void enter_deep_sleep(uint8_t minutes)
 
 void app_main(void)
 {
+    ESP_LOGI(TAG, "Firmware marker: %s", BUILD_MARKER);
+
 #if CONFIG_DEVDASH_DEMO_MODE
     /* Demo build: render a plausible sample dashboard once and idle the
      * chip. No NVS, no WiFi, no API — purely a visual stand-in to show the
@@ -167,9 +171,12 @@ void app_main(void)
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
         err = wifi_roam_connect(&cfg, &network_idx);
         if (err == ESP_OK) {
-            if (!wake_refresh) display_show_refreshing(false);
+            ESP_LOGI(TAG, "WiFi connected; selected network index=%d", network_idx);
+            ESP_LOGI(TAG, "Fetching dashboard API");
             err = api_client_fetch_with_failover(&cfg, network_idx,
                                                  &data, &api_idx);
+            ESP_LOGI(TAG, "Dashboard API fetch result: %s api_idx=%d",
+                     esp_err_to_name(err), api_idx);
             wifi_net_stop();
             if (err == ESP_OK) break;
             offline_reason = DISPLAY_OFFLINE_REASON_API;

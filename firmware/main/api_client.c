@@ -2,12 +2,17 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
 static const char *TAG = "api_client";
 #define RESPONSE_BUF_SIZE 4096
+#define DASHBOARD_HTTP_TIMEOUT_MS 10000
+#define DASHBOARD_HTTP_ATTEMPTS 3
+#define DASHBOARD_HTTP_RETRY_DELAY_MS 750
 
 typedef struct {
     char *buf;
@@ -149,12 +154,13 @@ static esp_err_t fetch_one(const char *base_url, const char *token,
     size_t base_len = strlen(base_url);
     bool has_slash = base_len > 0 && base_url[base_len - 1] == '/';
     snprintf(url, sizeof(url), "%s%sdashboard", base_url, has_slash ? "" : "/");
+    ESP_LOGI(TAG, "Fetching dashboard endpoint: %s", url);
 
     esp_http_client_config_t hcfg = {
         .url            = url,
         .event_handler  = http_event_handler,
         .user_data      = &ctx,
-        .timeout_ms     = 6000,
+        .timeout_ms     = DASHBOARD_HTTP_TIMEOUT_MS,
     };
     esp_http_client_handle_t client = esp_http_client_init(&hcfg);
     if (!client) {
@@ -176,6 +182,9 @@ static esp_err_t fetch_one(const char *base_url, const char *token,
     if (status_out) *status_out = status;
     esp_http_client_cleanup(client);
 
+    ESP_LOGI(TAG, "Dashboard HTTP completed: err=%s status=%d bytes=%d truncated=%d",
+             esp_err_to_name(err), status, ctx.len, ctx.truncated);
+
     if (err != ESP_OK || status < 200 || status >= 300) {
         ESP_LOGW(TAG, "HTTP fetch failed: err=%s status=%d url=%s",
                  esp_err_to_name(err), status, url);
@@ -190,6 +199,9 @@ static esp_err_t fetch_one(const char *base_url, const char *token,
     }
 
     err = parse_dashboard_json(buf, out);
+    ESP_LOGI(TAG, "Dashboard JSON parse result: %s schema=%d offline=%d stale=%d",
+             esp_err_to_name(err), out->schema_version, out->offline,
+             out->stale);
     free(buf);
     return err;
 }
@@ -199,6 +211,15 @@ static bool should_fail_over(int status, esp_err_t err)
     if (err != ESP_OK) return true;
     if (status == 401 || status == 403) return false;
     if (status == 404 || status == 429 || status == 503) return true;
+    if (status >= 500 && status <= 599) return true;
+    return false;
+}
+
+static bool should_retry_same_profile(int status, esp_err_t err)
+{
+    if (err == ESP_OK) return false;
+    if (status <= 0) return true;
+    if (status == 408 || status == 429) return true;
     if (status >= 500 && status <= 599) return true;
     return false;
 }
@@ -243,8 +264,24 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
             }
 
             int status = 0;
-            last_err = fetch_one(api->api_url, api->device_token, out, &status);
+            ESP_LOGI(TAG, "Trying API profile index=%u pass=%u url=%s",
+                     idx, pass, api->api_url);
+            for (uint8_t attempt = 1; attempt <= DASHBOARD_HTTP_ATTEMPTS; attempt++) {
+                ESP_LOGI(TAG, "API profile index=%u attempt=%u/%u",
+                         idx, attempt, DASHBOARD_HTTP_ATTEMPTS);
+                last_err = fetch_one(api->api_url, api->device_token,
+                                     out, &status);
+                if (last_err == ESP_OK ||
+                    !should_retry_same_profile(status, last_err) ||
+                    attempt == DASHBOARD_HTTP_ATTEMPTS) {
+                    break;
+                }
+                ESP_LOGW(TAG, "API profile index=%u transient failure: err=%s status=%d; retrying",
+                         idx, esp_err_to_name(last_err), status);
+                vTaskDelay(pdMS_TO_TICKS(DASHBOARD_HTTP_RETRY_DELAY_MS));
+            }
             if (last_err == ESP_OK) {
+                ESP_LOGI(TAG, "API profile index=%u succeeded", idx);
                 cfg->last_success_network_idx = network_idx;
                 cfg->last_success_api_idx = idx;
                 storage_save_v2(cfg);
@@ -255,11 +292,14 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                 ESP_LOGW(TAG, "Not failing over after auth status %d", status);
                 return last_err;
             }
+            ESP_LOGW(TAG, "API profile index=%u failed: err=%s status=%d; trying failover",
+                     idx, esp_err_to_name(last_err), status);
 
             if (pass == 0) break;
         }
     }
 
     out->offline = true;
+    ESP_LOGW(TAG, "All API profiles failed; last_err=%s", esp_err_to_name(last_err));
     return last_err;
 }

@@ -477,6 +477,7 @@ static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
 #define HEADER_STATUS_Y 2
 #define HEADER_STATUS_W 74
 #define HEADER_STATUS_H 13
+#define DISPLAY_ENABLE_BW_EXPERIMENT 0
 
 typedef enum {
     DISPLAY_FRAME_UNKNOWN = 0,
@@ -583,6 +584,7 @@ static void remember_current_bw_frame(void)
     s_last_bw_valid = true;
 }
 
+#if DISPLAY_ENABLE_BW_EXPERIMENT
 static bool dashboard_data_stable_equal(const dashboard_data_t *a,
                                         const dashboard_data_t *b)
 {
@@ -603,11 +605,54 @@ static bool dashboard_data_stable_equal(const dashboard_data_t *a,
            a->stale == b->stale &&
            a->offline == b->offline;
 }
+#endif
 
+#if DISPLAY_ENABLE_BW_EXPERIMENT
 static bool dashboard_data_volatile_only_changed(const dashboard_data_t *data)
 {
     return s_last_data_valid &&
            dashboard_data_stable_equal(&s_last_data, data);
+}
+#endif
+
+static bool find_bw_diff_rect(const uint8_t *previous,
+                              const uint8_t *next,
+                              eink_rect_t *rect)
+{
+    int min_byte_x = EINK_WIDTH / 8;
+    int max_byte_x = -1;
+    int min_y = EINK_HEIGHT;
+    int max_y = -1;
+    const int row_bytes = EINK_WIDTH / 8;
+
+    for (int y = 0; y < EINK_HEIGHT; y++) {
+        const int row = y * row_bytes;
+        for (int bx = 0; bx < row_bytes; bx++) {
+            if (previous[row + bx] == next[row + bx]) {
+                continue;
+            }
+            if (bx < min_byte_x) min_byte_x = bx;
+            if (bx > max_byte_x) max_byte_x = bx;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
+        }
+    }
+
+    if (max_byte_x < 0) {
+        return false;
+    }
+
+    rect->x = (uint16_t)(min_byte_x * 8);
+    rect->y = (uint16_t)min_y;
+    rect->w = (uint16_t)((max_byte_x - min_byte_x + 1) * 8);
+    rect->h = (uint16_t)(max_y - min_y + 1);
+    /* Hardware-validation guard: several SSD/Waveshare partial paths are
+     * reliable only when the horizontal window spans the full row. Keep Y
+     * clipping, but avoid narrow X windows until the controller sequence is
+     * proven on this panel. */
+    rect->x = 0;
+    rect->w = EINK_WIDTH;
+    return true;
 }
 
 /* ── public API ─────────────────────────────────────────────────────────── */
@@ -735,10 +780,11 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
                       data->codex.long_reset_in_seconds);
     }
 
-    return deps_alert || auth_err || offline
+    bool need_red = deps_alert || auth_err || offline
            || claude_ses > 80 || claude_wk > 80
            || codex_ses > 80  || codex_wk  > 80
            || data->codex.reached;
+    return need_red;
 }
 
 void display_render(const dashboard_data_t *data)
@@ -746,37 +792,54 @@ void display_render(const dashboard_data_t *data)
     ensure_init();
     bool need_red = draw_dashboard_frame(data, NULL);
     bool displayed_frame_matches_buffer = true;
+    eink_rect_t diff_rect = {0};
+    bool has_bw_diff = s_last_bw_valid &&
+                       find_bw_diff_rect(s_last_bw_buf, bw_buf, &diff_rect);
+    display_meta_t meta = {0};
+    bool previous_frame_is_content =
+        display_meta_load(&meta) && meta.frame == DISPLAY_FRAME_CONTENT;
+
+    ESP_LOGI(TAG,
+             "Dashboard render decision: need_red=%d last_red=%d first=%d bw_valid=%d content_valid=%d frame_content=%d bw_diff=%d diff=(%u,%u %ux%u) cycle=%u",
+             need_red, s_last_red_state, s_first_refresh_done, s_last_bw_valid,
+             s_last_content_valid, previous_frame_is_content, has_bw_diff,
+             diff_rect.x, diff_rect.y, diff_rect.w, diff_rect.h,
+             s_bw_fast_cycle_count);
 
     if (s_last_bw_valid && !need_red && !s_last_red_state &&
-        memcmp(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf)) == 0) {
+        !has_bw_diff) {
         ESP_LOGI(TAG, "Dashboard unchanged; skipping refresh");
         eink_sleep(&s_eink);
-    } else if (s_last_bw_valid &&
-               dashboard_data_volatile_only_changed(data)) {
-        ESP_LOGI(TAG, "Dashboard metrics unchanged; skipping volatile-only refresh");
-        eink_sleep(&s_eink);
-        displayed_frame_matches_buffer = false;
     } else {
-        eink_refresh_mode_t mode;
-        if (need_red || !s_first_refresh_done ||
-            s_last_red_state || s_eink.asleep) {
-            mode = EINK_REFRESH_FULL_COLOR;
-            s_bw_fast_cycle_count = 0;
-        } else {
-            s_bw_fast_cycle_count++;
-            if (s_bw_fast_cycle_count >= MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
-                mode = EINK_REFRESH_FULL_COLOR;
-                s_bw_fast_cycle_count = 0;
+        bool did_partial = false;
+#if DISPLAY_ENABLE_BW_EXPERIMENT
+        bool volatile_only = dashboard_data_volatile_only_changed(data);
+        if (!need_red && !s_last_red_state && s_last_content_valid &&
+            previous_frame_is_content && has_bw_diff &&
+            s_bw_fast_cycle_count < MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
+            did_partial = eink_refresh_bw_partial(&s_eink, bw_buf, diff_rect);
+            if (did_partial) {
+                eink_sleep(&s_eink);
+                s_bw_fast_cycle_count++;
+                ESP_LOGI(TAG, "Dashboard BW partial refresh (%s, cycle=%u)",
+                         volatile_only ? "volatile-only" : "content",
+                         s_bw_fast_cycle_count);
             } else {
-                mode = EINK_REFRESH_BW_FAST;
+                ESP_LOGW(TAG, "Dashboard BW partial failed; falling back");
             }
         }
+#endif
 
-        eink_set_framebuffer(bw_buf, red_buf);
-        eink_refresh(&s_eink, mode);
-        eink_sleep(&s_eink);
-        ESP_LOGI(TAG, "Dashboard refresh (mode=%s)",
-                 mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
+        if (!did_partial) {
+            eink_refresh_mode_t mode = EINK_REFRESH_FULL_COLOR;
+            s_bw_fast_cycle_count = 0;
+
+            eink_set_framebuffer(bw_buf, red_buf);
+            eink_refresh(&s_eink, mode);
+            eink_sleep(&s_eink);
+            ESP_LOGI(TAG, "Dashboard refresh (mode=%s)",
+                     mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
+        }
     }
 
     if (displayed_frame_matches_buffer) {
@@ -814,21 +877,35 @@ static bool display_show_compact_status(const char *status)
     hline(HEADER_STATUS_X, 1, HEADER_STATUS_W);
     hline(HEADER_STATUS_X, 15, HEADER_STATUS_W);
     draw_str(290 - str_w(status), 5, status, 0);
-    eink_refresh_mode_t mode = s_eink.asleep
-        ? EINK_REFRESH_FULL_COLOR
-        : EINK_REFRESH_BW_FAST;
-    eink_set_framebuffer(bw_buf, red_buf);
-    eink_refresh(&s_eink, mode);
+    eink_rect_t diff_rect = {0};
+    bool has_bw_diff = find_bw_diff_rect(s_last_bw_buf, bw_buf, &diff_rect);
+    if (!has_bw_diff) {
+        eink_sleep(&s_eink);
+        return true;
+    }
+
+    eink_refresh_mode_t mode = EINK_REFRESH_FULL_COLOR;
+#if DISPLAY_ENABLE_BW_EXPERIMENT
+    bool did_partial = false;
+    if (s_bw_fast_cycle_count < MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
+        did_partial = eink_refresh_bw_partial(&s_eink, bw_buf, diff_rect);
+        if (did_partial) {
+            s_bw_fast_cycle_count++;
+        }
+    }
+    if (!did_partial) {
+#endif
+        eink_set_framebuffer(bw_buf, red_buf);
+        eink_refresh(&s_eink, mode);
+        s_bw_fast_cycle_count = 0;
+#if DISPLAY_ENABLE_BW_EXPERIMENT
+    }
+#endif
     eink_sleep(&s_eink);
     remember_current_bw_frame();
     s_first_refresh_done = true;
-    if (mode == EINK_REFRESH_BW_FAST) {
-        s_bw_fast_cycle_count++;
-    } else {
-        s_bw_fast_cycle_count = 0;
-    }
     ESP_LOGI(TAG, "Status refresh (mode=%s)",
-             mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
+             mode == EINK_REFRESH_FULL_COLOR ? "FULL_COLOR" : "BW_EXPERIMENT");
     return true;
 }
 

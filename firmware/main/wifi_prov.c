@@ -487,7 +487,8 @@ static void render_api(httpd_req_t *req, int n, int k,
 {
     bool en = api && api->enabled;
     bool saved = api && (api->id || api->api_url[0] || api->device_token[0]);
-    char *url_esc = malloc(DASH_API_URL_MAX * 6 + 1);
+    const size_t url_esc_sz = DASH_API_URL_MAX * 6 + 1;
+    char *url_esc = malloc(url_esc_sz);
     if (!url_esc) {
         CHUNK(req, "<li><div class=\"api-row\">Out of memory.</div></li>");
         return;
@@ -517,7 +518,7 @@ static void render_api(httpd_req_t *req, int n, int k,
         n, k, (unsigned long)(api ? api->id : 0));
     CHUNK(req, buf);
 
-    html_escape(api && api->api_url[0] ? api->api_url : "", url_esc, sizeof(url_esc));
+    html_escape(api && api->api_url[0] ? api->api_url : "", url_esc, url_esc_sz);
     snprintf(buf, sizeof(buf),
         "<label class=\"field\"><span class=\"lab\">API URL</span>"
         "<input type=\"url\" name=\"w%d_a%d_url\" maxlength=\"191\" "
@@ -636,18 +637,10 @@ static void render_network(httpd_req_t *req, int n,
     CHUNK(req, "</ul></div></div></article>");
 }
 
-static void render_portal_page(httpd_req_t *req)
+static void render_portal_page_from_cfg(httpd_req_t *req,
+                                        const dash_config_v2_t *cfg,
+                                        const char *error)
 {
-    /* dash_config_v2_t is ~7 KB; heap-allocate so the httpd task stack
-     * stays within budget. See .co-develop/SOFTAP_DHCP_CONTEXT_SWITCH_CRASH_BRIEF.md
-     * for the root-cause analysis. */
-    dash_config_v2_t *cfg = calloc(1, sizeof(*cfg));
-    if (!cfg) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_sendstr(req, "Out of memory.");
-        return;
-    }
-    storage_load_v2(cfg);
     int active_networks = 0;
     for (int n = 0; n < cfg->network_count; n++) {
         if (cfg->networks[n].enabled) active_networks++;
@@ -666,6 +659,17 @@ static void render_portal_page(httpd_req_t *req)
     render_topbar(req);
 
     char page_buf[1024];
+    if (error && error[0]) {
+        char err_esc[384];
+        html_escape(error, err_esc, sizeof(err_esc));
+        snprintf(page_buf, sizeof(page_buf),
+            "<div class=\"savebar\" style=\"position:static;border-top:0\">"
+            "<div class=\"inner\"><div class=\"summary\" style=\"display:block\">"
+            "<strong>Could not save:</strong> %s</div></div></div>",
+            err_esc);
+        CHUNK(req, page_buf);
+    }
+
     snprintf(page_buf, sizeof(page_buf),
         "<noscript><div class=\"nojs-note\">JavaScript is off - the 5x5 slot "
         "grid is server-rendered, and saving uses a plain form post.</div></noscript>"
@@ -683,9 +687,8 @@ static void render_portal_page(httpd_req_t *req)
         render_network(req, n, net);
     }
 
-    char iv_buf[1024];
     int iv = cfg->refresh_min ? cfg->refresh_min : 5;
-    snprintf(iv_buf, sizeof(iv_buf),
+    snprintf(page_buf, sizeof(page_buf),
         "</section>"
         "<section class=\"block\" id=\"display-block\">"
         "<h2>Display</h2>"
@@ -701,7 +704,7 @@ static void render_portal_page(httpd_req_t *req)
         "</div>"
         "</section>",
         iv, iv);
-    CHUNK(req, iv_buf);
+    CHUNK(req, page_buf);
 
     CHUNK(req,
         "<div class=\"savebar\"><div class=\"inner\">"
@@ -720,7 +723,21 @@ static void render_portal_page(httpd_req_t *req)
     CHUNK(req, V4_JS);
     CHUNK(req, "</body></html>");
     CHUNK(req, NULL);
+}
 
+static void render_portal_page(httpd_req_t *req)
+{
+    /* dash_config_v2_t is ~7 KB; heap-allocate so the httpd task stack
+     * stays within budget. See .co-develop/SOFTAP_DHCP_CONTEXT_SWITCH_CRASH_BRIEF.md
+     * for the root-cause analysis. */
+    dash_config_v2_t *cfg = calloc(1, sizeof(*cfg));
+    if (!cfg) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Out of memory.");
+        return;
+    }
+    storage_load_v2(cfg);
+    render_portal_page_from_cfg(req, cfg, NULL);
     free(cfg);
 }
 
@@ -857,6 +874,28 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
     return ESP_OK;
 }
 
+static void render_save_error(httpd_req_t *req,
+                              const portal_form_t *form,
+                              const char *reason)
+{
+    dash_config_v2_t *prev = calloc(1, sizeof(*prev));
+    dash_config_v2_t *cfg  = calloc(1, sizeof(*cfg));
+    if (!prev || !cfg) {
+        free(prev); free(cfg);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        httpd_resp_sendstr(req, reason);
+        return;
+    }
+
+    storage_load_v2(prev);
+    apply_form_to_cfg(form, prev, cfg);
+    httpd_resp_set_status(req, "400 Bad Request");
+    render_portal_page_from_cfg(req, cfg, reason);
+    free(prev);
+    free(cfg);
+}
+
 /* ── HTTP handlers ───────────────────────────────────────────────────────── */
 
 static esp_err_t handler_root(httpd_req_t *req)
@@ -935,10 +974,8 @@ static esp_err_t handler_save(httpd_req_t *req)
         }
     }
     if (reason) {
+        render_save_error(req, form, reason);
         free(form);
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_set_type(req, "text/plain; charset=utf-8");
-        httpd_resp_sendstr(req, reason);
         return ESP_OK;
     }
 

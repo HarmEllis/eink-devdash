@@ -24,6 +24,13 @@ typedef enum {
 } eink_refresh_mode_t;
 
 typedef struct {
+    uint16_t x;
+    uint16_t y;
+    uint16_t w;
+    uint16_t h;
+} eink_rect_t;
+
+typedef struct {
     spi_device_handle_t spi;
     gpio_num_t dc_pin;
     gpio_num_t rst_pin;
@@ -39,6 +46,11 @@ void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf);
 
 /* Trigger a display update. */
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode);
+
+/* Trigger a black/white partial update from a retained previous frame. */
+bool eink_refresh_bw_partial(eink_handle_t *h,
+                             const uint8_t *next_bw,
+                             eink_rect_t rect);
 
 /* Send panel to deep sleep (call after every refresh). */
 void eink_sleep(eink_handle_t *h);
