@@ -4,6 +4,7 @@ import { join } from 'path'
 
 type CodexSource = 'chatgpt' | 'api-key'
 type CodexLimitReached = 'short' | 'long' | null
+type CodexStatus = 'ok' | 'unavailable' | 'error'
 
 type CodexWindow = {
   usedPercent: number
@@ -13,6 +14,7 @@ type CodexWindow = {
 }
 
 type CodexUsage = {
+  status: CodexStatus
   source: CodexSource
   planType: string | null
   short: CodexWindow
@@ -36,8 +38,9 @@ const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions')
 const READ_CHUNK_BYTES = 64 * 1024
 const CODEX_PLAN_TYPE = process.env.CODEX_PLAN_TYPE?.trim().toLowerCase() || null
 
-function emptyChatGptUsage(): CodexUsage {
+function emptyChatGptUsage(status: CodexStatus): CodexUsage {
   return {
+    status,
     source: 'chatgpt',
     planType: null,
     short: { usedPercent: 0, label: '5h', resetsAt: null, resetInSeconds: 0 },
@@ -50,12 +53,18 @@ function numberOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function windowFromRateLimit(window: RateLimitWindow | undefined, label: string): CodexWindow {
-  const usedPercent = numberOrNull(window?.used_percent) ?? 0
+function windowFromRateLimit(
+  window: RateLimitWindow | undefined,
+  label: string,
+  nowSeconds = Date.now() / 1000,
+): CodexWindow {
   const resetsAt = numberOrNull(window?.resets_at)
   const resetInSeconds = resetsAt !== null
-    ? Math.max(0, Math.round(resetsAt - Date.now() / 1000))
+    ? Math.max(0, Math.round(resetsAt - nowSeconds))
     : 0
+  const usedPercent = resetsAt !== null && resetsAt <= nowSeconds
+    ? 0
+    : numberOrNull(window?.used_percent) ?? 0
   return { usedPercent, label, resetsAt, resetInSeconds }
 }
 
@@ -82,12 +91,18 @@ function matchesConfiguredPlan(rateLimits: RateLimits): boolean {
     && rateLimits.plan_type.toLowerCase() === CODEX_PLAN_TYPE
 }
 
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && 'code' in err
+}
+
 function usageFromRateLimits(rateLimits: RateLimits): CodexUsage {
+  const nowSeconds = Date.now() / 1000
   return {
+    status: 'ok',
     source: 'chatgpt',
     planType: typeof rateLimits.plan_type === 'string' ? rateLimits.plan_type : null,
-    short: windowFromRateLimit(rateLimits.primary, '5h'),
-    long: windowFromRateLimit(rateLimits.secondary, '7d'),
+    short: windowFromRateLimit(rateLimits.primary, '5h', nowSeconds),
+    long: windowFromRateLimit(rateLimits.secondary, '7d', nowSeconds),
     reachedLimit: normalizeReachedLimit(rateLimits.rate_limit_reached_type),
   }
 }
@@ -172,9 +187,13 @@ async function getChatGptUsage(): Promise<CodexUsage> {
       }
     }
   } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOENT') {
+      return emptyChatGptUsage('unavailable')
+    }
     console.warn('[codex] failed to read ChatGPT session usage', err)
+    return emptyChatGptUsage('error')
   }
-  return emptyChatGptUsage()
+  return emptyChatGptUsage('unavailable')
 }
 
 export async function getCodexUsage(): Promise<CodexUsage> {
