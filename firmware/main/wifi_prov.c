@@ -321,39 +321,48 @@ static const char V4_STYLE[] =
 ".topbar .ap{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#2a7a3a;"
 "font-weight:500;background:#e8f5ec;border:1px solid #cfe7d6;padding:4px 8px;border-radius:99px}"
 ".topbar .ap .dot{width:6px;height:6px;border-radius:50%;background:#2a7a3a}"
+".nojs-note{margin:12px 16px 0;padding:10px 12px;border:1px solid #d9dde3;border-radius:10px;"
+"background:#fff;color:#4b5563;font-size:12px}"
 "main{padding:16px;max-width:560px;margin:0 auto}"
 "section.block{margin:0 0 20px}"
-"section.block>h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;"
-"color:#6b7280;margin:0 0 8px;padding:0 4px}"
-".blockhint{font-size:12px;color:#6b7280;margin:-4px 4px 8px}"
-".card{background:#fff;border:1px solid #e3e5e8;border-radius:12px;padding:14px 14px 6px;"
-"margin-bottom:10px}"
-/* JS-driven collapse: when a slot is toggled off, JS adds `.disabled`. */
-".card.disabled .body{display:none}"
-/* Pure-CSS fallback for browsers with :has() support — keeps the form usable
- * without JS. The body collapses when its own toggle is unchecked. */
-".card:has(>.row.head input[type=checkbox][name$=\"_on\"]:not(:checked)) .body{display:none}"
-".api-list>li:has(>.row.head input[type=checkbox][name$=\"_on\"]:not(:checked)) .body{display:none}"
-".card .row{display:flex;align-items:center;gap:10px;padding:4px 0;min-height:32px}"
-".card .row.head{border-bottom:1px solid #eef0f3;padding-bottom:10px;margin-bottom:8px}"
-".card .pill{font-size:11px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;"
-"color:#6b7280;background:#f1f2f4;padding:3px 8px;border-radius:99px}"
-".card .pill.saved{color:#2a4a7a;background:#e6eef9}"
-".card .pill.new{color:#7a4a2a;background:#fbeede}"
-".card .grow{flex:1 1 auto;min-width:0}"
+"section.block>h2{display:flex;align-items:baseline;gap:8px;font-size:12px;font-weight:600;"
+"text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin:0 0 6px;padding:0 4px}"
+".count{font:600 11px/1 ui-monospace,\"SF Mono\",Menlo,monospace;letter-spacing:0.04em;"
+"color:#4b5563;background:#fff;border:1px solid #e3e5e8;padding:2px 6px;border-radius:99px;text-transform:none}"
+".blockhint{font-size:12px;color:#6b7280;margin:-2px 4px 10px}"
+".card{background:#fff;border:1px solid #e3e5e8;border-radius:12px;margin-bottom:10px}"
+".card-head,.api-row{display:flex;align-items:center;gap:10px;padding:12px 14px}"
+".card-body{padding:4px 14px 12px;border-top:1px solid #eef0f3}"
+".slot-label{font-weight:600;font-size:14px;color:#1c1f24;letter-spacing:-0.005em}"
+".order{display:inline-block;font:600 11px/1 ui-monospace,\"SF Mono\",Menlo,monospace;"
+"color:#6b7280;background:#f1f2f4;border-radius:4px;padding:3px 5px;margin-right:8px;vertical-align:1px}"
+".grow{flex:1 1 auto;min-width:0}"
+".pill{font-size:11px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#6b7280;"
+"background:#f1f2f4;padding:3px 8px;border-radius:99px;white-space:nowrap}"
+".pill.saved{color:#2a4a7a;background:#e6eef9}.pill.empty{color:#6b7280;background:#f1f2f4}"
+".pill.error{color:#8a2a2a;background:#fdecec}.pill.off{color:#6b7280;background:#ececef}"
+".card .pill.saved,.card .pill.empty,.card .pill.error,.api-list>li .pill.saved,"
+".api-list>li .pill.empty,.api-list>li .pill.error{display:none}"
+".card[data-saved=\"1\"]:has(.card-on:checked) .pill.saved{display:inline-block}"
+".card[data-saved=\"0\"]:has(.card-on:checked) .pill.empty{display:inline-block}"
+".card:has(.card-on:not(:checked)) .pill.off{display:inline-block}"
+".card.has-error:has(.card-on:checked) .pill.saved,.card.has-error:has(.card-on:checked) .pill.empty{display:none}"
+".card.has-error:has(.card-on:checked) .pill.error{display:inline-block}"
+".card.disabled,.card:has(.card-on:not(:checked)){background:#fafbfc;border-color:#ebedf0}"
+".card.disabled .card-body,.card:has(.card-on:not(:checked)) .card-body{display:none}"
+".card.disabled .slot-label,.card:has(.card-on:not(:checked)) .slot-label{color:#6b7280;font-weight:500}"
 "label.field{display:block;margin:8px 0}"
 "label.field>.lab{display:block;font-size:12px;color:#4b5563;margin-bottom:4px}"
 "input[type=text],input[type=password],input[type=number],input[type=url]{"
 "width:100%;min-height:44px;padding:10px 12px;font:inherit;font-size:15px;color:#1c1f24;"
-"background:#fff;border:1px solid #cbd0d6;border-radius:8px;outline:none}"
+"background:#fff;border:1px solid #c6cad0;border-radius:8px;outline:none;-webkit-appearance:none;appearance:none}"
 "input:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}"
 "input.invalid{border-color:#c83737;background:#fff5f5}"
-".err{color:#a02020;font-size:12px;margin-top:4px}"
-".toggle{display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none}"
+".err{color:#a02020;font-size:12px;margin-top:4px}.err code{font-family:ui-monospace,\"SF Mono\",Menlo,monospace}"
+".toggle{position:relative;display:inline-flex;align-items:center;cursor:pointer;user-select:none;flex:0 0 auto}"
 ".toggle input{position:absolute;opacity:0;pointer-events:none}"
-".toggle .track{display:inline-block;width:34px;height:20px;background:#cbd0d6;"
-"border-radius:99px;position:relative;transition:background .15s}"
-".toggle .track::after{content:\"\";position:absolute;top:2px;left:2px;width:16px;height:16px;"
+".toggle .track{width:38px;height:22px;background:#c6cad0;border-radius:99px;position:relative;transition:background .15s}"
+".toggle .track::after{content:\"\";position:absolute;top:2px;left:2px;width:18px;height:18px;"
 "background:#fff;border-radius:50%;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.2)}"
 ".toggle input:checked+.track{background:#2563eb}"
 ".toggle input:checked+.track::after{left:16px}"
@@ -362,12 +371,24 @@ static const char V4_STYLE[] =
 ".secret .showbtn{background:#f1f2f4;border:1px solid #cbd0d6;border-radius:8px;"
 "padding:0 12px;font:inherit;font-size:13px;cursor:pointer;color:#1c1f24}"
 ".check{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:13px;color:#4b5563}"
-".api-list{list-style:none;margin:8px 0;padding:0}"
-".api-list>li{background:#fafbfc;border:1px dashed #cbd0d6;border-radius:10px;"
-"padding:10px 12px;margin-bottom:8px}"
-".api-list>li.disabled .body{display:none}"
-".interval-grid{display:grid;grid-template-columns:1fr 80px;gap:12px;align-items:center;"
+".api-section{margin-top:14px;border-top:1px solid #eef0f3;padding-top:12px}"
+".api-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}"
+".api-head .title{font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#6b7280}"
+".api-list{list-style:none;margin:0;padding:0}"
+".api-list>li{background:#fafbfc;border:1px dashed #cbd0d6;border-radius:10px;margin-bottom:8px}"
+".api-list>li .api-body{padding:0 12px 12px}"
+".apititle{font-weight:600;font-size:13px;color:#1c1f24}"
+".api-list>li[data-saved=\"1\"]:has(.api-on:checked) .pill.saved{display:inline-block}"
+".api-list>li[data-saved=\"0\"]:has(.api-on:checked) .pill.empty{display:inline-block}"
+".api-list>li:has(.api-on:not(:checked)) .pill.off{display:inline-block}"
+".api-list>li.has-error:has(.api-on:checked) .pill.saved,.api-list>li.has-error:has(.api-on:checked) .pill.empty{display:none}"
+".api-list>li.has-error:has(.api-on:checked) .pill.error{display:inline-block}"
+".api-list>li.disabled,.api-list>li:has(.api-on:not(:checked)){background:#f4f5f7}"
+".api-list>li.disabled .api-body,.api-list>li:has(.api-on:not(:checked)) .api-body{display:none}"
+".api-list>li.disabled .apititle,.api-list>li:has(.api-on:not(:checked)) .apititle{color:#6b7280;font-weight:400}"
+".interval-grid{display:grid;grid-template-columns:1fr 86px;gap:10px 12px;align-items:center;"
 "background:#fff;border:1px solid #e3e5e8;border-radius:12px;padding:12px}"
+".interval-grid .full{grid-column:1/-1}.num-wrap{position:relative}.num-wrap input{padding-right:36px}.unit{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:12px;color:#6b7280}"
 ".savebar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #e3e5e8;"
 "padding:12px 16px;z-index:6}"
 ".savebar .inner{max-width:560px;margin:0 auto}"
@@ -378,7 +399,7 @@ static const char V4_STYLE[] =
 "background:#1c1f24;color:#fff;border:0;border-radius:10px;cursor:pointer}"
 "#page-confirm{display:none;min-height:100vh;align-items:center;justify-content:center;"
 "flex-direction:column;text-align:center;padding:20px}"
-"body.saved>main,body.saved>header.topbar,body.saved>.savebar{display:none}"
+"body.saved>main,body.saved>form,body.saved>header.topbar,body.saved>.savebar{display:none}"
 "body.saved>#page-confirm{display:flex}"
 ".spinner{width:36px;height:36px;border:3px solid #e3e5e8;border-top-color:#2563eb;"
 "border-radius:50%;animation:spin .9s linear infinite}"
@@ -393,11 +414,22 @@ static const char V4_STYLE[] =
 static const char V4_JS[] =
 "<script>"
 "function tgl(el,sel,cls){var c=el.closest(sel);if(c)c.classList.toggle(cls,!el.checked);}"
+"function updateCounts(){"
+"var wc=document.getElementById('wifi-count');if(wc)wc.textContent=document.querySelectorAll('.card .card-on:checked').length+' / 5 active';"
+"document.querySelectorAll('article.card').forEach(function(card){"
+"var n=card.getAttribute('data-net');var c=card.querySelector('[data-api-count=\"'+n+'\"]');"
+"if(c)c.textContent=card.querySelectorAll('.api-on:checked').length+' / 5 active';"
+"});}"
 "document.addEventListener('change',function(e){"
 "var t=e.target;"
 "if(t.matches('input[name$=\"_on\"][type=checkbox]')){"
 "if(t.name.indexOf('_a')>0)tgl(t,'.api-list>li','disabled');"
 "else tgl(t,'.card','disabled');"
+"updateCounts();"
+"}"
+"if(t.matches('input[data-act=\"clearpw\"],input[data-act=\"cleartok\"]')){"
+"var i=document.querySelector('input[name=\"'+t.getAttribute('data-target')+'\"]');"
+"if(i){i.disabled=t.checked;if(t.checked)i.value='';}"
 "}"
 "});"
 "document.addEventListener('click',function(e){"
@@ -415,6 +447,22 @@ static const char V4_JS[] =
 "document.querySelectorAll('input[name$=\"_on\"][type=checkbox]').forEach(function(t){"
 "if(t.name.indexOf('_a')>0)tgl(t,'.api-list>li','disabled');"
 "else tgl(t,'.card','disabled');"
+"});"
+"updateCounts();"
+"var f=document.getElementById('cfg');if(f)f.addEventListener('submit',function(e){"
+"var bad=[];document.querySelectorAll('.has-error').forEach(function(x){x.classList.remove('has-error')});"
+"document.querySelectorAll('input.invalid').forEach(function(x){x.classList.remove('invalid')});"
+"document.querySelectorAll('.err').forEach(function(x){x.hidden=true});"
+"document.querySelectorAll('article.card').forEach(function(card){"
+"if(!card.querySelector('.card-on').checked)return;"
+"card.querySelectorAll('li[data-api]').forEach(function(li){"
+"if(!li.querySelector('.api-on').checked)return;"
+"var u=li.querySelector('input[type=url]');"
+"if(u&&u.value&&!/^http:\\/\\/[^\\s]+$/.test(u.value)){bad.push([card,li,u]);}"
+"});});"
+"if(bad.length){e.preventDefault();bad.forEach(function(x){x[0].classList.add('has-error');x[1].classList.add('has-error');x[2].classList.add('invalid');var er=x[1].querySelector('.err');if(er)er.hidden=false;});"
+"document.body.classList.add('has-errors');var s=document.getElementById('errsummary');if(s)s.innerHTML='<strong>Fix '+bad.length+' problem'+(bad.length>1?'s':'')+':</strong> API URL must start with <code>http://</code>.';bad[0][2].focus();}"
+"else document.body.classList.remove('has-errors');"
 "});"
 "});"
 "</script>";
@@ -438,25 +486,34 @@ static void render_api(httpd_req_t *req, int n, int k,
                        const dash_api_profile_t *api)
 {
     bool en = api && api->enabled;
-    char url_esc[DASH_API_URL_MAX * 6 + 1];
-    char buf[DASH_API_URL_MAX * 6 + 512];
+    bool saved = api && (api->id || api->api_url[0] || api->device_token[0]);
+    char *url_esc = malloc(DASH_API_URL_MAX * 6 + 1);
+    if (!url_esc) {
+        CHUNK(req, "<li><div class=\"api-row\">Out of memory.</div></li>");
+        return;
+    }
+    char buf[768];
 
     /* No initial `disabled` class. With JS, V4_JS adds it on load. Without
      * JS, browsers with :has() honour the pure-CSS rule above; older
      * browsers just show the body — the user can still toggle and edit. */
     snprintf(buf, sizeof(buf),
-        "<li data-api=\"%d-%d\">"
-        "<div class=\"row head\">"
-        "<label class=\"toggle\">"
-        "<input type=\"checkbox\" name=\"w%d_a%d_on\"%s>"
+        "<li data-api=\"%d-%d\" data-saved=\"%d\">"
+        "<div class=\"api-row\">"
+        "<label class=\"toggle\" aria-label=\"enable API slot %d\">"
+        "<input type=\"checkbox\" class=\"api-on\" name=\"w%d_a%d_on\"%s>"
         "<span class=\"track\"></span></label>"
-        "<span class=\"pill %s\">%s</span>"
+        "<span class=\"apititle grow\"><span class=\"order\">%d</span>API endpoint</span>"
+        "<span class=\"pill saved\">saved</span>"
+        "<span class=\"pill empty\">empty</span>"
+        "<span class=\"pill error\">error</span>"
+        "<span class=\"pill off\">off</span>"
         "<input type=\"hidden\" name=\"w%d_a%d_i\" value=\"%lu\">"
-        "</div><div class=\"body\">",
-        n, k,
+        "</div><div class=\"api-body\">",
+        n, k, saved ? 1 : 0,
+        k + 1,
         n, k, en ? " checked" : "",
-        (api && api->id) ? "saved" : "new",
-        (api && api->id) ? "saved" : "new",
+        k + 1,
         n, k, (unsigned long)(api ? api->id : 0));
     CHUNK(req, buf);
 
@@ -464,7 +521,10 @@ static void render_api(httpd_req_t *req, int n, int k,
     snprintf(buf, sizeof(buf),
         "<label class=\"field\"><span class=\"lab\">API URL</span>"
         "<input type=\"url\" name=\"w%d_a%d_url\" maxlength=\"191\" "
-        "placeholder=\"http://192.168.1.50:3000\" value=\"%s\">"
+        "placeholder=\"http://host:3000\" inputmode=\"url\" "
+        "autocapitalize=\"off\" autocomplete=\"off\" value=\"%s\">"
+        "<div class=\"err\" hidden>Doesn't look like a URL - try "
+        "<code>http://...</code></div>"
         "</label>", n, k, url_esc);
     CHUNK(req, buf);
 
@@ -475,13 +535,21 @@ static void render_api(httpd_req_t *req, int n, int k,
         "<input type=\"password\" name=\"w%d_a%d_tok\" maxlength=\"64\" "
         "placeholder=\"%s\" autocomplete=\"new-password\">"
         "<button type=\"button\" class=\"showbtn\">show</button></div>"
-        "<label class=\"check\"><input type=\"checkbox\" name=\"w%d_a%d_cleartok\">"
-        "Clear saved token</label></label>",
+        "%s",
         n, k, has_tok ? "current token kept" : "device token",
-        n, k);
+        has_tok ? "" : "</label>");
     CHUNK(req, buf);
+    if (has_tok) {
+        snprintf(buf, sizeof(buf),
+            "<label class=\"check\"><input type=\"checkbox\" name=\"w%d_a%d_cleartok\" "
+            "data-act=\"cleartok\" data-target=\"w%d_a%d_tok\">"
+            "Clear saved token</label></label>",
+            n, k, n, k);
+        CHUNK(req, buf);
+    }
 
     CHUNK(req, "</div></li>");
+    free(url_esc);
 }
 
 /* Render one WiFi network card and its 5 API slots. */
@@ -489,26 +557,43 @@ static void render_network(httpd_req_t *req, int n,
                            const dash_wifi_profile_t *net)
 {
     bool en = net && net->enabled;
+    bool saved = net && (net->id || net->ssid[0] || net->password[0]);
+    int active_apis = 0;
+    if (net) {
+        for (int k = 0; k < net->api_count; k++) {
+            if (net->apis[k].enabled) active_apis++;
+        }
+    }
     char ssid_esc[DASH_SSID_MAX * 6 + 1];
-    char buf[DASH_SSID_MAX * 6 + 512];
+    char label_esc[DASH_SSID_MAX * 6 + 32];
+    char buf[DASH_SSID_MAX * 6 + 800];
+    html_escape(net && net->ssid[0] ? net->ssid : "", ssid_esc, sizeof(ssid_esc));
+    if (ssid_esc[0]) {
+        snprintf(label_esc, sizeof(label_esc), "%s", ssid_esc);
+    } else {
+        snprintf(label_esc, sizeof(label_esc), "WiFi slot %d", n + 1);
+    }
+
     snprintf(buf, sizeof(buf),
-        "<article class=\"card\" data-net=\"%d\">"
-        "<div class=\"row head\">"
-        "<label class=\"toggle\">"
-        "<input type=\"checkbox\" name=\"w%d_on\"%s>"
+        "<article class=\"card\" data-net=\"%d\" data-saved=\"%d\">"
+        "<div class=\"card-head\">"
+        "<label class=\"toggle\" aria-label=\"enable WiFi slot %d\">"
+        "<input type=\"checkbox\" class=\"card-on\" name=\"w%d_on\"%s>"
         "<span class=\"track\"></span></label>"
-        "<span class=\"pill %s\">%s</span>"
-        "<span class=\"grow\"></span>"
+        "<span class=\"slot-label grow\"><span class=\"order\">%d</span>%s</span>"
+        "<span class=\"pill saved\">saved</span>"
+        "<span class=\"pill empty\">empty</span>"
+        "<span class=\"pill error\">error</span>"
+        "<span class=\"pill off\">off</span>"
         "<input type=\"hidden\" name=\"w%d_i\" value=\"%lu\">"
-        "</div><div class=\"body\">",
-        n,
+        "</div><div class=\"card-body\">",
+        n, saved ? 1 : 0,
+        n + 1,
         n, en ? " checked" : "",
-        (net && net->id) ? "saved" : "new",
-        (net && net->id) ? "saved" : "new",
+        n + 1, label_esc,
         n, (unsigned long)(net ? net->id : 0));
     CHUNK(req, buf);
 
-    html_escape(net && net->ssid[0] ? net->ssid : "", ssid_esc, sizeof(ssid_esc));
     snprintf(buf, sizeof(buf),
         "<label class=\"field\"><span class=\"lab\">SSID</span>"
         "<input type=\"text\" name=\"w%d_ssid\" maxlength=\"32\" value=\"%s\" "
@@ -523,19 +608,32 @@ static void render_network(httpd_req_t *req, int n,
         "<input type=\"password\" name=\"w%d_pass\" maxlength=\"64\" "
         "placeholder=\"%s\" autocomplete=\"new-password\">"
         "<button type=\"button\" class=\"showbtn\">show</button></div>"
-        "<label class=\"check\"><input type=\"checkbox\" name=\"w%d_clearpw\">"
-        "Clear saved password</label></label>",
-        n, has_pwd ? "current password kept" : "WPA2 password",
-        n);
+        "%s",
+        n, has_pwd ? "current password kept" : "required for new networks",
+        has_pwd ? "" : "</label>");
     CHUNK(req, buf);
+    if (has_pwd) {
+        snprintf(buf, sizeof(buf),
+            "<label class=\"check\"><input type=\"checkbox\" name=\"w%d_clearpw\" "
+            "data-act=\"clearpw\" data-target=\"w%d_pass\">"
+            "Clear saved password</label></label>",
+            n, n);
+        CHUNK(req, buf);
+    }
 
-    CHUNK(req, "<ul class=\"api-list\">");
+    snprintf(buf, sizeof(buf),
+        "<div class=\"api-section\"><div class=\"api-head\">"
+        "<span class=\"title\">API endpoints</span>"
+        "<span class=\"count\" data-api-count=\"%d\">%d / 5 active</span>"
+        "</div><ul class=\"api-list\">",
+        n, active_apis);
+    CHUNK(req, buf);
     for (int k = 0; k < MAX_APIS_PER_NETWORK; k++) {
         const dash_api_profile_t *api =
             (net && k < net->api_count) ? &net->apis[k] : NULL;
         render_api(req, n, k, api);
     }
-    CHUNK(req, "</ul></div></article>");
+    CHUNK(req, "</ul></div></div></article>");
 }
 
 static void render_portal_page(httpd_req_t *req)
@@ -550,6 +648,10 @@ static void render_portal_page(httpd_req_t *req)
         return;
     }
     storage_load_v2(cfg);
+    int active_networks = 0;
+    for (int n = 0; n < cfg->network_count; n++) {
+        if (cfg->networks[n].enabled) active_networks++;
+    }
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     CHUNK(req,
@@ -563,12 +665,17 @@ static void render_portal_page(httpd_req_t *req)
 
     render_topbar(req);
 
-    CHUNK(req,
+    char page_buf[1024];
+    snprintf(page_buf, sizeof(page_buf),
+        "<noscript><div class=\"nojs-note\">JavaScript is off - the 5x5 slot "
+        "grid is server-rendered, and saving uses a plain form post.</div></noscript>"
         "<main><form id=\"cfg\" method=\"post\" action=\"/save\" novalidate>"
         "<section class=\"block\" id=\"wifi-block\">"
-        "<h2>WiFi networks</h2>"
-        "<p class=\"blockhint\">Toggle a slot to add a network; toggle off "
-        "to remove it on save. Up to 5 networks &times; 5 APIs each.</p>");
+        "<h2>WiFi networks <span class=\"count\" id=\"wifi-count\">%d / 5 active</span></h2>"
+        "<div class=\"blockhint\">All 5 slots are reserved. Toggle a slot on to "
+        "fill it in; the device tries enabled networks in order, top first.</div>",
+        active_networks);
+    CHUNK(req, page_buf);
 
     for (int n = 0; n < MAX_WIFI_NETWORKS; n++) {
         const dash_wifi_profile_t *net =
@@ -583,22 +690,22 @@ static void render_portal_page(httpd_req_t *req)
         "<section class=\"block\" id=\"display-block\">"
         "<h2>Display</h2>"
         "<div class=\"interval-grid\">"
-        "<label class=\"field\" style=\"margin:0\"><span class=\"lab\">"
-        "Refresh interval (min)</span>"
-        "<input type=\"range\" id=\"iv-range\" min=\"3\" max=\"60\" value=\"%d\">"
-        "</label>"
-        "<label class=\"field\" style=\"margin:0\"><span class=\"lab\">Minutes</span>"
-        "<input type=\"number\" id=\"iv-num\" name=\"iv\" min=\"3\" max=\"60\" value=\"%d\">"
-        "</label></div>"
-        "<p class=\"blockhint\">Red-bearing refreshes take ~15s; pick a higher "
-        "interval if you don't need fresh data each cycle.</p>"
+        "<label class=\"lab full\" for=\"iv-range\" style=\"font-size:14px;color:#1c1f24\">"
+        "Refresh interval <span style=\"color:#6b7280;font-weight:400\">- how often "
+        "the dashboard polls.</span></label>"
+        "<input type=\"range\" id=\"iv-range\" min=\"3\" max=\"60\" step=\"1\" value=\"%d\">"
+        "<div class=\"num-wrap\"><input type=\"number\" id=\"iv-num\" name=\"iv\" "
+        "min=\"3\" max=\"60\" step=\"1\" value=\"%d\"><span class=\"unit\">min</span></div>"
+        "<p class=\"full\" style=\"margin:0;color:#6b7280;font-size:12px\">"
+        "3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.</p>"
+        "</div>"
         "</section>",
         iv, iv);
     CHUNK(req, iv_buf);
 
     CHUNK(req,
         "<div class=\"savebar\"><div class=\"inner\">"
-        "<div class=\"summary\">Fix the highlighted fields before saving.</div>"
+        "<div class=\"summary\" id=\"errsummary\">Fix the highlighted fields before saving.</div>"
         "<button type=\"submit\">Save &amp; restart</button>"
         "</div></div>"
         "</form></main>"
