@@ -25,6 +25,14 @@
 
 static const char *TAG = "display";
 
+typedef struct {
+    bool valid;
+    uint8_t wifi_slot;
+    uint8_t active_api_slot;
+} header_connection_slots_t;
+
+static header_connection_slots_t s_header_slots;
+
 /* ── 5×7 pixel font (ASCII 32–122) ─────────────────────────────────────── */
 #define FONT_W  6   /* 5 px glyph + 1 px gap */
 #define FONT_H  7
@@ -304,6 +312,47 @@ static void icon_wifi(int ox, int oy)
     fill_rect(ox+7, oy+5, 1, 1, 1, 0);
     fill_rect(ox+4, oy+7, 2, 1, 1, 0);
     fill_rect(ox+4, oy+9, 2, 1, 1, 0);
+}
+
+static void icon_arrow_right(int ox, int oy)
+{
+    hline(ox, oy + 3, 8);
+    lpix(ox + 6, oy + 1, 1, 0);
+    lpix(ox + 7, oy + 2, 1, 0);
+    lpix(ox + 8, oy + 3, 1, 0);
+    lpix(ox + 7, oy + 4, 1, 0);
+    lpix(ox + 6, oy + 5, 1, 0);
+}
+
+static void draw_header_connection_slots(void)
+{
+    if (!s_header_slots.valid || s_header_slots.wifi_slot == 0) return;
+
+    const int icon_w = 10;
+    const int arrow_w = 9;
+    const int gap = 3;
+    char wifi_slot[2] = { (char)('0' + s_header_slots.wifi_slot), '\0' };
+    char api_slot[2] = { (char)('0' + s_header_slots.active_api_slot), '\0' };
+    int width = icon_w + gap + str_w(wifi_slot);
+    if (s_header_slots.active_api_slot != 0) {
+        width += gap + arrow_w + gap + str_w(api_slot);
+    }
+
+    int x = (296 - width) / 2;
+    const int icon_y = 3;
+    const int arrow_y = 5;
+    const int text_y = 5;
+
+    icon_wifi(x, icon_y);
+    x += icon_w + gap;
+    draw_str(x, text_y, wifi_slot, 0);
+
+    if (s_header_slots.active_api_slot == 0) return;
+
+    x += str_w(wifi_slot) + gap;
+    icon_arrow_right(x, arrow_y);
+    x += arrow_w + gap;
+    draw_str(x, text_y, api_slot, 0);
 }
 
 /* Globe icon (10×10) — ringed circle with one latitude + one meridian. */
@@ -689,6 +738,9 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     } else {
         icon_box_logo(6, 4);
         draw_str(19, 5, "DEVDASH", 0);
+        if (!header_status || !header_status[0]) {
+            draw_header_connection_slots();
+        }
         if (header_status && header_status[0]) {
             draw_str(290 - str_w(header_status), 5, header_status, 0);
         } else {
@@ -855,6 +907,21 @@ void display_render(const dashboard_data_t *data)
     display_mark_frame((data->offline || data->stale)
                        ? DISPLAY_FRAME_OFFLINE_API
                        : DISPLAY_FRAME_CONTENT);
+}
+
+void display_set_connection_slots(const dash_config_v2_t *cfg,
+                                  int network_idx,
+                                  int active_api_idx)
+{
+    memset(&s_header_slots, 0, sizeof(s_header_slots));
+    if (!cfg || network_idx < 0 || network_idx >= cfg->network_count) return;
+
+    const dash_wifi_profile_t *net = &cfg->networks[network_idx];
+    s_header_slots.valid = true;
+    s_header_slots.wifi_slot = (uint8_t)(network_idx + 1);
+    if (active_api_idx >= 0 && active_api_idx < net->api_count) {
+        s_header_slots.active_api_slot = (uint8_t)(active_api_idx + 1);
+    }
 }
 
 static bool display_show_compact_status(const char *status)

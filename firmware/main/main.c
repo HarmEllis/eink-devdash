@@ -210,6 +210,7 @@ void app_main(void)
 #endif
     }
 
+    display_set_connection_slots(&cfg, network_idx, api_idx);
     display_render(&data);
     enter_deep_sleep(cfg.refresh_min);
 }
