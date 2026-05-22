@@ -1,4 +1,5 @@
 .co-develop/
+.temp/
 node_modules/
 dist/
 .env
