@@ -130,13 +130,20 @@ Environment variables read by the API container. Set them in `.env` next to
 | `CODEX_LIVE_USAGE` | no | `true` | Set to `false` to skip the live Codex app-server probe and read only the on-disk session JSONL. |
 | `CODEX_CLI_PATH` | no | empty | Override the Codex CLI binary path. |
 | `CODEX_APP_SERVER_TIMEOUT_MS` | no | `8000` | Timeout for the Codex live probe. |
+| `CODEX_HOME` | no | `/home/node/.codex-runtime` | Writable Codex runtime home inside the container. Set by `docker-compose.yml`. |
+| `CODEX_SOURCE_HOME` | no | `/home/node/.codex-source` | Read-only host Codex home mount used as the source for auth/config sync. Set by `docker-compose.yml`. |
+| `CODEX_SESSIONS_DIR` | no | `/home/node/.codex-source/sessions` | Codex session JSONL directory used by the fallback reader. Set by `docker-compose.yml`. |
 | `MDNS_ENABLED` | no | `true` | Set to `false` to disable mDNS advertising. |
 | `MDNS_NAME` | no | `devdash-api` | Hostname under `.local`. |
 | `IMAGE_TAG` | no | `latest` | Pin the published image to a specific tag (e.g. `v0.1.0`). |
 
-The container mounts `~/.claude` read-only and `~/.codex` read-write from
-the host so it can read Claude OAuth credentials and run `codex app-server`
-under the user's existing ChatGPT auth. No keys are baked into the image.
+The container mounts `~/.claude` read-only and mounts host `~/.codex`
+read-only at `/home/node/.codex-source`. Before each live Codex usage probe,
+the API syncs auth/config files from that source into the writable
+`/home/node/.codex-runtime` directory used by `codex app-server`. Session JSONL
+fallback reads directly from `/home/node/.codex-source/sessions`, so new host
+sessions are visible without copying session history into the container. No
+keys are baked into the image.
 
 ---
 

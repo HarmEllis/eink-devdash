@@ -1,8 +1,8 @@
 import { spawn } from 'child_process'
 import { constants as fsConstants } from 'fs'
-import { access, open, readdir, stat } from 'fs/promises'
+import { access, cp, mkdir, open, readdir, rm, stat } from 'fs/promises'
 import { homedir } from 'os'
-import { join } from 'path'
+import { join, resolve } from 'path'
 
 type CodexSource = 'chatgpt' | 'api-key'
 type CodexLimitReached = 'short' | 'long' | null
@@ -56,8 +56,37 @@ type JsonRpcResponse = {
   }
 }
 
-const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions')
+type SyncSignature = {
+  mtimeMs: number
+  size: number
+}
+
+const CODEX_HOME = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex')
+const CODEX_SOURCE_HOME = process.env.CODEX_SOURCE_HOME?.trim() || null
+const CODEX_SESSIONS_DIR = process.env.CODEX_SESSIONS_DIR?.trim()
+  || join(CODEX_SOURCE_HOME ?? CODEX_HOME, 'sessions')
 const READ_CHUNK_BYTES = 64 * 1024
+const CODEX_SYNC_MAX_FILE_BYTES = 10 * 1024 * 1024
+const CODEX_SYNC_EXCLUDED_NAMES = new Set([
+  '.tmp',
+  'cache',
+  'log',
+  'logs',
+  'memories',
+  'sessions',
+  'shell_snapshots',
+  'skills',
+  'tmp',
+])
+const CODEX_SYNC_EXCLUDED_FILE_SUFFIXES = [
+  '.jsonl',
+  '.log',
+  '.sqlite',
+  '.sqlite-shm',
+  '.sqlite-wal',
+]
+const CODEX_SYNC_INCLUDED_DIRS = new Set(['rules'])
+const codexSyncSourceSignatures = new Map<string, SyncSignature>()
 const CODEX_PLAN_TYPE = process.env.CODEX_PLAN_TYPE?.trim().toLowerCase() || null
 const CODEX_LIVE_USAGE_ENABLED = process.env.CODEX_LIVE_USAGE !== 'false'
 const CODEX_APP_SERVER_TIMEOUT_MS = Number.parseInt(
@@ -135,6 +164,69 @@ function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && 'code' in err
 }
 
+function isSamePath(left: string, right: string): boolean {
+  return resolve(left) === resolve(right)
+}
+
+function isSyncableRegularFile(name: string, size: number): boolean {
+  return !CODEX_SYNC_EXCLUDED_NAMES.has(name)
+    && !CODEX_SYNC_EXCLUDED_FILE_SUFFIXES.some((suffix) => name.endsWith(suffix))
+    && size <= CODEX_SYNC_MAX_FILE_BYTES
+}
+
+function isSyncableDirectory(name: string): boolean {
+  return CODEX_SYNC_INCLUDED_DIRS.has(name)
+}
+
+function hasSameSignature(left: SyncSignature | undefined, right: SyncSignature): boolean {
+  return !!left && left.mtimeMs === right.mtimeMs && left.size === right.size
+}
+
+async function syncCodexRuntimeHome(): Promise<void> {
+  if (!CODEX_SOURCE_HOME || isSamePath(CODEX_SOURCE_HOME, CODEX_HOME)) return
+
+  try {
+    await access(CODEX_SOURCE_HOME, fsConstants.R_OK)
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOENT') return
+    throw err
+  }
+
+  await mkdir(CODEX_HOME, { recursive: true })
+
+  const syncableNames = new Set<string>()
+  const sourceEntries = await readdir(CODEX_SOURCE_HOME, { withFileTypes: true })
+  for (const entry of sourceEntries) {
+    const sourcePath = join(CODEX_SOURCE_HOME, entry.name)
+    const destinationPath = join(CODEX_HOME, entry.name)
+
+    if (entry.isFile()) {
+      const info = await stat(sourcePath)
+      if (!isSyncableRegularFile(entry.name, info.size)) continue
+      const signature = { mtimeMs: info.mtimeMs, size: info.size }
+      syncableNames.add(entry.name)
+      if (!hasSameSignature(codexSyncSourceSignatures.get(entry.name), signature)) {
+        await cp(sourcePath, destinationPath, { force: true })
+        codexSyncSourceSignatures.set(entry.name, signature)
+      }
+      continue
+    }
+
+    if (entry.isDirectory() && isSyncableDirectory(entry.name)) {
+      syncableNames.add(entry.name)
+      await rm(destinationPath, { recursive: true, force: true })
+      await cp(sourcePath, destinationPath, { recursive: true, force: true })
+    }
+  }
+
+  for (const name of codexSyncSourceSignatures.keys()) {
+    if (!syncableNames.has(name)) {
+      codexSyncSourceSignatures.delete(name)
+      await rm(join(CODEX_HOME, name), { recursive: true, force: true })
+    }
+  }
+}
+
 function usageFromRateLimits(rateLimits: RateLimits): CodexUsage {
   const nowSeconds = Date.now() / 1000
   return {
@@ -169,6 +261,8 @@ function asJsonRpcResponse(value: unknown): JsonRpcResponse | null {
 }
 
 async function readRateLimitsFromAppServer(): Promise<AppServerRateLimitsResponse> {
+  await syncCodexRuntimeHome()
+
   const command = await resolveCodexCommand()
   const timeoutMs = Number.isFinite(CODEX_APP_SERVER_TIMEOUT_MS)
     ? CODEX_APP_SERVER_TIMEOUT_MS
@@ -176,6 +270,10 @@ async function readRateLimitsFromAppServer(): Promise<AppServerRateLimitsRespons
 
   return new Promise((resolve, reject) => {
     const child = spawn(command, ['app-server'], {
+      env: {
+        ...process.env,
+        CODEX_HOME,
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     const initId = 1
