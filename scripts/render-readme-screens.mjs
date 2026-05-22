@@ -193,6 +193,43 @@ function str2xW(text) {
   return text.length * FONT2_W;
 }
 
+const PROVISION_SAMPLE = {
+  ssid: "devdash-A1B2",
+  password: "M9k3pX7vQ2nL",
+  url: "192.168.4.1",
+  qrRows: [
+    "11111110010110111001001111111",
+    "10000010000000010010101000001",
+    "10111010111110101000001011101",
+    "10111010100001011000001011101",
+    "10111010110100101010101011101",
+    "10000010110011011110101000001",
+    "11111110101010101010101111111",
+    "00000000111010001010100000000",
+    "10111110000001111111001111100",
+    "10110101001101000001001010110",
+    "01100110000011110110011101000",
+    "11000101000000010010011010011",
+    "11111111001110101111000111100",
+    "11100000101111011101111110110",
+    "10100110101110110110100100100",
+    "11001000100000010001010001000",
+    "10001110001101011000100101011",
+    "11001001110111101001111011010",
+    "10011111000111011010100110000",
+    "10101101000010100010000010001",
+    "10110011101001011110111111100",
+    "00000000111101100100100010100",
+    "11111110010011011111101010100",
+    "10000010101100100011100011011",
+    "10111010110110000000111111011",
+    "10111010101101001110000011011",
+    "10111010111110111001001111110",
+    "10000010011000010000100011010",
+    "11111110100100101111011011000",
+  ],
+};
+
 function iconBoxLogo(f, ox, oy) {
   f.fillRect(ox, oy, 9, 9, 1, 0);
   f.fillRect(ox + 2, oy + 2, 5, 5, 0, 0);
@@ -261,6 +298,12 @@ function iconSync(f, ox, oy) {
   f.fillRect(ox + 2, oy + 6, 1, 3, 1, 0);
 }
 
+function iconCrossSync(f, ox, oy) {
+  for (let i = 0; i < 8; i++) f.lpix(ox + i, oy + i, 1, 1);
+  const d2 = [0, 7, 1, 6, 2, 5, 3, 4, 5, 3, 6, 2, 7, 1];
+  for (let i = 0; i < 7; i++) f.lpix(ox + d2[i * 2], oy + d2[i * 2 + 1], 1, 1);
+}
+
 function iconWifi(f, ox, oy) {
   f.fillRect(ox + 2, oy + 2, 6, 1, 1, 0);
   f.fillRect(ox + 1, oy + 3, 1, 1, 1, 0);
@@ -299,6 +342,21 @@ function drawHeaderConnectionSlots(f, wifiSlot, apiSlot) {
   iconArrowRight(f, x, 5);
   x += arrowW + gap;
   f.drawStr(x, 5, api, 0);
+}
+
+function iconGlobe(f, ox, oy) {
+  f.fillRect(ox + 3, oy + 0, 4, 1, 1, 0);
+  f.fillRect(ox + 2, oy + 1, 6, 1, 1, 0);
+  f.fillRect(ox + 1, oy + 2, 2, 6, 1, 0);
+  f.fillRect(ox + 7, oy + 2, 2, 6, 1, 0);
+  f.fillRect(ox + 2, oy + 8, 6, 1, 1, 0);
+  f.fillRect(ox + 3, oy + 9, 4, 1, 1, 0);
+  f.fillRect(ox + 2, oy + 3, 6, 1, 1, 0);
+  f.fillRect(ox + 2, oy + 6, 6, 1, 1, 0);
+  f.fillRect(ox + 4, oy + 1, 2, 8, 1, 0);
+  f.fillRect(ox + 4, oy + 2, 2, 1, 0, 0);
+  f.fillRect(ox + 4, oy + 4, 2, 2, 0, 0);
+  f.fillRect(ox + 4, oy + 7, 2, 1, 0, 0);
 }
 
 function drawBarCfg(f, ox, oy, width, height, segW, pct) {
@@ -500,6 +558,77 @@ function renderBoot() {
   return f;
 }
 
+function drawS1Chrome(f) {
+  f.hline(1, 1, 294);
+  f.hline(1, 126, 294);
+  f.vline(1, 1, 126);
+  f.vline(294, 1, 126);
+
+  iconBoxLogo(f, 6, 4);
+  f.drawStr(19, 5, "DEVDASH", 0);
+  const setup = "SETUP";
+  f.drawStr(290 - strW(setup), 5, setup, 0);
+
+  f.hline(2, 15, 292);
+  f.hline(2, 113, 292);
+
+  const cap = "Scan with phone camera";
+  f.drawStr((296 - strW(cap)) / 2, 117, cap, 0);
+}
+
+function drawS1InfoColumn(f, ssid, password, url) {
+  iconWifi(f, 113, 22);
+  f.drawStr(125, 26, "SSID", 0);
+  f.drawStr(155, 26, ssid, 0);
+
+  iconKey(f, 113, 44, 0);
+  f.drawStr(125, 48, "PASS", 0);
+  f.drawStr(155, 48, password, 0);
+
+  iconGlobe(f, 113, 66);
+  f.drawStr(125, 70, "URL", 0);
+  f.drawStr(155, 70, url, 0);
+
+  f.drawStr(115, 92, "join & popup opens", 0);
+  f.drawStr(115, 101, "- or visit URL.", 0);
+}
+
+function drawQrRows(f, rows, originX, originY, paintSize) {
+  const modules = rows.length;
+  let modulePx = 3;
+  while (modules * modulePx > paintSize - 2) {
+    modulePx--;
+    if (modulePx < 1) return;
+  }
+  const modulesPx = modules * modulePx;
+  const offsetX = originX + Math.floor((paintSize - modulesPx) / 2);
+  const offsetY = originY + Math.floor((paintSize - modulesPx) / 2);
+  for (let y = 0; y < modules; y++) {
+    for (let x = 0; x < rows[y].length; x++) {
+      if (rows[y][x] === "1") {
+        f.fillRect(offsetX + x * modulePx, offsetY + y * modulePx, modulePx, modulePx, 1, 0);
+      }
+    }
+  }
+}
+
+function renderProvision() {
+  const f = new Frame();
+  drawS1Chrome(f);
+  drawS1InfoColumn(f, PROVISION_SAMPLE.ssid, PROVISION_SAMPLE.password, PROVISION_SAMPLE.url);
+  drawQrRows(f, PROVISION_SAMPLE.qrRows, 12, 20, 89);
+  return f;
+}
+
+function renderOffline(message) {
+  const f = new Frame();
+  iconCrossSync(f, 6, 4);
+  f.drawStr(19, 5, "OFFLINE", 1);
+  f.hline(2, 15, 292);
+  f.drawStr(6, 30, message, 0);
+  return f;
+}
+
 function escapeXml(value) {
   return value.replace(/[&<>"']/g, (ch) => ({
     "&": "&amp;",
@@ -512,7 +641,15 @@ function escapeXml(value) {
 
 const outDir = join(root, "docs/assets");
 mkdirSync(outDir, { recursive: true });
-writeFileSync(join(outDir, "readme-boot-screen.svg"), renderBoot().toSvg("DevDash boot screen"));
-writeFileSync(join(outDir, "readme-dashboard-screen.svg"), renderDashboard().toSvg("DevDash dashboard screen"));
-console.log("Rendered docs/assets/readme-boot-screen.svg");
-console.log("Rendered docs/assets/readme-dashboard-screen.svg");
+const screens = [
+  ["readme-boot-screen.svg", renderBoot(), "DevDash boot screen"],
+  ["readme-dashboard-screen.svg", renderDashboard(), "DevDash dashboard screen"],
+  ["readme-provision-screen.svg", renderProvision(), "DevDash provisioning screen"],
+  ["readme-no-wifi-screen.svg", renderOffline("WiFi unreachable"), "DevDash no WiFi screen"],
+  ["readme-api-error-screen.svg", renderOffline("API unreachable"), "DevDash API error screen"],
+];
+
+for (const [filename, frame, title] of screens) {
+  writeFileSync(join(outDir, filename), frame.toSvg(title));
+  console.log(`Rendered docs/assets/${filename}`);
+}
