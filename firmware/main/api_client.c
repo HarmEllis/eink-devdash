@@ -253,6 +253,48 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
     ESP_LOGI(TAG, "API failover start: %s",
              start >= 0 ? "last successful profile" : "first configured profile");
 
+    if (!prefer_last_success_api) {
+        for (uint8_t attempt = 1; attempt <= DASHBOARD_HTTP_ATTEMPTS; attempt++) {
+            for (uint8_t idx = 0; idx < net->api_count; idx++) {
+                const dash_api_profile_t *api = &net->apis[idx];
+                if (!api->enabled || api->api_url[0] == '\0') continue;
+                if (api->device_token[0] == '\0') {
+                    ESP_LOGW(TAG, "API token empty for %s; device stays offline", api->api_url);
+                    out->offline = true;
+                    return ESP_ERR_INVALID_STATE;
+                }
+
+                int status = 0;
+                ESP_LOGI(TAG, "Trying API profile index=%u round=%u/%u url=%s",
+                         idx, attempt, DASHBOARD_HTTP_ATTEMPTS, api->api_url);
+                last_err = fetch_one(api->api_url, api->device_token,
+                                     out, &status);
+                if (last_err == ESP_OK) {
+                    ESP_LOGI(TAG, "API profile index=%u succeeded", idx);
+                    cfg->last_success_network_idx = network_idx;
+                    cfg->last_success_api_idx = idx;
+                    storage_save_v2(cfg);
+                    if (api_used_idx) *api_used_idx = idx;
+                    return ESP_OK;
+                }
+                if (!should_fail_over(status, last_err)) {
+                    ESP_LOGW(TAG, "Not failing over after auth status %d", status);
+                    return last_err;
+                }
+                ESP_LOGW(TAG, "API profile index=%u failed: err=%s status=%d; trying failover",
+                         idx, esp_err_to_name(last_err), status);
+            }
+
+            if (attempt < DASHBOARD_HTTP_ATTEMPTS) {
+                vTaskDelay(pdMS_TO_TICKS(DASHBOARD_HTTP_RETRY_DELAY_MS));
+            }
+        }
+
+        out->offline = true;
+        ESP_LOGW(TAG, "All API profiles failed; last_err=%s", esp_err_to_name(last_err));
+        return last_err;
+    }
+
     for (uint8_t pass = 0; pass < 2; pass++) {
         for (uint8_t i = 0; i < net->api_count; i++) {
             uint8_t idx = (pass == 0 && start >= 0) ? (uint8_t)start : i;
