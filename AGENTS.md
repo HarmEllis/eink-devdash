@@ -33,8 +33,9 @@ docker exec -u node optimistic_hermann bash -c "<command>"
 > `sdkconfig`, `dependencies.lock`) become root-owned, after which the
 > `node` user can no longer build.
 
-ESP-IDF is normally already on `PATH` inside the container, so a separate
-`source` step is not required. If it isn't, source it explicitly:
+For firmware and flash-server work, always source the ESP-IDF profile script
+in the command wrapper. This keeps `idf.py` and related ESP-IDF tools available
+even when the container shell does not put them on `PATH` by default:
 
 ```bash
 docker exec -u node optimistic_hermann bash -c "source /etc/profile.d/esp-idf.sh && <command>"
@@ -42,12 +43,15 @@ docker exec -u node optimistic_hermann bash -c "source /etc/profile.d/esp-idf.sh
 
 ## Common commands
 
-All commands run as `docker exec -u node optimistic_hermann bash -c "..."`.
+Firmware and flash-server commands run as
+`docker exec -u node optimistic_hermann bash -c "source /etc/profile.d/esp-idf.sh && ..."`.
+API commands can use the plain `docker exec -u node optimistic_hermann bash -c "..."`
+wrapper.
 
 | Task | Command (inside the container) |
 |------|--------------------------------|
 | Build firmware | `cd /workspaces/eink-devdash/firmware && idf.py build` |
-| Set target (once after clean) | `idf.py set-target esp32s3` |
+| Set target (once after clean) | `cd /workspaces/eink-devdash/firmware && idf.py set-target esp32s3` |
 | Start flash server | `cd /workspaces/eink-devdash/flash-server && bash serve.sh` |
 | Install API dependencies | `cd /workspaces/eink-devdash/api && npm install` |
 | Start API | `cd /workspaces/eink-devdash/api && npm start` |
