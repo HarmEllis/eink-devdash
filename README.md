@@ -8,15 +8,9 @@ updated on a configurable interval via deep sleep.
 [![Docker image](https://img.shields.io/badge/ghcr.io-eink--devdash-blue?logo=docker)](https://github.com/HarmEllis/eink-devdash/pkgs/container/eink-devdash)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-```
-┌─────────────────────────────────┐
-│  GitHub          Claude Code    │
-│  Issues: 3       5h: 42/50      │
-│  PRs:    1       Week: 210/1000 │
-│  Alerts: 0  ███  Codex 5h: 37%  │
-│  Updated: 14:32                 │
-└─────────────────────────────────┘
-```
+| Boot screen | Dashboard |
+|-------------|-----------|
+| <img src="docs/assets/readme-boot-screen.svg" alt="DevDash boot screen" width="420"> | <img src="docs/assets/readme-dashboard-screen.svg" alt="DevDash dashboard screen" width="420"> |
 
 Red ink highlights alerts: Dependabot findings, usage above 80%, or auth
 errors.
@@ -347,6 +341,16 @@ eink-devdash/
 ├── docs/
 │   └── decisions/          # Architecture decision records
 └── .devcontainer/          # VS Code dev container (ESP-IDF)
+```
+
+### README screen previews
+
+The screen previews at the top of this README are generated from the
+firmware pixel font and mirrored display coordinates. Regenerate them after
+display layout changes with:
+
+```bash
+node scripts/render-readme-screens.mjs
 ```
 
 ### API development

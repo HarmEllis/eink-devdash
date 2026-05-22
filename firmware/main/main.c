@@ -57,7 +57,7 @@ void app_main(void)
         .github = { .issues = 7, .prs = 3, .dependabot = 2 },
         .claude = {
             .five_hour = { .used = 84, .limit = 200, .reset_in_seconds = 5400 },
-            .weekly    = { .used = 1240, .limit = 5000, .reset_in_seconds = 0 },
+            .weekly    = { .used = 1240, .limit = 5000, .reset_in_seconds = 205200 },
             .auth_error = false,
         },
         .codex = {
