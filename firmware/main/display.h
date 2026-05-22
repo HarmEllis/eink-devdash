@@ -6,7 +6,7 @@ void display_render(const dashboard_data_t *data);
 void display_set_connection_slots(const dash_config_v2_t *cfg,
                                   int network_idx,
                                   int active_api_idx);
-void display_show_connecting(bool compact);
+void display_show_connecting(bool compact, const dash_config_v2_t *cfg);
 void display_show_refreshing(bool compact);
 /* Render the V4 S1 provisioning prompt with the per-device SoftAP SSID and
  * AP password. The QR is generated from wifi_net_get_wifi_qr at render time.

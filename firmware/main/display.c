@@ -14,8 +14,10 @@
 
 #include "display.h"
 #include "eink_weact29.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_attr.h"
+#include "esp_mac.h"
 #include "esp_system.h"
 #include "nvs.h"
 #include "qrcode.h"
@@ -36,6 +38,7 @@ static header_connection_slots_t s_header_slots;
 /* ── 5×7 pixel font (ASCII 32–122) ─────────────────────────────────────── */
 #define FONT_W  6   /* 5 px glyph + 1 px gap */
 #define FONT_H  7
+#define FONT_BOOT_W 6
 #define FONT2_W 12  /* 2× scaled: 10 px + 2 px gap */
 #define FONT2_H 14
 
@@ -183,12 +186,46 @@ static void draw_char(int lx, int ly, char c, int use_red)
                 lpix(lx + col, ly + row, 1, use_red);
 }
 
+static void draw_char_bw(int lx, int ly, char c, int black)
+{
+    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    const uint8_t *g = font5x7[(unsigned char)c - 32];
+    for (int col = 0; col < 5; col++)
+        for (int row = 0; row < 7; row++)
+            if (g[col] & (1 << row))
+                lpix(lx + col, ly + row, black, 0);
+}
+
 static void draw_str(int lx, int ly, const char *s, int use_red)
 {
     while (*s) { draw_char(lx, ly, *s++, use_red); lx += FONT_W; }
 }
 
 static int str_w(const char *s)  { return (int)strlen(s) * FONT_W; }
+
+static void draw_str_adv(int lx, int ly, const char *s, int black, int advance)
+{
+    while (*s) {
+        draw_char_bw(lx, ly, *s++, black);
+        lx += advance;
+    }
+}
+
+static void draw_str_clipped_adv(int lx, int ly, const char *s, int black,
+                                 int advance, int max_w)
+{
+    int used = 0;
+    while (*s && used + 5 <= max_w) {
+        draw_char_bw(lx, ly, *s++, black);
+        lx += advance;
+        used += advance;
+    }
+}
+
+static int str_w_adv(const char *s, int advance)
+{
+    return (int)strlen(s) * advance;
+}
 
 /* 2× scaled */
 static void draw_char2x(int lx, int ly, char c, int use_red)
@@ -207,6 +244,24 @@ static void draw_str2x(int lx, int ly, const char *s, int use_red)
 }
 
 static int str2x_w(const char *s) { return (int)strlen(s) * FONT2_W; }
+
+static void draw_char4x_bw(int lx, int ly, char c, int black)
+{
+    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    const uint8_t *g = font5x7[(unsigned char)c - 32];
+    for (int col = 0; col < 5; col++)
+        for (int row = 0; row < 7; row++)
+            if (g[col] & (1 << row))
+                fill_rect(lx + col * 4, ly + row * 4, 4, 4, black, 0);
+}
+
+static void draw_str4x_bw(int lx, int ly, const char *s, int black)
+{
+    while (*s) {
+        draw_char4x_bw(lx, ly, *s++, black);
+        lx += 23;
+    }
+}
 
 /* ── pixel icons ────────────────────────────────────────────────────────── */
 
@@ -976,6 +1031,115 @@ static bool display_show_compact_status(const char *status)
     return true;
 }
 
+static void draw_boot_header(void)
+{
+    icon_box_logo(6, 4);
+    draw_str_adv(19, 4, "DEVDASH", 1, FONT_BOOT_W);
+    static const char *STATUS = "JOINING WIFI";
+    draw_str_adv(291 - str_w_adv(STATUS, FONT_BOOT_W), 4, STATUS, 1,
+                 FONT_BOOT_W);
+    hline(2, 14, 293);
+}
+
+static void draw_boot_source_list(int lx, int ly)
+{
+    draw_str_adv(lx, ly, "github", 1, FONT_BOOT_W);
+    lx += str_w_adv("github", FONT_BOOT_W) + FONT_BOOT_W;
+    fill_rect(lx + 1, ly + 3, 2, 2, 1, 0);
+    lx += 2 * FONT_BOOT_W;
+    draw_str_adv(lx, ly, "claude", 1, FONT_BOOT_W);
+    lx += str_w_adv("claude", FONT_BOOT_W) + FONT_BOOT_W;
+    fill_rect(lx + 1, ly + 3, 2, 2, 1, 0);
+    lx += 2 * FONT_BOOT_W;
+    draw_str_adv(lx, ly, "codex", 1, FONT_BOOT_W);
+}
+
+static const char *display_firmware_version(void)
+{
+    const esp_app_desc_t *app = esp_app_get_description();
+    if (app && app->version[0]) return app->version;
+    return "unknown";
+}
+
+static void format_device_serial(char *out, size_t out_sz)
+{
+    uint8_t mac[6] = {0};
+    if (esp_efuse_mac_get_default(mac) == ESP_OK) {
+        snprintf(out, out_sz, "%02X-%02X-%02X", mac[3], mac[4], mac[5]);
+        return;
+    }
+    snprintf(out, out_sz, "--");
+}
+
+static void draw_boot_footer(void)
+{
+    char fw[32];
+    snprintf(fw, sizeof(fw), "fw %s", display_firmware_version());
+
+    hline(2, 114, 293);
+    draw_str_adv(6, 117, fw, 1, FONT_BOOT_W);
+
+    static const char *SETUP = "hold BOOT 5s -> setup";
+    draw_str_adv(291 - str_w_adv(SETUP, FONT_BOOT_W), 117, SETUP, 1,
+                 FONT_BOOT_W);
+}
+
+static void draw_boot_networks(const dash_config_v2_t *cfg)
+{
+    int row = 0;
+    for (uint8_t i = 0; cfg && i < cfg->network_count && row < 5; i++) {
+        const dash_wifi_profile_t *net = &cfg->networks[i];
+        if (!net->enabled || net->ssid[0] == '\0') continue;
+
+        char index[3] = { (char)('1' + row), '.', '\0' };
+        int y = 35 + row * 9;
+        draw_str_adv(122, y, index, 1, FONT_BOOT_W);
+        draw_str_clipped_adv(137, y, net->ssid, 1, FONT_BOOT_W,
+                             290 - 137 + 1);
+        row++;
+    }
+}
+
+static void display_show_boot_poster(const dash_config_v2_t *cfg)
+{
+    ensure_init();
+    memset(bw_buf,  0xFF, sizeof(bw_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
+
+    hline(1,   1,   294);
+    hline(1,   126, 294);
+    vline(1,   1,   126);
+    vline(294, 1,   126);
+
+    draw_boot_header();
+
+    fill_rect(6, 20, 108, 90, 1, 0);
+    draw_str4x_bw(14, 30, "DEV", 0);
+    draw_str4x_bw(14, 63, "DASH", 0);
+    char serial[16];
+    format_device_serial(serial, sizeof(serial));
+    char sn[24];
+    snprintf(sn, sizeof(sn), "sn %s", serial);
+    draw_str_adv(14, 98, sn, 0, FONT_BOOT_W);
+
+    draw_str_adv(122, 22, "SCANNING SAVED NETWORKS", 1, FONT_BOOT_W);
+    draw_boot_networks(cfg);
+    hline(122, 82, 169);
+    draw_str_adv(122, 88, "THEN FETCH", 1, FONT_BOOT_W);
+    draw_boot_source_list(122, 101);
+
+    draw_boot_footer();
+
+    eink_set_framebuffer(bw_buf, red_buf);
+    eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
+    eink_sleep(&s_eink);
+    remember_current_bw_frame();
+    s_first_refresh_done = true;
+    s_last_red_state     = false;
+    s_bw_fast_cycle_count = 0;
+    display_mark_frame(DISPLAY_FRAME_CONNECTING);
+}
+
 static void display_show_wait_page(const char *header_status,
                                    const char *title,
                                    const char *sub)
@@ -1010,12 +1174,12 @@ static void display_show_wait_page(const char *header_status,
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
 }
 
-void display_show_connecting(bool compact)
+void display_show_connecting(bool compact, const dash_config_v2_t *cfg)
 {
     if (compact && display_show_compact_status("connecting")) {
         return;
     }
-    display_show_wait_page("CONNECT", "Joining WiFi", "Scanning saved networks");
+    display_show_boot_poster(cfg);
 }
 
 void display_show_refreshing(bool compact)

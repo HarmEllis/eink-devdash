@@ -11,6 +11,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         esp_event
+        esp_app_format
         esp_wifi
         esp_http_client
         esp_http_server

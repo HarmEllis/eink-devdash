@@ -166,7 +166,7 @@ void app_main(void)
                          wake == ESP_SLEEP_WAKEUP_EXT0);
     bool prefer_last_success_api = wake_refresh;
     if (!wake_refresh) {
-        display_show_connecting(false);
+        display_show_connecting(false, &cfg);
     }
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
