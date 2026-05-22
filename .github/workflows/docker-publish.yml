@@ -1,0 +1,271 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to build and publish (e.g. v0.0.1)"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  packages: write
+  id-token: write # Required for cosign keyless signing (OIDC)
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  verify-ci:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.version.outputs.tag }}
+      commit_sha: ${{ steps.resolve_commit.outputs.sha }}
+
+    steps:
+      - name: Resolve version tag
+        id: version
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve tagged commit
+        id: resolve_commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")"
+          object_type="$(printf '%s' "$ref_json" | jq -r '.object.type')"
+          object_sha="$(printf '%s' "$ref_json" | jq -r '.object.sha')"
+
+          if [ "$object_type" = "tag" ]; then
+            object_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" --jq '.object.sha')"
+          fi
+
+          echo "sha=${object_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful CI workflow for tagged commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.resolve_commit.outputs.sha }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?event=push&status=completed&head_sha=${TARGET_SHA}&per_page=100")"
+          success_count="$(printf '%s' "$runs_json" | jq '[.workflow_runs[] | select(.name == "CI" and .head_sha == "'"${TARGET_SHA}"'" and .conclusion == "success")] | length')"
+
+          if [ "$success_count" -eq 0 ]; then
+            matching_runs="$(printf '%s' "$runs_json" | jq -r '[.workflow_runs[] | select(.name == "CI" and .head_sha == "'"${TARGET_SHA}"'") | "\(.id):\(.status)/\(.conclusion)"] | join(", ")')"
+            if [ -z "$matching_runs" ]; then
+              matching_runs="none"
+            fi
+
+            echo "No successful CI workflow run found for ${TAG} (${TARGET_SHA}). Matching CI runs: ${matching_runs}" >&2
+            echo "Push the release commit to main, wait for CI to pass on that exact commit, and only then push the release tag." >&2
+            exit 1
+          fi
+
+  prepare:
+    needs: verify-ci
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.version.outputs.tag }}
+      image_ref: ${{ steps.image.outputs.ref }}
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+      primary_tag: ${{ steps.primary_tag.outputs.value }}
+
+    steps:
+      - name: Resolve version tag
+        id: version
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate release tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*)
+              ;;
+            *)
+              echo "Expected tag in form vMAJOR.MINOR.PATCH, got: $TAG" >&2
+              exit 1
+              ;;
+          esac
+
+          if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Expected tag in form vMAJOR.MINOR.PATCH, got: $TAG" >&2
+            exit 1
+          fi
+
+      - name: Normalize image reference
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REGISTRY: ${{ env.REGISTRY }}
+        run: |
+          image_name="$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "name=${image_name}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REGISTRY}/${image_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ steps.image.outputs.ref }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ steps.version.outputs.tag }}
+            type=raw,value=latest,enable=${{ !contains(steps.version.outputs.tag, '-') }}
+
+      - name: Capture primary tag
+        id: primary_tag
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          primary_tag="$(printf '%s\n' "$TAGS" | head -n 1)"
+          echo "value=${primary_tag}" >> "$GITHUB_OUTPUT"
+
+  build-amd64:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/amd64 image by digest
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ./api
+          file: ./api/Dockerfile
+          platforms: linux/amd64
+          labels: ${{ needs.prepare.outputs.labels }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image_ref }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=linux-amd64
+          cache-to: type=gha,mode=max,scope=linux-amd64
+          provenance: mode=max
+          sbom: true
+
+  merge-and-push:
+    needs:
+      - prepare
+      - build-amd64
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest with release tags
+        id: manifest
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image_ref }}
+          TAGS: ${{ needs.prepare.outputs.tags }}
+          PRIMARY_TAG: ${{ needs.prepare.outputs.primary_tag }}
+          AMD64_DIGEST: ${{ needs.build-amd64.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t tags < <(printf '%s\n' "$TAGS" | sed '/^$/d')
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            tag_args+=("-t" "$tag")
+          done
+
+          docker buildx imagetools create \
+            "${tag_args[@]}" \
+            "${IMAGE}@${AMD64_DIGEST}"
+
+          digest=""
+          for attempt in 1 2 3 4 5; do
+            digest="$(docker buildx imagetools inspect "$PRIMARY_TAG" | awk '/Digest:/ { print $2; exit }' || true)"
+            if [ -n "$digest" ]; then
+              break
+            fi
+            sleep 5
+          done
+
+          if [ -z "$digest" ]; then
+            echo "Failed to resolve manifest digest for $PRIMARY_TAG" >&2
+            exit 1
+          fi
+
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign the published Docker image
+        env:
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_ref="${{ needs.prepare.outputs.image_ref }}@${DIGEST}"
+          for attempt in 1 2 3; do
+            if cosign sign --yes "$image_ref"; then
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              sleep 10
+            fi
+          done
+
+          echo "Failed to sign image after 3 attempts: $image_ref" >&2
+          exit 1
+
+      # Best-effort scanning: logs vulnerabilities but does not block the release.
+      # All action refs are SHA-pinned to mitigate supply chain attacks.
+      - name: Run Trivy vulnerability scanner
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ needs.prepare.outputs.image_ref }}@${{ steps.manifest.outputs.digest }}
+          format: "table"
+          severity: "CRITICAL,HIGH"

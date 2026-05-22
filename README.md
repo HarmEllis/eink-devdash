@@ -1,6 +1,12 @@
 # eink-devdash
 
-A physical developer dashboard on a 2.9" black/red e-ink display, driven by an ESP32-S3. Shows GitHub activity, Claude Code rate limits, and Codex usage — updated on a configurable interval via deep sleep.
+A physical developer dashboard on a 2.9" black/red e-ink display, driven by
+an ESP32-S3. Shows GitHub activity, Claude Code rate limits, and Codex usage —
+updated on a configurable interval via deep sleep.
+
+[![CI](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml/badge.svg)](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml)
+[![Docker image](https://img.shields.io/badge/ghcr.io-eink--devdash-blue?logo=docker)](https://github.com/HarmEllis/eink-devdash/pkgs/container/eink-devdash)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ```
 ┌─────────────────────────────────┐
@@ -12,7 +18,24 @@ A physical developer dashboard on a 2.9" black/red e-ink display, driven by an E
 └─────────────────────────────────┘
 ```
 
-Red ink highlights alerts: Dependabot findings, usage above 80%, or auth errors.
+Red ink highlights alerts: Dependabot findings, usage above 80%, or auth
+errors.
+
+---
+
+## Contents
+
+- [Hardware](#hardware)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Flashing the firmware](#flashing-the-firmware)
+- [Provisioning over WiFi](#provisioning-over-wifi)
+- [API reference](#api-reference)
+- [Architecture](#architecture)
+- [Development](#development)
+- [Releases](#releases)
+- [Technical reference](#technical-reference)
+- [License](#license)
 
 ---
 
@@ -39,89 +62,107 @@ Red ink highlights alerts: Dependabot findings, usage above 80%, or auth errors.
 
 ---
 
-## Architecture
+## Quick start
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Proxmox VM (Docker)                                        │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  API server  (Fastify / TypeScript, port 3000)       │   │
-│  │  ├── GitHub service  (PAT → issues, PRs, Dependabot) │   │
-│  │  ├── Claude service  (OAuth token → rate limits)     │   │
-│  │  └── Codex service   (ChatGPT-auth Codex sessions)   │   │
-│  └──────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-          ▲  Bearer token over HTTP (LAN only)
-          │
-┌─────────────────────────────────────────────────────────────┐
-│  ESP32-S3                                                   │
-│  ├── NVS: stores API URL, token, refresh interval          │
-│  ├── WiFi provisioning (SoftAP + QR on first boot)         │
-│  ├── HTTP fetch → parse JSON → render to e-ink             │
-│  └── Deep sleep between refreshes                          │
-└─────────────────────────────────────────────────────────────┘
-```
+This is the recommended path for normal use: a published Docker image plus
+the included web flasher. No build tools required.
 
-### Refresh strategy
+### 1. Run the API server
 
-| Mode | Duration | Trigger |
-|------|----------|---------|
-| BW fast monochrome | ~2-4 s | Dashboard metrics changed while both the previous and current frame are black/white-only |
-| Full 3-color (Mode 1 LUT) | ~15-27 s | Red content changed, previous frame had red, first render, controller wake, or after ten fast monochrome refreshes |
+Create a `.env` file next to `docker-compose.yml` (copy `.env.example` and
+fill the values described in [Configuration](#configuration)).
 
-Timestamp and reset-countdown changes by themselves do not repaint the panel.
-
-Minimum refresh interval: 3 minutes (configurable 3–60 min).
-
----
-
-## Getting started
-
-### Prerequisites
-
-- Docker + Docker Compose (for the API server)
-- [ESP-IDF v5.3](https://docs.espressif.com/projects/esp-idf/en/v5.3/) or the included dev container
-- A GitHub Personal Access Token with `repo` and `security_events` scopes
-- Codex CLI authenticated with ChatGPT in the mounted `~/.codex` directory
-
-### 1. API server
-
-Create a `.env` file in the repo root:
-
-```env
-GITHUB_TOKEN=ghp_...
-CODEX_PLAN_TYPE=
-CODEX_LIVE_USAGE=true
-CODEX_CLI_PATH=
-CODEX_APP_SERVER_TIMEOUT_MS=8000
-DEVICE_TOKEN=<random 32-char secret you generate>
-MDNS_ENABLED=true
-MDNS_NAME=devdash-api
-```
-
-Start the server:
+Pull the latest published image and start the container:
 
 ```bash
+docker compose pull
 docker compose up -d
 ```
 
-The API is available at `http://<your-vm-ip>:3000`. It also advertises
-`http://devdash-api.local:3000` over mDNS by default when the container network
-allows multicast. The `/health` endpoint requires no authentication; all other
-routes require `Authorization: Bearer <DEVICE_TOKEN>`.
+The API listens on `http://<host>:3000` and advertises
+`http://devdash-api.local:3000` over mDNS when the container network allows
+multicast.
 
 For reliable `.local` discovery on Linux Docker hosts, use host networking:
 
 ```bash
+docker compose --profile mdns-host pull
 docker compose --profile mdns-host up -d api-mdns-host
 ```
 
-Bridge networking with the default `api` service still works for direct IP URLs,
-but mDNS advertisement can be inconsistent across Docker hosts and VLANs.
+Pin a specific image version by setting `IMAGE_TAG` in `.env`:
 
-### 2. Firmware
+```env
+IMAGE_TAG=v0.1.0
+```
 
-Open the project in VS Code with the dev container, or install ESP-IDF v5.3 manually.
+Verify the API is reachable:
+
+```bash
+curl http://<host>:3000/health
+# {"ok":true}
+```
+
+### 2. Flash the firmware
+
+See [Flashing the firmware](#flashing-the-firmware). Browser-based flashing
+is the fastest path; building from source is documented under
+[Development](#development).
+
+### 3. Provision
+
+Power up the ESP32-S3, scan the on-screen QR with your phone, fill in WiFi
+and the API URL/token in the captive portal. See
+[Provisioning over WiFi](#provisioning-over-wifi).
+
+---
+
+## Configuration
+
+Environment variables read by the API container. Set them in `.env` next to
+`docker-compose.yml`.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DEVICE_TOKEN` | yes | — | Shared secret the firmware sends in `Authorization: Bearer …`. Generate 32+ random characters. |
+| `GITHUB_TOKEN` | no | empty | Personal access token with `repo` + `security_events`. When empty the `github` block is omitted from `/dashboard`. |
+| `CODEX_PLAN_TYPE` | no | empty | Set to `plus` or `team` when multiple ChatGPT accounts are visible. |
+| `CODEX_LIVE_USAGE` | no | `true` | Set to `false` to skip the live Codex app-server probe and read only the on-disk session JSONL. |
+| `CODEX_CLI_PATH` | no | empty | Override the Codex CLI binary path. |
+| `CODEX_APP_SERVER_TIMEOUT_MS` | no | `8000` | Timeout for the Codex live probe. |
+| `MDNS_ENABLED` | no | `true` | Set to `false` to disable mDNS advertising. |
+| `MDNS_NAME` | no | `devdash-api` | Hostname under `.local`. |
+| `IMAGE_TAG` | no | `latest` | Pin the published image to a specific tag (e.g. `v0.1.0`). |
+
+The container mounts `~/.claude` read-only and `~/.codex` read-write from
+the host so it can read Claude OAuth credentials and run `codex app-server`
+under the user's existing ChatGPT auth. No keys are baked into the image.
+
+---
+
+## Flashing the firmware
+
+Two paths: web flasher (no toolchain) or `idf.py` from a local checkout.
+
+### Option A — Web flasher (recommended)
+
+The repo ships a static page that flashes a pre-built `.bin` via the Web
+Serial API in Chrome.
+
+1. Plug the ESP32-S3 in over USB.
+2. Open the [`flash-server/`](flash-server/) page (host it locally, see
+   [Development → Web flash server](#web-flash-server)) or use any
+   already-hosted copy.
+3. Click **Install** in Chrome and select the device's serial port.
+4. After flashing the page redirects to `/flashed.html`, which mirrors the
+   on-device provisioning instructions and includes a troubleshooting
+   accordion.
+
+### Option B — `idf.py flash`
+
+For developers building firmware from source. See
+[Development → Firmware](#firmware-development) for the devcontainer
+setup. Once inside the devcontainer:
 
 ```bash
 cd firmware
@@ -130,80 +171,64 @@ idf.py build
 idf.py flash monitor
 ```
 
-On first boot the display shows the V4 provisioning screen with a QR code, the
-SoftAP name, the AP password, and `192.168.4.1`. Both first-time setup and
-later edits use the same on-device captive portal:
-
-1. **Scan the QR with your phone camera.** iOS Camera and Android Camera /
-   Google Lens both recognise the `WIFI:T:WPA;S:devdash-XXXX;P:…;;` payload
-   and offer one-tap join.
-2. **The captive-portal sheet pops up automatically** (iOS/Android/Windows).
-   If it does not, open `http://192.168.4.1` in any browser while still
-   joined to the AP.
-3. **Edit the form** — up to five WiFi networks × five API endpoints each.
-   Empty password / token fields are treated as "keep the saved value";
-   tick the matching *Clear* checkbox to erase a stored secret.
-4. **Save.** The device shows a confirmation, reboots ~4 seconds later, joins
-   WiFi, fetches the API, and renders the dashboard.
-
-The AP password is a 12-character random alphanumeric string generated once
-at first boot and persisted in NVS. The same password keeps working across
-reboots; a factory reset (`idf.py erase-flash`) regenerates it. API URLs
-must use `http://`; IP addresses, DNS names, and `.local` mDNS names are
-accepted. The HTTPS path is out of scope for this firmware revision.
-
-- API URL: `http://192.168.1.50:3000`
-- Device token: required for each enabled API entry
-- Refresh interval: 3–60 minutes, default 5
-
-The device token must match `DEVICE_TOKEN` in the API server's `.env`.
-
-If none of the stored WiFi networks are reachable, the device displays
-`OFFLINE` and returns to deep sleep (or keeps retrying with
-`CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE=y`). Stored credentials are
-never erased automatically.
-
-**Re-enter the captive portal at any time** by holding the BOOT button
-(GPIO0) for ~5 seconds. The same threshold applies whether the device
-is in deep sleep, fetching, rendering, or stuck in the offline retry
-loop — `CONFIG_DEVDASH_BOOT_LONGPRESS_MS` (default 5000 ms) is the
-single source of truth. A short press of BOOT while in deep sleep
-wakes the device for an immediate refresh, without entering the
-portal. The portal itself does not auto-close while open; it stays
-available until the user saves credentials or power-cycles the device.
-
-Known limitation: holding BOOT while applying USB power (cold boot)
-puts the ESP32-S3 into ROM download mode at the hardware level, before
-the firmware runs. Power on first, then long-press BOOT.
-
-To wipe stored credentials and force a fresh portal session over USB:
+To wipe stored credentials over USB without reflashing:
 
 ```bash
 parttool.py -p /dev/ttyACM0 erase_partition --partition-name=nvs
-# or, full erase:
+# or, a full chip erase:
 idf.py erase-flash
 ```
 
-### 3. Web flash (optional)
+---
 
-Pre-built binaries can be flashed directly from a browser via the included
-web flash server. Use `watch.sh` (recommended) — it starts the HTTP server
-and automatically updates the served binaries whenever a new build completes:
+## Provisioning over WiFi
 
-```bash
-cd flash-server
-bash watch.sh
-```
+On first boot — and whenever you long-press the BOOT button — the display
+shows a SoftAP screen with a QR code, the AP SSID, the AP password, and the
+captive portal URL `192.168.4.1`.
 
-Open `http://localhost:8080` in Chrome and click Install. After flashing
-completes the page redirects to `/flashed.html` (V4 S3 design) with a
-step-by-step guide that mirrors the e-ink prompt and a troubleshooting
-accordion. After each `idf.py build` the bins are refreshed automatically;
-just click Install again to flash the new firmware. No need to restart the
-server.
+1. **Scan the QR with your phone camera.** Both iOS Camera and Android
+   Camera / Google Lens parse the `WIFI:T:WPA;S:devdash-XXXX;P:…;;`
+   payload and offer one-tap join.
+2. **The captive portal pops up automatically** on iOS, Android, and
+   Windows. If it does not appear, open `http://192.168.4.1` in a browser
+   while still joined to the AP.
+3. **Edit the form.** Up to five WiFi networks × five API endpoints each.
+   Empty password/token fields mean "keep the saved value"; tick the
+   matching *Clear* checkbox to erase a stored secret.
+4. **Save.** The device confirms, reboots after ~4 s, joins WiFi, fetches
+   the API, and renders the dashboard.
 
-> `serve.sh` still works for a one-shot copy + serve, but requires a manual
-> restart after every rebuild.
+The AP password is a 12-character random string generated on first boot
+and persisted in NVS. The same password survives reboots; a factory reset
+(`idf.py erase-flash`) regenerates it. API URLs must start with `http://`
+— IP, DNS, and `.local` mDNS hostnames are all accepted. HTTPS is out of
+scope for this firmware revision.
+
+| Field | Notes |
+|-------|-------|
+| API URL | `http://192.168.1.50:3000` or `http://devdash-api.local:3000` |
+| Device token | Must match `DEVICE_TOKEN` in the API server's `.env` |
+| Refresh interval | 3–60 minutes, default 5 |
+
+### BOOT button
+
+| Action | When | Result |
+|--------|------|--------|
+| Short press | Deep sleep | Wake and refresh immediately |
+| Long press (~5 s) | Any state | Enter the captive portal |
+
+`CONFIG_DEVDASH_BOOT_LONGPRESS_MS` (default `5000`) is the single source of
+truth for the long-press threshold.
+
+> **Known limitation:** holding BOOT *while* applying USB power
+> (cold boot) puts the ESP32-S3 into ROM download mode at the hardware
+> level, before firmware runs. Power on first, then long-press BOOT.
+
+If none of the stored WiFi networks are reachable, the device shows
+`OFFLINE` and returns to deep sleep, or keeps retrying when
+`CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE=y`. Stored credentials are
+never erased automatically.
 
 ---
 
@@ -212,15 +237,13 @@ server.
 ### `GET /dashboard`
 
 Returns current dashboard data. Requires `Authorization: Bearer <token>`.
-The `github` object is omitted when `GITHUB_TOKEN` is unset or empty.
-Set `CODEX_PLAN_TYPE=team` or `CODEX_PLAN_TYPE=plus` to pin Codex usage to a
-specific ChatGPT plan when multiple accounts have local session history or
-multiple live rate-limit buckets are available. Codex live usage is read
-through `codex app-server` first; the API falls back to local session JSONL
-files when the CLI, auth, or live endpoint is unavailable. Set
-`CODEX_LIVE_USAGE=false` to disable the live probe, `CODEX_CLI_PATH` to use a
-custom CLI binary, or `CODEX_APP_SERVER_TIMEOUT_MS` to tune the app-server
-request timeout.
+
+- The `github` object is omitted when `GITHUB_TOKEN` is unset or empty.
+- Codex live usage is read through `codex app-server` first; the API
+  falls back to the latest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+  `token_count.rate_limits` event when the CLI, auth, or live endpoint
+  is unavailable.
+- Set `CODEX_LIVE_USAGE=false` to disable the live probe.
 
 ```json
 {
@@ -260,11 +283,39 @@ request timeout.
 
 ### `GET /health`
 
-Returns `{ "ok": true }`. No authentication required. Use for container health checks.
+Returns `{ "ok": true }`. No authentication required. Use it for container
+health checks.
 
 ---
 
-## Project structure
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Docker host (Proxmox VM, NAS, Pi, …)                       │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  API server  (Fastify / TypeScript, port 3000)       │   │
+│  │  ├── GitHub service  (PAT → issues, PRs, Dependabot) │   │
+│  │  ├── Claude service  (OAuth token → rate limits)     │   │
+│  │  └── Codex service   (ChatGPT-auth Codex sessions)   │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+          ▲  Bearer token over HTTP (LAN only)
+          │
+┌─────────────────────────────────────────────────────────────┐
+│  ESP32-S3                                                   │
+│  ├── NVS: WiFi profiles + API endpoints + refresh interval  │
+│  ├── WiFi provisioning (SoftAP + QR on first boot / hold)   │
+│  ├── HTTP fetch → parse JSON → render to e-ink              │
+│  └── Deep sleep between refreshes                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Development
+
+### Repo layout
 
 ```
 eink-devdash/
@@ -286,29 +337,121 @@ eink-devdash/
 │       └── eink_weact29/   # SSD1680 driver component
 ├── flash-server/           # Browser-based OTA flash page
 ├── docker-compose.yml
+├── docs/
+│   └── decisions/          # Architecture decision records
 └── .devcontainer/          # VS Code dev container (ESP-IDF)
 ```
 
+### API development
+
+```bash
+cd api
+npm install
+npm run dev    # tsx watch src/index.ts
+```
+
+Build the image locally instead of pulling from GHCR:
+
+```bash
+docker compose build api
+docker compose up -d api
+```
+
+### Firmware development
+
+Open the project in VS Code and reopen in the dev container, or install
+ESP-IDF v5.3 manually. Inside the dev container:
+
+```bash
+cd firmware
+idf.py set-target esp32s3   # once after a clean checkout
+idf.py build
+idf.py flash monitor
+```
+
+The dev container always runs commands as the `node` user:
+
+```bash
+docker exec -u node <devcontainer> bash -c "cd /workspaces/eink-devdash/firmware && idf.py build"
+```
+
+Running as root corrupts file ownership of `build/`, `sdkconfig`, and
+`dependencies.lock`. See [AGENTS.md](AGENTS.md) for the full devcontainer
+workflow.
+
+### Web flash server
+
+`flash-server/watch.sh` serves the bins on `http://localhost:8080` and
+re-publishes them whenever `idf.py build` produces a new artifact:
+
+```bash
+cd flash-server
+bash watch.sh
+```
+
+`serve.sh` does a single copy + serve and needs a restart after every
+rebuild.
+
 ---
 
-## NVS layout
+## Releases
+
+Tags of the form `vMAJOR.MINOR.PATCH` (for example `v0.1.0`) trigger
+[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml),
+which:
+
+1. Verifies the `CI` workflow succeeded on the tagged commit.
+2. Builds the API container for `linux/amd64`.
+3. Pushes the image to
+   `ghcr.io/harmellis/eink-devdash` with tags
+   `<version>`, `<major>.<minor>`, `<major>`, and `latest`
+   (the `latest` tag is skipped for pre-release tags).
+4. Signs the manifest with cosign (keyless, OIDC).
+5. Runs Trivy and uploads SBOM artifacts.
+
+The release flow is therefore:
+
+```bash
+git commit ...
+git push origin main          # wait for CI to pass on this exact SHA
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+If `docker-publish` fails the CI-gating check, push the release commit
+first, wait for CI, and re-tag.
+
+---
+
+## Technical reference
+
+### Refresh strategy
+
+| Mode | Duration | Trigger |
+|------|----------|---------|
+| BW fast monochrome | ~2–4 s | Dashboard metrics changed while both the previous and current frame are black/white-only |
+| Full 3-color (Mode 1 LUT) | ~15–27 s | Red content changed, previous frame had red, first render, controller wake, or after ten fast monochrome refreshes |
+
+Timestamp and reset-countdown changes by themselves do not repaint the
+panel. Minimum refresh interval: 3 minutes (configurable 3–60 min).
+
+> The BW partial-refresh path is currently disabled at compile time
+> (`DISPLAY_ENABLE_BW_EXPERIMENT 0`) pending hardware validation — see
+> [`docs/decisions/0003-red-free-bw-partial-refresh.md`](docs/decisions/0003-red-free-bw-partial-refresh.md).
+
+### NVS layout
 
 Namespace `devdash`.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `api_url` | string | API server base URL (overrides Kconfig default) |
-| `device_token` | string | Bearer token (overrides Kconfig default) |
-| `refresh_min` | u8 | Refresh interval, 3–60 min (overrides Kconfig default) |
+| `cfg_v2` | blob | WiFi profiles, API endpoints, refresh interval |
+| `ap_password` | string | Persisted SoftAP password |
 
-WiFi credentials, API URLs, bearer tokens, and refresh settings are stored in
-the `cfg_v2` profile blob. The refresh-cycle bookkeeping
-(`bw_fast_cycle_count`, `last_red_state`) lives in RTC slow memory and persists
-across deep-sleep wakeups but resets on power-on.
+Refresh-cycle bookkeeping (`bw_fast_cycle_count`, `last_red_state`) lives
+in RTC slow memory and survives deep sleep but resets on power-on.
 
----
-
-## Data sources
+### Data sources
 
 | Source | How |
 |--------|-----|
@@ -316,12 +459,8 @@ across deep-sleep wakeups but resets on power-on.
 | Claude Code | Reads `~/.claude/.credentials.json` (OAuth token) for rate-limit headers — no Anthropic API key required |
 | Codex | Live `codex app-server` `account/rateLimits/read` response, falling back to the latest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count.rate_limits` event |
 
-The API container mounts `~/.claude` read-only and `~/.codex` read-write from
-the host. Codex needs write access so the app-server can use the normal Codex
-auth and refresh flow. No secrets are embedded in the image.
-
 ---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

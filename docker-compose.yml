@@ -1,5 +1,6 @@
 services:
   api:
+    image: ghcr.io/harmellis/eink-devdash:${IMAGE_TAG:-latest}
     build: ./api
     ports:
       - "3000:3000"
@@ -20,6 +21,7 @@ services:
   api-mdns-host:
     profiles:
       - mdns-host
+    image: ghcr.io/harmellis/eink-devdash:${IMAGE_TAG:-latest}
     build: ./api
     network_mode: host
     volumes:
