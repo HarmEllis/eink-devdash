@@ -226,6 +226,7 @@ static bool should_retry_same_profile(int status, esp_err_t err)
 
 esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                                          int network_idx,
+                                         bool prefer_last_success_api,
                                          dashboard_data_t *out,
                                          int *api_used_idx)
 {
@@ -244,10 +245,13 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
 
     esp_err_t last_err = ESP_FAIL;
     int start = -1;
-    if (cfg->last_success_api_idx >= 0 &&
+    if (prefer_last_success_api &&
+        cfg->last_success_api_idx >= 0 &&
         cfg->last_success_api_idx < (int8_t)net->api_count) {
         start = cfg->last_success_api_idx;
     }
+    ESP_LOGI(TAG, "API failover start: %s",
+             start >= 0 ? "last successful profile" : "first configured profile");
 
     for (uint8_t pass = 0; pass < 2; pass++) {
         for (uint8_t i = 0; i < net->api_count; i++) {

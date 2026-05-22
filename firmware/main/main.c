@@ -164,6 +164,7 @@ void app_main(void)
     bool offline_shown = false;
     bool wake_refresh = (wake == ESP_SLEEP_WAKEUP_TIMER ||
                          wake == ESP_SLEEP_WAKEUP_EXT0);
+    bool prefer_last_success_api = wake_refresh;
     if (!wake_refresh) {
         display_show_connecting(false);
     }
@@ -172,8 +173,11 @@ void app_main(void)
         err = wifi_roam_connect(&cfg, &network_idx);
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "WiFi connected; selected network index=%d", network_idx);
-            ESP_LOGI(TAG, "Fetching dashboard API");
+            ESP_LOGI(TAG, "Fetching dashboard API (%s)",
+                     prefer_last_success_api ? "prefer last successful slot"
+                                             : "ordered from first slot");
             err = api_client_fetch_with_failover(&cfg, network_idx,
+                                                 prefer_last_success_api,
                                                  &data, &api_idx);
             ESP_LOGI(TAG, "Dashboard API fetch result: %s api_idx=%d",
                      esp_err_to_name(err), api_idx);
