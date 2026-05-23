@@ -21,6 +21,7 @@
 #include "esp_system.h"
 #include "nvs.h"
 #include "qrcode.h"
+#include "sdkconfig.h"
 #include "wifi_prov.h"
 #include <string.h>
 #include <stdio.h>
@@ -260,6 +261,77 @@ static void draw_str4x_bw(int lx, int ly, const char *s, int black)
     while (*s) {
         draw_char4x_bw(lx, ly, *s++, black);
         lx += 23;
+    }
+}
+
+static void draw_char_inv(int lx, int ly, char c)
+{
+    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    const uint8_t *g = font5x7[(unsigned char)c - 32];
+    for (int col = 0; col < 5; col++) {
+        for (int row = 0; row < 7; row++) {
+            if (g[col] & (1 << row)) {
+                lpix(lx + col, ly + row, 0, 0);
+                lpix(lx + col, ly + row, 0, 1);
+            }
+        }
+    }
+}
+
+static void draw_str_inv_adv(int lx, int ly, const char *s, int advance)
+{
+    while (*s) {
+        draw_char_inv(lx, ly, *s++);
+        lx += advance;
+    }
+}
+
+static void draw_char4x_inv(int lx, int ly, char c)
+{
+    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    const uint8_t *g = font5x7[(unsigned char)c - 32];
+    for (int col = 0; col < 5; col++) {
+        for (int row = 0; row < 7; row++) {
+            if (g[col] & (1 << row)) {
+                fill_rect(lx + col * 4, ly + row * 4, 4, 4, 0, 0);
+                fill_rect(lx + col * 4, ly + row * 4, 4, 4, 0, 1);
+            }
+        }
+    }
+}
+
+static void draw_str4x_inv(int lx, int ly, const char *s)
+{
+    while (*s) {
+        draw_char4x_inv(lx, ly, *s++);
+        lx += 23;
+    }
+}
+
+static void fit_text_ascii(char *out, size_t out_sz, const char *in, int max_w)
+{
+    if (out_sz == 0) return;
+    if (!in) in = "";
+
+    size_t max_chars = max_w > 0 ? (size_t)(max_w / FONT_BOOT_W) : 0;
+    size_t len = strlen(in);
+    if (len <= max_chars && len < out_sz) {
+        memcpy(out, in, len + 1);
+        return;
+    }
+
+    if (max_chars == 0) {
+        out[0] = '\0';
+        return;
+    }
+
+    size_t keep = max_chars;
+    if (keep >= out_sz) keep = out_sz - 1;
+    if (keep > 3) keep -= 3;
+    memcpy(out, in, keep);
+    out[keep] = '\0';
+    if (max_chars > 3 && keep + 3 < out_sz) {
+        memcpy(out + keep, "...", 4);
     }
 }
 
@@ -672,6 +744,223 @@ static const char *offline_message_for_reason(display_offline_reason_t reason)
     default:
         return "API unreachable";
     }
+}
+
+typedef struct {
+    const char *name;
+    const char *reason;
+} offline_row_t;
+
+static void draw_offline_chrome(const char *label)
+{
+    hline(1,   1,   294);
+    hline(1,   126, 294);
+    vline(1,   1,   126);
+    vline(294, 1,   126);
+
+    icon_box_logo(6, 4);
+    draw_str_adv(19, 4, "DEVDASH", 1, FONT_BOOT_W);
+    int label_x = 290 - str_w(label);
+    icon_cross_sync(label_x - 13, 4);
+    draw_str(label_x, 4, label, 1);
+
+    hline(2, 14, 293);
+    hline(2, 114, 293);
+}
+
+static void draw_heading_with_dot(const char *left, const char *right)
+{
+    int x = 122;
+    draw_str_adv(x, 22, left, 1, FONT_BOOT_W);
+    x += str_w_adv(left, FONT_BOOT_W) + 6;
+    fill_rect(x + 1, 25, 2, 2, 1, 0);
+    x += 10;
+    draw_str_adv(x, 22, right, 1, FONT_BOOT_W);
+}
+
+static void draw_footer_retry(const char *retry)
+{
+    char retry_text[18];
+    snprintf(retry_text, sizeof(retry_text), "retry %s", retry);
+    draw_str(6, 117, retry_text, 1);
+
+    char setup[32];
+    snprintf(setup, sizeof(setup), "hold BOOT %ds -> setup",
+             CONFIG_DEVDASH_BOOT_LONGPRESS_MS / 1000);
+    draw_str_adv(290 - str_w_adv(setup, FONT_BOOT_W), 117, setup, 1,
+                 FONT_BOOT_W);
+}
+
+static void format_offline_retry(char *out, size_t out_sz,
+                                 const dash_config_v2_t *cfg)
+{
+#if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
+    snprintf(out, out_sz, "%ds", CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S);
+#else
+    uint8_t minutes = cfg && cfg->refresh_min ? cfg->refresh_min
+                                              : CONFIG_DEVDASH_REFRESH_MIN;
+    snprintf(out, out_sz, "%um", (unsigned)minutes);
+#endif
+}
+
+static int enabled_network_count(const dash_config_v2_t *cfg)
+{
+    int count = 0;
+    if (!cfg) return 0;
+    for (uint8_t i = 0; i < cfg->network_count && i < MAX_WIFI_NETWORKS; i++) {
+        const dash_wifi_profile_t *net = &cfg->networks[i];
+        if (net->enabled && net->ssid[0] != '\0') count++;
+    }
+    return count;
+}
+
+static int collect_wifi_rows(const dash_config_v2_t *cfg,
+                             const wifi_unreachable_diag_t *diag,
+                             offline_row_t *rows,
+                             int max_rows)
+{
+    int count = 0;
+    if (!cfg || !diag) return 0;
+    for (uint8_t i = 0; i < cfg->network_count &&
+         i < MAX_WIFI_NETWORKS && count < max_rows; i++) {
+        const dash_wifi_profile_t *net = &cfg->networks[i];
+        if (!net->enabled || net->ssid[0] == '\0') continue;
+        for (uint8_t j = 0; j < diag->row_count; j++) {
+            if (diag->rows[j].network_idx != i) continue;
+            rows[count++] = (offline_row_t){
+                .name = net->ssid,
+                .reason = diag->rows[j].reason,
+            };
+            break;
+        }
+    }
+    return count;
+}
+
+static void copy_api_label(char *out, size_t out_sz, const char *url)
+{
+    if (out_sz == 0) return;
+    out[0] = '\0';
+    if (!url || !url[0]) return;
+
+    const char *start = strstr(url, "://");
+    start = start ? start + 3 : url;
+    const char *end = start;
+    while (*end && *end != '?' && *end != '#') end++;
+    size_t len = (size_t)(end - start);
+    while (len > 0 && start[len - 1] == '/') len--;
+    if (len >= out_sz) len = out_sz - 1;
+    memcpy(out, start, len);
+    out[len] = '\0';
+}
+
+static int collect_api_rows(const dash_config_v2_t *cfg,
+                            int network_idx,
+                            const api_unreachable_diag_t *diag,
+                            offline_row_t *rows,
+                            char labels[][DASH_API_URL_MAX],
+                            int max_rows)
+{
+    if (!cfg || !diag || network_idx < 0 || network_idx >= cfg->network_count) {
+        return 0;
+    }
+
+    int count = 0;
+    const dash_wifi_profile_t *net = &cfg->networks[network_idx];
+    for (uint8_t i = 0; i < net->api_count &&
+         i < MAX_APIS_PER_NETWORK && count < max_rows; i++) {
+        const dash_api_profile_t *api = &net->apis[i];
+        if (!api->enabled || api->api_url[0] == '\0') continue;
+        const char *reason = NULL;
+        for (uint8_t j = 0; j < diag->row_count; j++) {
+            if (diag->rows[j].api_idx != i) continue;
+            reason = diag->rows[j].reason;
+            break;
+        }
+        if (!reason) continue;
+        copy_api_label(labels[count], DASH_API_URL_MAX, api->api_url);
+        rows[count++] = (offline_row_t){
+            .name = labels[count - 1],
+            .reason = reason,
+        };
+    }
+    return count;
+}
+
+static void draw_offline_identity(const char *line2, const char *footnote)
+{
+    char footnote_fit[24];
+    fit_text_ascii(footnote_fit, sizeof(footnote_fit), footnote, 92);
+
+    fill_rect(6, 20, 108, 90, 1, 1);
+    draw_str4x_inv(14, 30, "NO");
+    draw_str4x_inv(14, 60, line2);
+    draw_str_inv_adv(14, 98, footnote_fit, FONT_BOOT_W);
+}
+
+static void draw_fail_rows(const offline_row_t *rows, int row_count)
+{
+    for (int i = 0; i < row_count && i < 5; i++) {
+        const int y = 41 + i * 10;
+        char idx[4];
+        snprintf(idx, sizeof(idx), "%d.", i + 1);
+        draw_str_adv(130 - str_w_adv(idx, FONT_BOOT_W), y, idx, 1,
+                     FONT_BOOT_W);
+
+        const char *reason = rows[i].reason;
+        if (!reason || reason[0] == '\0') continue;
+        int reason_w = str_w(reason);
+        draw_str(290 - reason_w, y, reason, 1);
+
+        int name_left = 134;
+        int name_w = 290 - reason_w - 4 - name_left;
+        char name_fit[44];
+        fit_text_ascii(name_fit, sizeof(name_fit), rows[i].name, name_w);
+        draw_str_adv(name_left, y, name_fit, 1, FONT_BOOT_W);
+    }
+}
+
+static void draw_unreachable_poster(display_offline_reason_t reason,
+                                    const dash_config_v2_t *cfg,
+                                    int network_idx,
+                                    const wifi_unreachable_diag_t *wifi_diag,
+                                    const api_unreachable_diag_t *api_diag)
+{
+    offline_row_t rows[5] = {0};
+    char api_labels[5][DASH_API_URL_MAX] = {{0}};
+    char footnote[40];
+    char retry[12];
+    int row_count = 0;
+
+    format_offline_retry(retry, sizeof(retry), cfg);
+
+    if (reason == DISPLAY_OFFLINE_REASON_WIFI) {
+        row_count = collect_wifi_rows(cfg, wifi_diag, rows, 5);
+        snprintf(footnote, sizeof(footnote), "0/%d joined",
+                 enabled_network_count(cfg));
+        draw_offline_chrome("NO WIFI");
+        draw_offline_identity("WIFI", footnote);
+        draw_heading_with_dot("NETWORKS", "ALL FAILED");
+    } else {
+        if ((!cfg || network_idx < 0 || network_idx >= cfg->network_count) &&
+            cfg && cfg->last_success_network_idx >= 0 &&
+            cfg->last_success_network_idx < (int8_t)cfg->network_count) {
+            network_idx = cfg->last_success_network_idx;
+        }
+        row_count = collect_api_rows(cfg, network_idx, api_diag, rows,
+                                     api_labels, 5);
+        const char *ssid = (cfg && network_idx >= 0 &&
+                            network_idx < cfg->network_count)
+            ? cfg->networks[network_idx].ssid : "wifi";
+        snprintf(footnote, sizeof(footnote), "on %s", ssid);
+        draw_offline_chrome("NO API");
+        draw_offline_identity("API", footnote);
+        draw_heading_with_dot("UPSTREAMS", "ALL DOWN");
+    }
+
+    hline(122, 35, 169);
+    draw_fail_rows(rows, row_count);
+    draw_footer_retry(retry);
 }
 
 static void ensure_init(void)
@@ -1354,10 +1643,15 @@ void display_show_setup_failed(void)
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
-void display_show_offline(display_offline_reason_t reason)
+void display_show_offline(display_offline_reason_t reason,
+                          const dash_config_v2_t *cfg,
+                          int network_idx,
+                          const wifi_unreachable_diag_t *wifi_diag,
+                          const api_unreachable_diag_t *api_diag)
 {
     display_frame_t frame = offline_frame_for_reason(reason);
-    if (display_should_skip_offline_refresh(frame)) {
+    if (reason == DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT &&
+        display_should_skip_offline_refresh(frame)) {
         ESP_LOGI(TAG, "Skipping offline refresh; offline frame already shown");
         return;
     }
@@ -1365,10 +1659,14 @@ void display_show_offline(display_offline_reason_t reason)
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
     memset(red_buf, 0x00, sizeof(red_buf));
-    icon_cross_sync(6, 4);
-    draw_str(19, 5, "OFFLINE", 1);
-    hline(2, 15, 292);
-    draw_str(6, 30, offline_message_for_reason(reason), 0);
+    if (reason == DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT) {
+        icon_cross_sync(6, 4);
+        draw_str(19, 5, "OFFLINE", 1);
+        hline(2, 15, 292);
+        draw_str(6, 30, offline_message_for_reason(reason), 0);
+    } else {
+        draw_unreachable_poster(reason, cfg, network_idx, wifi_diag, api_diag);
+    }
     eink_set_framebuffer(bw_buf, red_buf);
     /* The offline frame paints red; BW_FAST cannot write the red plane, so
      * always use FULL_COLOR here. */

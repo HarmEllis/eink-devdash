@@ -1,6 +1,7 @@
 #pragma once
 #include "esp_err.h"
 #include "storage.h"
+#include "unreachable_diag.h"
 
 typedef struct {
     int issues;
@@ -44,4 +45,5 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                                          int network_idx,
                                          bool prefer_last_success_api,
                                          dashboard_data_t *out,
-                                         int *api_used_idx);
+                                         int *api_used_idx,
+                                         api_unreachable_diag_t *diag);

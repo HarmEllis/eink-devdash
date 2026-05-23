@@ -226,8 +226,11 @@ truth for the long-press threshold.
 > (cold boot) puts the ESP32-S3 into ROM download mode at the hardware
 > level, before firmware runs. Power on first, then long-press BOOT.
 
-If none of the stored WiFi networks are reachable, the device shows
-`OFFLINE` and returns to deep sleep, or keeps retrying when
+If none of the stored WiFi networks are reachable, the device shows a
+`NO WIFI` failure poster with the saved SSIDs it tried. If WiFi connects
+but every configured API endpoint fails, it shows `NO API` with the
+configured upstreams for the active network. The device then returns to
+deep sleep, or keeps retrying when
 `CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE=y`. Stored credentials are
 never erased automatically.
 

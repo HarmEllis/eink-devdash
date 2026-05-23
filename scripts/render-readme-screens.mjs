@@ -98,6 +98,27 @@ class Frame {
     }
   }
 
+  drawCharInv(x, y, ch) {
+    const code = ch.charCodeAt(0);
+    const safe = code < 32 || code > 122 ? "?".charCodeAt(0) : code;
+    const glyph = font5x7[safe - 32];
+    for (let col = 0; col < 5; col++) {
+      for (let row = 0; row < 7; row++) {
+        if (glyph[col] & (1 << row)) {
+          this.lpix(x + col, y + row, 0, 0);
+          this.lpix(x + col, y + row, 0, 1);
+        }
+      }
+    }
+  }
+
+  drawStrInvAdv(x, y, text, advance) {
+    for (const ch of text) {
+      this.drawCharInv(x, y, ch);
+      x += advance;
+    }
+  }
+
   drawStrClippedAdv(x, y, text, black, advance, maxW) {
     let used = 0;
     for (const ch of text) {
@@ -140,6 +161,27 @@ class Frame {
   drawStr4xBw(x, y, text, black) {
     for (const ch of text) {
       this.drawChar4xBw(x, y, ch, black);
+      x += 23;
+    }
+  }
+
+  drawChar4xInv(x, y, ch) {
+    const code = ch.charCodeAt(0);
+    const safe = code < 32 || code > 122 ? "?".charCodeAt(0) : code;
+    const glyph = font5x7[safe - 32];
+    for (let col = 0; col < 5; col++) {
+      for (let row = 0; row < 7; row++) {
+        if (glyph[col] & (1 << row)) {
+          this.fillRect(x + col * 4, y + row * 4, 4, 4, 0, 0);
+          this.fillRect(x + col * 4, y + row * 4, 4, 4, 0, 1);
+        }
+      }
+    }
+  }
+
+  drawStr4xInv(x, y, text) {
+    for (const ch of text) {
+      this.drawChar4xInv(x, y, ch);
       x += 23;
     }
   }
@@ -191,6 +233,14 @@ function strWAdv(text, advance) {
 
 function str2xW(text) {
   return text.length * FONT2_W;
+}
+
+function fitTextAscii(text, maxW) {
+  const maxChars = Math.floor(Math.max(0, maxW) / FONT_BOOT_W);
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 0) return "";
+  if (maxChars <= 3) return text.slice(0, maxChars);
+  return `${text.slice(0, maxChars - 3)}...`;
 }
 
 const PROVISION_SAMPLE = {
@@ -620,12 +670,95 @@ function renderProvision() {
   return f;
 }
 
-function renderOffline(message) {
+function drawOfflineChrome(f, label) {
+  f.hline(1, 1, 294);
+  f.hline(1, 126, 294);
+  f.vline(1, 1, 126);
+  f.vline(294, 1, 126);
+
+  iconBoxLogo(f, 6, 4);
+  f.drawStrAdv(19, 4, "DEVDASH", 1, FONT_BOOT_W);
+  const labelX = 290 - strW(label);
+  iconCrossSync(f, labelX - 13, 4);
+  f.drawStr(labelX, 4, label, 1);
+  f.hline(2, 14, 293);
+  f.hline(2, 114, 293);
+}
+
+function drawOfflineIdentity(f, line2, footnote) {
+  f.fillRect(6, 20, 108, 90, 1, 1);
+  f.drawStr4xInv(14, 30, "NO");
+  f.drawStr4xInv(14, 60, line2);
+  f.drawStrInvAdv(14, 98, fitTextAscii(footnote, 92), FONT_BOOT_W);
+}
+
+function drawOfflineHeading(f, left, right) {
+  let x = 122;
+  f.drawStrAdv(x, 22, left, 1, FONT_BOOT_W);
+  x += strWAdv(left, FONT_BOOT_W) + 6;
+  f.fillRect(x + 1, 25, 2, 2, 1, 0);
+  x += 10;
+  f.drawStrAdv(x, 22, right, 1, FONT_BOOT_W);
+  f.hline(122, 35, 169);
+}
+
+function drawFailureRows(f, rows) {
+  rows.slice(0, 5).forEach((row, i) => {
+    const y = 41 + i * 10;
+    const idx = `${i + 1}.`;
+    f.drawStrAdv(130 - strWAdv(idx, FONT_BOOT_W), y, idx, 1, FONT_BOOT_W);
+    const reasonW = strW(row.reason);
+    f.drawStr(290 - reasonW, y, row.reason, 1);
+    const nameLeft = 134;
+    const nameW = 290 - reasonW - 4 - nameLeft;
+    f.drawStrAdv(nameLeft, y, fitTextAscii(row.name, nameW), 1, FONT_BOOT_W);
+  });
+}
+
+function drawOfflineFooter(f, retry) {
+  f.drawStr(6, 117, `retry ${retry}`, 1);
+  const setup = "hold BOOT 5s -> setup";
+  f.drawStrAdv(290 - strWAdv(setup, FONT_BOOT_W), 117, setup, 1, FONT_BOOT_W);
+}
+
+const OFFLINE_WIFI_SAMPLE = {
+  retry: "30s",
+  rows: [
+    { name: "pixelhaus-2g", reason: "no-ap" },
+    { name: "studio-mesh", reason: "auth-err" },
+    { name: "iphone-hotspot", reason: "no-ap" },
+    { name: "office-guest", reason: "timeout" },
+    { name: "travel-router", reason: "no-ap" },
+  ],
+};
+
+const OFFLINE_API_SAMPLE = {
+  retry: "30s",
+  ssid: "pixelhaus-2g",
+  rows: [
+    { name: "api.github.com", reason: "timeout" },
+    { name: "api.anthropic.com", reason: "502" },
+    { name: "chatgpt.com/backend", reason: "dns" },
+    { name: "api.npmjs.org", reason: "refused" },
+    { name: "hooks.slack.com", reason: "401" },
+  ],
+};
+
+function renderOffline(kind) {
   const f = new Frame();
-  iconCrossSync(f, 6, 4);
-  f.drawStr(19, 5, "OFFLINE", 1);
-  f.hline(2, 15, 292);
-  f.drawStr(6, 30, message, 0);
+  if (kind === "wifi") {
+    drawOfflineChrome(f, "NO WIFI");
+    drawOfflineIdentity(f, "WIFI", `0/${OFFLINE_WIFI_SAMPLE.rows.length} joined`);
+    drawOfflineHeading(f, "NETWORKS", "ALL FAILED");
+    drawFailureRows(f, OFFLINE_WIFI_SAMPLE.rows);
+    drawOfflineFooter(f, OFFLINE_WIFI_SAMPLE.retry);
+  } else {
+    drawOfflineChrome(f, "NO API");
+    drawOfflineIdentity(f, "API", `on ${OFFLINE_API_SAMPLE.ssid}`);
+    drawOfflineHeading(f, "UPSTREAMS", "ALL DOWN");
+    drawFailureRows(f, OFFLINE_API_SAMPLE.rows);
+    drawOfflineFooter(f, OFFLINE_API_SAMPLE.retry);
+  }
   return f;
 }
 
@@ -645,8 +778,8 @@ const screens = [
   ["readme-boot-screen.svg", renderBoot(), "DevDash boot screen"],
   ["readme-dashboard-screen.svg", renderDashboard(), "DevDash dashboard screen"],
   ["readme-provision-screen.svg", renderProvision(), "DevDash provisioning screen"],
-  ["readme-no-wifi-screen.svg", renderOffline("WiFi unreachable"), "DevDash no WiFi screen"],
-  ["readme-api-error-screen.svg", renderOffline("API unreachable"), "DevDash API error screen"],
+  ["readme-no-wifi-screen.svg", renderOffline("wifi"), "DevDash no WiFi screen"],
+  ["readme-api-error-screen.svg", renderOffline("api"), "DevDash API error screen"],
 ];
 
 for (const [filename, frame, title] of screens) {

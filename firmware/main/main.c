@@ -134,7 +134,8 @@ void app_main(void)
              * up. Anything else (FAIL etc.) means the SoftAP itself did not
              * start, so paint the V4 S1 red error variant. */
             if (err == ESP_ERR_TIMEOUT) {
-                display_show_offline(DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT);
+                display_show_offline(DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT,
+                                     &cfg, -1, NULL, NULL);
             }
             else                        display_show_setup_failed();
             wifi_net_stop();
@@ -148,6 +149,8 @@ void app_main(void)
 
     int network_idx = -1;
     int api_idx = -1;
+    wifi_unreachable_diag_t wifi_diag = {0};
+    api_unreachable_diag_t api_diag = {0};
     static dashboard_data_t data;   /* keep off the stack, like cfg above */
     memset(&data, 0, sizeof(data));
 
@@ -170,7 +173,9 @@ void app_main(void)
     }
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
-        err = wifi_roam_connect(&cfg, &network_idx);
+        memset(&wifi_diag, 0, sizeof(wifi_diag));
+        memset(&api_diag, 0, sizeof(api_diag));
+        err = wifi_roam_connect(&cfg, &network_idx, &wifi_diag);
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "WiFi connected; selected network index=%d", network_idx);
             ESP_LOGI(TAG, "Fetching dashboard API (%s)",
@@ -178,7 +183,8 @@ void app_main(void)
                                              : "ordered from first slot");
             err = api_client_fetch_with_failover(&cfg, network_idx,
                                                  prefer_last_success_api,
-                                                 &data, &api_idx);
+                                                 &data, &api_idx,
+                                                 &api_diag);
             ESP_LOGI(TAG, "Dashboard API fetch result: %s api_idx=%d",
                      esp_err_to_name(err), api_idx);
             wifi_net_stop();
@@ -196,7 +202,8 @@ void app_main(void)
          * without ghosting, so silently retry in the background after
          * that. display_render() on the next success will repaint. */
         if (!offline_shown) {
-            display_show_offline(offline_reason);
+            display_show_offline(offline_reason, &cfg, network_idx,
+                                 &wifi_diag, &api_diag);
             offline_shown = true;
         }
         ESP_LOGW(TAG, "Offline, retrying in %ds",
@@ -204,7 +211,8 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S * 1000));
         continue;
 #else
-        display_show_offline(offline_reason);
+        display_show_offline(offline_reason, &cfg, network_idx,
+                             &wifi_diag, &api_diag);
         enter_deep_sleep(cfg.refresh_min);
         return;
 #endif

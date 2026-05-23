@@ -4,6 +4,7 @@
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -19,6 +20,79 @@ typedef struct {
     int  len;
     bool truncated;
 } http_ctx_t;
+
+static void diag_set_reason(api_unreachable_diag_t *diag,
+                            uint8_t api_idx,
+                            const char *reason)
+{
+    if (!diag || !reason) return;
+    for (uint8_t i = 0; i < diag->row_count; i++) {
+        if (diag->rows[i].api_idx == api_idx) {
+            strlcpy(diag->rows[i].reason, reason,
+                    sizeof(diag->rows[i].reason));
+            return;
+        }
+    }
+    if (diag->row_count >= MAX_APIS_PER_NETWORK) return;
+    api_unreachable_row_t *row = &diag->rows[diag->row_count++];
+    row->api_idx = api_idx;
+    strlcpy(row->reason, reason, sizeof(row->reason));
+}
+
+static bool url_host_is_ip_literal(const char *url)
+{
+    const char *host = strstr(url, "://");
+    host = host ? host + 3 : url;
+    if (!host || !host[0]) return false;
+
+    if (host[0] == '[') {
+        const char *end = strchr(host, ']');
+        return end && end > host + 1;
+    }
+
+    bool has_digit = false;
+    bool has_dot = false;
+    for (const char *p = host; *p && *p != '/' && *p != '?' && *p != '#'; p++) {
+        if (*p == ':') break;
+        if (*p >= '0' && *p <= '9') {
+            has_digit = true;
+            continue;
+        }
+        if (*p == '.') {
+            has_dot = true;
+            continue;
+        }
+        return false;
+    }
+    return has_digit && has_dot;
+}
+
+static const char *http_failure_reason(const char *base_url,
+                                       esp_err_t err,
+                                       int status,
+                                       int sock_errno,
+                                       char *buf,
+                                       size_t buf_sz)
+{
+    if (status > 0) {
+        snprintf(buf, buf_sz, "%d", status);
+        return buf;
+    }
+    if (sock_errno == ECONNREFUSED || sock_errno == ECONNRESET) {
+        return "refused";
+    }
+    if (sock_errno == ETIMEDOUT || sock_errno == EAGAIN ||
+        err == ESP_ERR_TIMEOUT || err == ESP_ERR_HTTP_EAGAIN) {
+        return "timeout";
+    }
+    /* esp-tls select() timeouts are surfaced by esp_http_client_perform() as
+     * ESP_ERR_HTTP_CONNECT with no socket errno in the IP-literal case. Keep
+     * hostname failures generic because DNS/connect failures share this code. */
+    if (err == ESP_ERR_HTTP_CONNECT && sock_errno == 0) {
+        return url_host_is_ip_literal(base_url) ? "timeout" : "err";
+    }
+    return "timeout";
+}
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
@@ -142,9 +216,12 @@ static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
 }
 
 static esp_err_t fetch_one(const char *base_url, const char *token,
-                           dashboard_data_t *out, int *status_out)
+                           dashboard_data_t *out,
+                           int *status_out,
+                           int *sock_errno_out)
 {
     if (status_out) *status_out = 0;
+    if (sock_errno_out) *sock_errno_out = 0;
     char *buf = calloc(1, RESPONSE_BUF_SIZE);
     if (!buf) return ESP_ERR_NO_MEM;
 
@@ -179,11 +256,13 @@ static esp_err_t fetch_one(const char *base_url, const char *token,
 
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
+    int sock_errno = esp_http_client_get_errno(client);
     if (status_out) *status_out = status;
+    if (sock_errno_out) *sock_errno_out = sock_errno;
     esp_http_client_cleanup(client);
 
-    ESP_LOGI(TAG, "Dashboard HTTP completed: err=%s status=%d bytes=%d truncated=%d",
-             esp_err_to_name(err), status, ctx.len, ctx.truncated);
+    ESP_LOGI(TAG, "Dashboard HTTP completed: err=%s status=%d sock_errno=%d bytes=%d truncated=%d",
+             esp_err_to_name(err), status, sock_errno, ctx.len, ctx.truncated);
 
     if (err != ESP_OK || status < 200 || status >= 300) {
         ESP_LOGW(TAG, "HTTP fetch failed: err=%s status=%d url=%s",
@@ -228,10 +307,12 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                                          int network_idx,
                                          bool prefer_last_success_api,
                                          dashboard_data_t *out,
-                                         int *api_used_idx)
+                                         int *api_used_idx,
+                                         api_unreachable_diag_t *diag)
 {
     memset(out, 0, sizeof(*out));
     if (api_used_idx) *api_used_idx = -1;
+    if (diag) memset(diag, 0, sizeof(*diag));
     if (!cfg || network_idx < 0 || network_idx >= cfg->network_count) {
         out->offline = true;
         return ESP_ERR_INVALID_ARG;
@@ -260,15 +341,17 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                 if (!api->enabled || api->api_url[0] == '\0') continue;
                 if (api->device_token[0] == '\0') {
                     ESP_LOGW(TAG, "API token empty for %s; device stays offline", api->api_url);
+                    diag_set_reason(diag, idx, "401");
                     out->offline = true;
                     return ESP_ERR_INVALID_STATE;
                 }
 
                 int status = 0;
+                int sock_errno = 0;
                 ESP_LOGI(TAG, "Trying API profile index=%u round=%u/%u url=%s",
                          idx, attempt, DASHBOARD_HTTP_ATTEMPTS, api->api_url);
                 last_err = fetch_one(api->api_url, api->device_token,
-                                     out, &status);
+                                     out, &status, &sock_errno);
                 if (last_err == ESP_OK) {
                     ESP_LOGI(TAG, "API profile index=%u succeeded", idx);
                     cfg->last_success_network_idx = network_idx;
@@ -277,6 +360,12 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                     if (api_used_idx) *api_used_idx = idx;
                     return ESP_OK;
                 }
+                char reason[UNREACHABLE_REASON_MAX] = {0};
+                diag_set_reason(diag, idx,
+                                http_failure_reason(api->api_url,
+                                                    last_err, status,
+                                                    sock_errno, reason,
+                                                    sizeof(reason)));
                 if (!should_fail_over(status, last_err)) {
                     ESP_LOGW(TAG, "Not failing over after auth status %d", status);
                     return last_err;
@@ -305,18 +394,20 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
             if (!api->enabled || api->api_url[0] == '\0') continue;
             if (api->device_token[0] == '\0') {
                 ESP_LOGW(TAG, "API token empty for %s; device stays offline", api->api_url);
+                diag_set_reason(diag, idx, "401");
                 out->offline = true;
                 return ESP_ERR_INVALID_STATE;
             }
 
             int status = 0;
+            int sock_errno = 0;
             ESP_LOGI(TAG, "Trying API profile index=%u pass=%u url=%s",
                      idx, pass, api->api_url);
             for (uint8_t attempt = 1; attempt <= DASHBOARD_HTTP_ATTEMPTS; attempt++) {
                 ESP_LOGI(TAG, "API profile index=%u attempt=%u/%u",
                          idx, attempt, DASHBOARD_HTTP_ATTEMPTS);
                 last_err = fetch_one(api->api_url, api->device_token,
-                                     out, &status);
+                                     out, &status, &sock_errno);
                 if (last_err == ESP_OK ||
                     !should_retry_same_profile(status, last_err) ||
                     attempt == DASHBOARD_HTTP_ATTEMPTS) {
@@ -334,6 +425,12 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                 if (api_used_idx) *api_used_idx = idx;
                 return ESP_OK;
             }
+            char reason[UNREACHABLE_REASON_MAX] = {0};
+            diag_set_reason(diag, idx,
+                            http_failure_reason(api->api_url,
+                                                last_err, status,
+                                                sock_errno, reason,
+                                                sizeof(reason)));
             if (!should_fail_over(status, last_err)) {
                 ESP_LOGW(TAG, "Not failing over after auth status %d", status);
                 return last_err;

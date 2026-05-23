@@ -32,6 +32,56 @@ typedef struct {
     volatile TickType_t disconnected_at;
 } connect_state_t;
 
+static void diag_set_reason(wifi_unreachable_diag_t *diag,
+                            uint8_t network_idx,
+                            const char *reason)
+{
+    if (!diag || !reason) return;
+    for (uint8_t i = 0; i < diag->row_count; i++) {
+        if (diag->rows[i].network_idx == network_idx) {
+            strlcpy(diag->rows[i].reason, reason,
+                    sizeof(diag->rows[i].reason));
+            return;
+        }
+    }
+    if (diag->row_count >= MAX_WIFI_NETWORKS) return;
+    wifi_unreachable_row_t *row = &diag->rows[diag->row_count++];
+    row->network_idx = network_idx;
+    strlcpy(row->reason, reason, sizeof(row->reason));
+}
+
+static bool wifi_reason_is_auth_error(uint8_t reason)
+{
+    switch (reason) {
+    case WIFI_REASON_AUTH_EXPIRE:
+    case WIFI_REASON_AUTH_FAIL:
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:
+    case WIFI_REASON_802_1X_AUTH_FAILED:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static const char *connect_failure_reason(const connect_state_t *state,
+                                          esp_err_t err,
+                                          bool candidate_seen)
+{
+    if (!candidate_seen) return "no-ap";
+    if (state && state->disconnect_reason == WIFI_REASON_NO_AP_FOUND) {
+        return "no-ap";
+    }
+    if (state && wifi_reason_is_auth_error(state->disconnect_reason)) {
+        return "auth-err";
+    }
+    if (err == ESP_ERR_TIMEOUT || (state && state->associated)) {
+        return "timeout";
+    }
+    return "timeout";
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
@@ -108,9 +158,12 @@ static void cancel_connect_attempt(void)
 }
 
 static esp_err_t connect_one(const dash_wifi_profile_t *net, int timeout_ms,
-                             const candidate_t *candidate)
+                             const candidate_t *candidate,
+                             char *reason_out,
+                             size_t reason_out_sz)
 {
     if (!net->enabled || net->ssid[0] == '\0') return ESP_ERR_INVALID_ARG;
+    if (reason_out && reason_out_sz > 0) reason_out[0] = '\0';
 
     cancel_connect_attempt();
 
@@ -155,6 +208,11 @@ static esp_err_t connect_one(const dash_wifi_profile_t *net, int timeout_ms,
     }
 
 out:
+    if (err != ESP_OK && reason_out && reason_out_sz > 0) {
+        strlcpy(reason_out,
+                connect_failure_reason(&state, err, candidate != NULL),
+                reason_out_sz);
+    }
     if (err != ESP_OK) cancel_connect_attempt();
 
     if (event_instance) {
@@ -196,9 +254,12 @@ static void sort_candidates(candidate_t *candidates, uint8_t count)
     }
 }
 
-esp_err_t wifi_roam_connect(dash_config_v2_t *cfg, int *network_idx_out)
+esp_err_t wifi_roam_connect(dash_config_v2_t *cfg,
+                            int *network_idx_out,
+                            wifi_unreachable_diag_t *diag)
 {
     if (network_idx_out) *network_idx_out = -1;
+    if (diag) memset(diag, 0, sizeof(*diag));
     if (!cfg || cfg->network_count == 0) return ESP_ERR_NOT_FOUND;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -231,7 +292,10 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg, int *network_idx_out)
         const dash_wifi_profile_t *net = &cfg->networks[i];
         if (!net->enabled || net->ssid[0] == '\0') continue;
         candidate_t candidate = { .idx = i, .rssi = -128 };
-        if (!find_best_scanned_ap(aps, ap_count, net->ssid, &candidate)) continue;
+        if (!find_best_scanned_ap(aps, ap_count, net->ssid, &candidate)) {
+            diag_set_reason(diag, i, "no-ap");
+            continue;
+        }
         candidates[candidate_count++] = candidate;
     }
     free(aps);
@@ -239,25 +303,30 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg, int *network_idx_out)
 
     for (uint8_t i = 0; i < candidate_count; i++) {
         uint8_t idx = candidates[i].idx;
+        char reason[UNREACHABLE_REASON_MAX] = {0};
         err = connect_one(&cfg->networks[idx], CONNECT_TIMEOUT_MS,
-                          &candidates[i]);
+                          &candidates[i], reason, sizeof(reason));
         if (err == ESP_OK) {
             cfg->last_success_network_idx = idx;
             storage_save_v2(cfg);
             if (network_idx_out) *network_idx_out = idx;
             return ESP_OK;
         }
+        diag_set_reason(diag, idx, reason[0] ? reason : "timeout");
     }
 
     if (candidate_count == 0 && cfg->last_success_network_idx >= 0 &&
         cfg->last_success_network_idx < (int8_t)cfg->network_count) {
         uint8_t idx = (uint8_t)cfg->last_success_network_idx;
         ESP_LOGW(TAG, "No visible configured WiFi network found; trying last successful SSID");
-        err = connect_one(&cfg->networks[idx], CONNECT_TIMEOUT_MS, NULL);
+        char reason[UNREACHABLE_REASON_MAX] = {0};
+        err = connect_one(&cfg->networks[idx], CONNECT_TIMEOUT_MS, NULL,
+                          reason, sizeof(reason));
         if (err == ESP_OK) {
             if (network_idx_out) *network_idx_out = idx;
             return ESP_OK;
         }
+        diag_set_reason(diag, idx, reason[0] ? reason : "no-ap");
     }
 
     ESP_LOGW(TAG, "No configured WiFi network connected");

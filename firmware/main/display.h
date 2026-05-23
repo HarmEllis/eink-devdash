@@ -1,6 +1,7 @@
 #pragma once
 #include "api_client.h"
 #include "storage.h"
+#include "unreachable_diag.h"
 
 void display_render(const dashboard_data_t *data);
 void display_set_connection_slots(const dash_config_v2_t *cfg,
@@ -21,4 +22,8 @@ typedef enum {
     DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT,
 } display_offline_reason_t;
 
-void display_show_offline(display_offline_reason_t reason);
+void display_show_offline(display_offline_reason_t reason,
+                          const dash_config_v2_t *cfg,
+                          int network_idx,
+                          const wifi_unreachable_diag_t *wifi_diag,
+                          const api_unreachable_diag_t *api_diag);
