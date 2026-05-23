@@ -26,6 +26,7 @@
     <header>
       <h1>eink-devdash</h1>
       <p id="status">Ready to flash</p>
+      <p class="version"><!-- VERSION --></p>
     </header>
 
     <section>
@@ -39,7 +40,7 @@
     <section>
       <h2>2. First-time provisioning</h2>
       <p class="hint">When flashing finishes, the e-ink display shows a QR code and a SoftAP name like <code>devdash-A4F2</code> with a password. Scan the QR (or join the AP manually and open <code>http://192.168.4.1</code>) and fill in WiFi + API. The device saves and reboots.</p>
-      <p class="hint">Need to re-open this flow later? Hold <strong>BOOT</strong> on the device for ~1&nbsp;s on power-up — the SoftAP portal comes back up.</p>
+      <p class="hint">Need to re-open this flow later? Power the device on first, then hold <strong>BOOT</strong> for ~5&nbsp;s until the SoftAP setup screen appears. Do <em>not</em> hold BOOT while plugging in — that puts the ESP32-S3 into ROM download mode before firmware runs.</p>
     </section>
   </main>
 
@@ -50,7 +51,7 @@
     btn.addEventListener('state-changed', (ev) => {
       const detail = ev.detail || {};
       if (detail.state === 'FINISHED') {
-        window.location.href = '/flashed.html';
+        window.location.href = 'flashed.html';
       }
       const s = document.getElementById('status');
       if (s && detail.message) s.textContent = detail.message;

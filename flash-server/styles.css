@@ -44,6 +44,18 @@ section {
   line-height: 1.4;
 }
 
+.version {
+  color: #8a9499;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.version:empty { display: none; }
+.version code {
+  background: #eef2f3;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
 .hint code {
   background: #eef2f3;
   padding: 0 4px;

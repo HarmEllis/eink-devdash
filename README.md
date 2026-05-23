@@ -1,7 +1,7 @@
 # eink-devdash
 
 A physical developer dashboard on a 2.9" black/red e-ink display, driven by
-an ESP32-S3. Shows GitHub activity, Claude Code rate limits, and Codex usage —
+an ESP32-S3. Shows GitHub activity, Claude Code rate limits, and Codex usage,
 updated on a configurable interval via deep sleep.
 
 [![CI](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml/badge.svg)](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml)
@@ -147,17 +147,39 @@ Two paths: web flasher (no toolchain) or `idf.py` from a local checkout.
 
 ### Option A — Web flasher (recommended)
 
-The repo ships a static page that flashes a pre-built `.bin` via the Web
-Serial API in Chrome.
+A static page flashes a pre-built `.bin` via the Web Serial API in Chrome
+or Edge — no local toolchain required.
 
 1. Plug the ESP32-S3 in over USB.
-2. Open the [`flash-server/`](flash-server/) page (host it locally, see
-   [Development → Web flash server](#web-flash-server)) or use any
-   already-hosted copy.
-3. Click **Install** in Chrome and select the device's serial port.
-4. After flashing the page redirects to `/flashed.html`, which mirrors the
+2. Open **<https://harmellis.github.io/eink-devdash/>** in Chrome or Edge
+   on desktop (Web Serial is not supported on Firefox, Safari, or any
+   mobile browser).
+3. Click **Install** and select the device's serial port.
+4. After flashing the page redirects to `flashed.html`, which mirrors the
    on-device provisioning instructions and includes a troubleshooting
    accordion.
+
+The hosted version is pinned to the latest `v*.*.*` release. To flash a
+locally-built firmware instead, host the `flash-server/` directory
+yourself — see [Development → Web flash server](#web-flash-server).
+
+### Option A.1 — Command-line flash via release assets
+
+Each `v*.*.*` release publishes the three `.bin` files plus a
+`SHA256SUMS` file as GitHub Release assets. Verify and flash with
+`esptool.py`:
+
+```bash
+TAG=v0.1.0
+mkdir -p bins && cd bins
+gh release download "$TAG" --repo HarmEllis/eink-devdash \
+  --pattern '*.bin' --pattern 'SHA256SUMS'
+sha256sum -c SHA256SUMS
+esptool.py --chip esp32s3 -p /dev/ttyACM0 write_flash \
+  0x0     bootloader.bin \
+  0x8000  partition-table.bin \
+  0x10000 eink-devdash.bin
+```
 
 ### Option B — `idf.py flash`
 
@@ -319,6 +341,18 @@ health checks.
 
 ## Development
 
+### Devcontainer (recommended)
+
+The repo ships with a VS Code devcontainer ([`.devcontainer/`](.devcontainer/))
+that pins ESP-IDF v5.3, Node, and the firmware/API toolchain. Open the
+folder in VS Code and choose **Reopen in Container** — the post-create
+step installs the API dependencies and the integrated terminal lands in a
+shell with `idf.py`, `node`, and `npm` ready to go.
+
+Without the devcontainer you need to install ESP-IDF v5.3 and Node 20+
+yourself; everything below assumes you are running inside the container's
+integrated terminal.
+
 ### Repo layout
 
 ```
@@ -373,8 +407,7 @@ docker compose up -d api
 
 ### Firmware development
 
-Open the project in VS Code and reopen in the dev container, or install
-ESP-IDF v5.3 manually. Inside the dev container:
+From the devcontainer's integrated terminal:
 
 ```bash
 cd firmware
@@ -383,15 +416,8 @@ idf.py build
 idf.py flash monitor
 ```
 
-The dev container always runs commands as the `node` user:
-
-```bash
-docker exec -u node <devcontainer> bash -c "cd /workspaces/eink-devdash/firmware && idf.py build"
-```
-
-Running as root corrupts file ownership of `build/`, `sdkconfig`, and
-`dependencies.lock`. See [AGENTS.md](AGENTS.md) for the full devcontainer
-workflow.
+See [AGENTS.md](AGENTS.md) for the headless / agent-driven workflow that
+drives the same container over `docker exec`.
 
 ### Web flash server
 
@@ -410,9 +436,10 @@ rebuild.
 
 ## Releases
 
-Tags of the form `vMAJOR.MINOR.PATCH` (for example `v0.1.0`) trigger
-[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml),
-which:
+Tags of the form `vMAJOR.MINOR.PATCH` (for example `v0.1.0`) trigger two
+workflows in parallel.
+
+[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml):
 
 1. Verifies the `CI` workflow succeeded on the tagged commit.
 2. Builds the API container for `linux/amd64`.
@@ -422,6 +449,22 @@ which:
    (the `latest` tag is skipped for pre-release tags).
 4. Signs the manifest with cosign (keyless, OIDC).
 5. Runs Trivy and uploads SBOM artifacts.
+
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml):
+
+1. Builds the firmware for `esp32s3` inside `espressif/idf:release-v5.3`.
+2. Uploads `bootloader.bin`, `partition-table.bin`, `eink-devdash.bin`,
+   and `SHA256SUMS` as assets on the GitHub Release for the tag (the
+   release is created with `--generate-notes` if it does not exist).
+3. Deploys the [`flash-server/`](flash-server/) static page plus the same
+   binaries to GitHub Pages, with the release tag injected into both the
+   page header and `manifest.json`.
+
+The hosted flasher lives at <https://harmellis.github.io/eink-devdash/>
+and is byte-identical to the Release-asset firmware.
+
+> One-time repo setup before the first Pages deploy: **Settings → Pages →
+> Build and deployment → Source: GitHub Actions.**
 
 The release flow is therefore:
 
