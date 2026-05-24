@@ -17,7 +17,7 @@ app.addHook('onRequest', async (req, reply) => {
   if (req.url === '/health') return
   const auth = req.headers.authorization
   if (!auth || auth !== `Bearer ${DEVICE_TOKEN}`) {
-    reply.code(401).send({ error: 'Unauthorized' })
+    return reply.code(401).send({ error: 'Unauthorized' })
   }
 })
 

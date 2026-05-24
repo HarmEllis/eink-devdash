@@ -1,6 +1,6 @@
 # ADR-0003: Red-free black/white partial refresh mode for the tri-color e-paper
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-05-21
 - **Branch where proposed:** `main`
 - **Relates to:** the SSD1680 display driver in

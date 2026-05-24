@@ -12,7 +12,7 @@ static const char *TAG = "eink";
 #define CMD_TEMP_SENSOR_CTRL    0x18
 #define CMD_WRITE_TEMP_REG      0x1A
 #define CMD_DISP_UPDATE_CTRL1   0x21
-#define CMD_DISP_UPDATE_CTRL    0x22
+#define CMD_DISP_UPDATE_CTRL2   0x22
 #define CMD_WRITE_BW_RAM        0x24
 #define CMD_WRITE_RED_RAM       0x26
 #define CMD_DATA_ENTRY_MODE     0x11
@@ -201,7 +201,7 @@ static void reset_controller_fast_bw(eink_handle_t *h)
 
     send_cmd(h, CMD_TEMP_SENSOR_CTRL);
     send_byte(h, 0x80);
-    send_cmd(h, CMD_DISP_UPDATE_CTRL);
+    send_cmd(h, CMD_DISP_UPDATE_CTRL2);
     send_byte(h, 0xB1);
     send_cmd(h, CMD_MASTER_ACTIVATE);
     wait_busy(h);
@@ -209,7 +209,7 @@ static void reset_controller_fast_bw(eink_handle_t *h)
     send_cmd(h, CMD_WRITE_TEMP_REG);
     send_byte(h, 0x5A);
     send_byte(h, 0x00);
-    send_cmd(h, CMD_DISP_UPDATE_CTRL);
+    send_cmd(h, CMD_DISP_UPDATE_CTRL2);
     send_byte(h, 0x91);
     send_cmd(h, CMD_MASTER_ACTIVATE);
     wait_busy(h);
@@ -304,7 +304,7 @@ void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
         write_full_plane(h, CMD_WRITE_RED_RAM, red_framebuf);
     }
 
-    send_cmd(h, CMD_DISP_UPDATE_CTRL);
+    send_cmd(h, CMD_DISP_UPDATE_CTRL2);
     send_byte(h, mode == EINK_REFRESH_BW_FAST ? 0xC7 : 0xF7);
     send_cmd(h, CMD_MASTER_ACTIVATE);
     wait_busy(h);
@@ -336,7 +336,7 @@ bool eink_refresh_bw_partial(eink_handle_t *h,
     write_bw_window(h, next_bw, rect);
 
     ESP_LOGI(TAG, "Activating BW partial update");
-    send_cmd(h, CMD_DISP_UPDATE_CTRL);
+    send_cmd(h, CMD_DISP_UPDATE_CTRL2);
     send_byte(h, 0x1C);
     send_cmd(h, CMD_MASTER_ACTIVATE);
     if (!wait_busy_timeout(h, pdMS_TO_TICKS(30000))) {

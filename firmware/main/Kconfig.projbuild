@@ -70,4 +70,50 @@ config DEVDASH_OFFLINE_RETRY_INTERVAL_S
         Seconds to wait between retry attempts when WiFi or the API is
         unreachable and DEVDASH_RETRY_FOREVER_WHEN_OFFLINE is enabled.
 
+menu "E-paper pin mapping"
+
+config EINK_SPI_MOSI
+    int "E-paper SPI MOSI GPIO"
+    range 0 48
+    default 11
+    help
+        SPI MOSI GPIO connected to the e-paper SDA pin.
+
+config EINK_SPI_SCK
+    int "E-paper SPI SCK GPIO"
+    range 0 48
+    default 12
+    help
+        SPI clock GPIO connected to the e-paper SCL pin.
+
+config EINK_SPI_CS
+    int "E-paper SPI CS GPIO"
+    range 0 48
+    default 10
+    help
+        SPI chip-select GPIO connected to the e-paper CS pin.
+
+config EINK_DC_PIN
+    int "E-paper D/C GPIO"
+    range 0 48
+    default 9
+    help
+        GPIO connected to the e-paper data/command pin.
+
+config EINK_RST_PIN
+    int "E-paper reset GPIO"
+    range 0 48
+    default 1
+    help
+        GPIO connected to the e-paper reset pin.
+
+config EINK_BUSY_PIN
+    int "E-paper busy GPIO"
+    range 0 48
+    default 13
+    help
+        GPIO connected to the e-paper busy pin.
+
+endmenu
+
 endmenu

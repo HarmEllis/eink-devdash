@@ -266,6 +266,7 @@ static void apply_field(portal_form_t *form,
 static void parse_form_body(char *body, portal_form_t *form)
 {
     char *p = body;
+    char *body_end = body + strlen(body);
     while (*p) {
         char *key = p;
         char *eq  = strchr(key, '=');
@@ -276,7 +277,7 @@ static void parse_form_body(char *body, portal_form_t *form)
             continue;
         }
         char *val = eq + 1;
-        char *end = amp ? amp : body + strlen(body);
+        char *end = amp ? amp : body_end;
         apply_field(form, key, (size_t)(eq - key), val, (size_t)(end - val));
         if (!amp) break;
         p = amp + 1;

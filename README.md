@@ -77,6 +77,11 @@ The API listens on `http://<host>:3000` and advertises
 `http://devdash-api.local:3000` over mDNS when the container network allows
 multicast.
 
+> **Security:** keep this API on your trusted local network only. The
+> firmware talks to it over plain HTTP and sends the bearer token without
+> TLS, so do not expose port 3000 to the internet or route it through a
+> public reverse proxy.
+
 For reliable `.local` discovery on Linux Docker hosts, use host networking:
 
 ```bash
@@ -139,11 +144,25 @@ fallback reads directly from `/home/node/.codex-source/sessions`, so new host
 sessions are visible without copying session history into the container. No
 keys are baked into the image.
 
+### Network security
+
+The API is designed for a trusted local network only. Do not expose it to
+the internet, publish port 3000 through a router, or put it behind a public
+reverse proxy. The firmware currently uses plain HTTP, so the
+`Authorization: Bearer ...` token protects against accidental LAN access but
+does not provide confidentiality on untrusted networks. If the device is not
+on the same trusted LAN as the API, provide that private network path outside
+the firmware, for example with a router/site-to-site VPN or another private
+network gateway. The firmware itself does not run a VPN client.
+
 ---
 
 ## Flashing the firmware
 
-Two paths: web flasher (no toolchain) or `idf.py` from a local checkout.
+Use the web flasher for normal flashing. The devcontainer is for building
+the firmware; it is not expected to have access to the host's USB serial
+devices, so direct USB flashing with `idf.py` is not the supported workflow
+there.
 
 ### Option A — Web flasher (recommended)
 
@@ -167,7 +186,7 @@ yourself — see [Development → Web flash server](#web-flash-server).
 
 Each `v*.*.*` release publishes the three `.bin` files plus a
 `SHA256SUMS` file as GitHub Release assets. Verify and flash with
-`esptool.py`:
+`esptool.py` only from a host environment that has direct USB access:
 
 ```bash
 TAG=v0.1.0
@@ -181,26 +200,25 @@ esptool.py --chip esp32s3 -p /dev/ttyACM0 write_flash \
   0x10000 eink-devdash.bin
 ```
 
-### Option B — `idf.py flash`
+### Option B — Build locally, flash with the local web flasher
 
 For developers building firmware from source. See
 [Development → Firmware](#firmware-development) for the devcontainer
-setup. Once inside the devcontainer:
+setup. Build inside the devcontainer, then serve the generated binaries
+through the local web flasher:
 
 ```bash
 cd firmware
 idf.py set-target esp32s3
 idf.py build
-idf.py flash monitor
+cd ../flash-server
+bash serve.sh
 ```
 
-To wipe stored credentials over USB without reflashing:
-
-```bash
-parttool.py -p /dev/ttyACM0 erase_partition --partition-name=nvs
-# or, a full chip erase:
-idf.py erase-flash
-```
+Open `http://localhost:8080` in Chrome or Edge on the host machine and
+click **Install**. The browser, not the devcontainer, talks to the ESP32-S3
+over Web Serial. To wipe stored credentials, use the erase prompt in the
+web flasher before installing.
 
 ---
 
@@ -224,7 +242,7 @@ captive portal URL `192.168.4.1`.
 
 The AP password is a 12-character random string generated on first boot
 and persisted in NVS. The same password survives reboots; a factory reset
-(`idf.py erase-flash`) regenerates it. API URLs must start with `http://`
+from the web flasher regenerates it. API URLs must start with `http://`
 — IP, DNS, and `.local` mDNS hostnames are all accepted. HTTPS is out of
 scope for this firmware revision.
 
@@ -413,8 +431,13 @@ From the devcontainer's integrated terminal:
 cd firmware
 idf.py set-target esp32s3   # once after a clean checkout
 idf.py build
-idf.py flash monitor
+cd ../flash-server
+bash serve.sh
 ```
+
+Open `http://localhost:8080` in Chrome or Edge on the host machine and
+flash with Web Serial. The devcontainer builds the firmware, but the
+browser on the host owns USB access.
 
 See [AGENTS.md](AGENTS.md) for the headless / agent-driven workflow that
 drives the same container over `docker exec`.

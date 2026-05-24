@@ -2,6 +2,7 @@
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include <stdbool.h>
 
 /* WeAct 2.9" Black/Red — SSD1680, 128×296 px */
@@ -10,12 +11,12 @@
 #define EINK_BUF_SIZE (EINK_WIDTH * EINK_HEIGHT / 8)  /* 4736 bytes */
 
 /* Pin mapping — ESP32-S3 Super Mini */
-#define EINK_PIN_MOSI  11   /* SDA (yellow) */
-#define EINK_PIN_SCK   12   /* SCL (green)  */
-#define EINK_PIN_CS    10   /* CS  (blue)   */
-#define EINK_PIN_DC     9   /* D/C (white)  */
-#define EINK_PIN_RST    1   /* RES (orange) */
-#define EINK_PIN_BUSY  13   /* BUSY (purple) */
+#define EINK_PIN_MOSI  CONFIG_EINK_SPI_MOSI   /* SDA (yellow) */
+#define EINK_PIN_SCK   CONFIG_EINK_SPI_SCK    /* SCL (green)  */
+#define EINK_PIN_CS    CONFIG_EINK_SPI_CS     /* CS  (blue)   */
+#define EINK_PIN_DC    CONFIG_EINK_DC_PIN     /* D/C (white)  */
+#define EINK_PIN_RST   CONFIG_EINK_RST_PIN    /* RES (orange) */
+#define EINK_PIN_BUSY  CONFIG_EINK_BUSY_PIN   /* BUSY (purple) */
 /* MISO not connected (-1), VCC = 3V3 */
 
 typedef enum {

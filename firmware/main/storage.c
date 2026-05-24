@@ -89,6 +89,7 @@ bool storage_validate_api_url(const char *url)
     if (len >= DASH_API_URL_MAX) return false;
     const char *host = url + 7;
     if (*host == '\0') return false;
+    /* Query strings are intentionally rejected because this is a base URL. */
     for (const char *p = host; *p; p++) {
         char c = *p;
         bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||

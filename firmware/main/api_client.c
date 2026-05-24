@@ -275,6 +275,9 @@ static esp_err_t fetch_one(const char *base_url, const char *token,
     if (ctx.truncated) {
         ESP_LOGW(TAG, "response truncated at %d bytes (buffer=%d)",
                  ctx.len, RESPONSE_BUF_SIZE);
+        free(buf);
+        out->offline = true;
+        return ESP_FAIL;
     }
 
     err = parse_dashboard_json(buf, out);
