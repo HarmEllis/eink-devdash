@@ -133,6 +133,7 @@ jobs:
         with:
           images: ${{ steps.image.outputs.ref }}
           tags: |
+            type=raw,value=${{ steps.version.outputs.tag }}
             type=semver,pattern={{version}},value=${{ steps.version.outputs.tag }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.tag }}
             type=semver,pattern={{major}},value=${{ steps.version.outputs.tag }}
