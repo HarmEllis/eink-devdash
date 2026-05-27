@@ -74,6 +74,76 @@ Do **not** add `espressif/json` to `idf_component.yml` — `json` (cJSON) is
 a built-in ESP-IDF component and is pulled in only via `CMakeLists.txt`
 `REQUIRES json`.
 
+## Release And Tag Prep
+
+When asked to prepare or create a new release tag, complete all of the steps
+below before creating the tag.
+
+1. Determine the previous tag with `git describe --tags --abbrev=0` and review
+   the changes since that tag with `git log --oneline <previous-tag>..HEAD`
+   plus `git diff --stat <previous-tag>..HEAD`.
+2. Update `CHANGELOG.md` for the upcoming release:
+   - add the new version section at the top using `## [x.y.z] - YYYY-MM-DD`
+   - summarize the changes since the previous tag in concise release notes
+   - group entries under `Added`, `Changed`, and `Fixed` when that structure
+     fits the changes
+   - add or update the comparison link at the bottom so the new version
+     compares `<previous-tag>...v<x.y.z>`
+3. Bump the app version to the new release version in:
+   - `api/package.json` (and keep `api/package-lock.json` in sync — both the
+     top-level `version` and the root package entry at `packages[""].version`)
+   - `flash-server/manifest.json` (the `version` field; the Pages workflow
+     also rewrites this at release time, but keep the committed value in
+     sync so local flashes report the right version)
+4. Verify the release-prep edits before tagging. At minimum:
+   - run `cd api && npm run build && npm test` inside the devcontainer
+   - build the firmware: `cd firmware && idf.py build` inside the devcontainer
+   - confirm `firmware/build/eink-devdash.bin` is under the 1.5 MB OTA slot
+     limit (`stat -c%s firmware/build/eink-devdash.bin`)
+   - confirm the partition table still contains `ota_0` and `ota_1`
+     (`idf.py partition-table`)
+5. Keep the release changes commit-ready first (changelog, version bumps),
+   but do not push the new `v<x.y.z>` tag yet.
+6. As the final release step, ask the user whether to push the release.
+   - only proceed when the user explicitly approves the push
+   - when approved, push the release commit through the repository's allowed
+     path to `main` (typically: push a release branch and merge a PR into
+     `main`)
+   - do not push the new `v<x.y.z>` tag until the release changes are merged
+     into `main`
+   - wait for the `CI` workflow on the merged `main` commit (the commit that
+     now contains the release changes) to complete successfully
+   - if the `CI` workflow fails, is cancelled, or never reaches a successful
+     conclusion, stop and do not push the tag or create the GitHub release
+   - before pushing the tag, create a GitHub draft release for `v<x.y.z>` on
+     the merged `main` commit using the new changelog section as the release
+     notes body, but omit the `## [x.y.z] - YYYY-MM-DD` heading from the
+     body itself. The Pages workflow's `gh release create --generate-notes`
+     fallback only fires when no release exists, so the curated draft must
+     exist before the tag push to avoid being overwritten.
+   - keep the short introductory summary paragraph from the changelog section
+     at the top of the GitHub release notes body, before any `### Added`,
+     `### Changed`, or `### Fixed` headings
+   - always end the GitHub release notes with
+     `**Full Changelog**: https://github.com/HarmEllis/eink-devdash/compare/<previous-tag>...v<x.y.z>`
+   - only after the curated draft release exists may the new `v<x.y.z>` tag
+     be created on that merged `main` commit and pushed to the remote
+   - after the tag push, the `Pages` workflow uploads the firmware binaries
+     (`bootloader.bin`, `partition-table.bin`, `ota_data_initial.bin`,
+     `eink-devdash.bin`, `SHA256SUMS`) to the draft release and deploys the
+     hosted Web Flasher; the `Build and Push Docker Image` workflow publishes
+     `ghcr.io/harmellis/eink-devdash` with the version-prefixed tags
+   - publish the draft release only after both workflows complete successfully
+   - if the user does not approve, stop after the local release commit and
+     report that the release has not been pushed, tagged remotely, or drafted
+     on GitHub
+
+## Version Format
+
+- `api/package.json` and `flash-server/manifest.json` use plain semver like
+  `0.2.0`.
+- Git tags use a `v` prefix like `v0.2.0`.
+
 ## Git safe.directory
 
 The devcontainer runs under a different UID than the host. If git
