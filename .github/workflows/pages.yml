@@ -97,12 +97,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p bins
-          cp firmware/build/bootloader/bootloader.bin           bins/
-          cp firmware/build/partition_table/partition-table.bin bins/
-          cp firmware/build/ota_data_initial.bin                bins/
-          cp firmware/build/eink-devdash.bin                    bins/
-          ( cd bins && sha256sum bootloader.bin partition-table.bin ota_data_initial.bin eink-devdash.bin > SHA256SUMS )
+          # sync-bins.sh needs jq; espressif/idf doesn't ship it.
+          if ! command -v jq >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq jq
+          fi
+          BINS_DIR="$PWD/bins" ./flash-server/sync-bins.sh
+          ( cd bins && sha256sum *.bin > SHA256SUMS )
 
       - name: Upload firmware artifact
         # TODO: pin to a commit SHA once a known-good version is verified.
@@ -146,10 +146,7 @@ jobs:
               --verify-tag
           fi
           gh release upload "$TAG" \
-            bins/bootloader.bin \
-            bins/partition-table.bin \
-            bins/ota_data_initial.bin \
-            bins/eink-devdash.bin \
+            bins/*.bin \
             bins/SHA256SUMS \
             --clobber
 
