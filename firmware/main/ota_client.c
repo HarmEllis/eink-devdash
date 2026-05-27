@@ -26,10 +26,13 @@ static const char *TAG = "ota_client";
 #define OTA_MANIFEST_TIMEOUT_MS      6000
 #define OTA_DOWNLOAD_TIMEOUT_MS      60000
 
-/* RTC_NOINIT means: zeroed on cold boot / on power loss, preserved across
- * deep sleep + esp_restart(). Same pattern as boot_button.c's force_prov
- * magic. We treat any value != 0 as "skip this many wake cycles". */
-static RTC_NOINIT_ATTR uint32_t s_ota_skip_cycles;
+/* RTC_DATA_ATTR is zero-initialized on cold boot / power loss and preserved
+ * across deep sleep + esp_restart() — exactly what we need so a failed OTA
+ * stays throttled across wake cycles but a fresh USB-flashed device starts
+ * with a clean counter. RTC_NOINIT_ATTR would *not* zero on cold boot and
+ * the counter would come up with random RTC memory contents (observed:
+ * 0xF88E1B21 ≈ 4.17 billion cycles of throttling after a USB flash). */
+static RTC_DATA_ATTR uint32_t s_ota_skip_cycles;
 
 typedef struct {
     char *buf;
