@@ -21,6 +21,7 @@ services:
       - DEVICE_TOKEN=${DEVICE_TOKEN}
       - MDNS_ENABLED=${MDNS_ENABLED:-true}
       - MDNS_NAME=${MDNS_NAME:-devdash-api}
+      - OTA_ENABLED=${OTA_ENABLED:-true}
     restart: unless-stopped
 
   api-mdns-host:
@@ -46,4 +47,5 @@ services:
       - DEVICE_TOKEN=${DEVICE_TOKEN}
       - MDNS_ENABLED=${MDNS_ENABLED:-true}
       - MDNS_NAME=${MDNS_NAME:-devdash-api}
+      - OTA_ENABLED=${OTA_ENABLED:-true}
     restart: unless-stopped

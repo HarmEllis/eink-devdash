@@ -13,6 +13,7 @@
 #include "api_client.h"
 #include "display.h"
 #include "boot_button.h"
+#include "ota_client.h"
 #include <string.h>
 
 static const char *TAG = "main";
@@ -164,7 +165,9 @@ void app_main(void)
     /* On failure either retry in a foreground loop (bring-up — keeps
      * USB-CDC alive so we can reflash) or drop to deep sleep (battery-
      * friendly default for production). Toggle via Kconfig. */
+#if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
     bool offline_shown = false;
+#endif
     bool wake_refresh = (wake == ESP_SLEEP_WAKEUP_TIMER ||
                          wake == ESP_SLEEP_WAKEUP_EXT0);
     bool prefer_last_success_api = wake_refresh;
@@ -187,8 +190,8 @@ void app_main(void)
                                                  &api_diag);
             ESP_LOGI(TAG, "Dashboard API fetch result: %s api_idx=%d",
                      esp_err_to_name(err), api_idx);
-            wifi_net_stop();
             if (err == ESP_OK) break;
+            wifi_net_stop();
             offline_reason = DISPLAY_OFFLINE_REASON_API;
             ESP_LOGE(TAG, "API fetch failed");
         } else {
@@ -219,6 +222,23 @@ void app_main(void)
     }
 
     display_set_connection_slots(&cfg, network_idx, api_idx);
+
+    /* Check for OTA before the dashboard render. A real update writes one
+     * static OTA poster and then starts flash erase/write; rendering the
+     * dashboard first would force two full e-paper refreshes in one wake
+     * cycle. */
+    err = ota_client_maybe_update(&cfg, network_idx, api_idx);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "OTA check/update failed: %s", esp_err_to_name(err));
+    }
+
+    wifi_net_stop();
     display_render(&data);
+
+    /* A successful fetch + render is the rollback-validation gate for an
+     * OTA install. No-op when the running image is already VALID, so this
+     * is safe to call unconditionally. */
+    ota_client_mark_image_valid();
+
     enter_deep_sleep(cfg.refresh_min);
 }

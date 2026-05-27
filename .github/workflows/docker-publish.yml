@@ -177,6 +177,10 @@ jobs:
           file: ./api/Dockerfile
           platforms: linux/amd64
           labels: ${{ needs.prepare.outputs.labels }}
+          # APP_VERSION is baked into the image so /ota/manifest can
+          # advertise the matching firmware tag without a runtime env.
+          build-args: |
+            APP_VERSION=${{ needs.prepare.outputs.ref }}
           outputs: type=image,name=${{ needs.prepare.outputs.image_ref }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=linux-amd64
           cache-to: type=gha,mode=max,scope=linux-amd64

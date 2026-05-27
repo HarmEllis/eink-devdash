@@ -6,19 +6,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/../firmware/build"
-BINS_DIR="${SCRIPT_DIR}/bins"
-
-if [[ ! -f "${BUILD_DIR}/eink-devdash.bin" ]]; then
-  echo "ERROR: firmware not built yet. Run: cd firmware && idf.py build"
-  exit 1
-fi
 
 echo "==> Copying binaries..."
-mkdir -p "$BINS_DIR"
-cp "${BUILD_DIR}/bootloader/bootloader.bin"  "${BINS_DIR}/"
-cp "${BUILD_DIR}/partition_table/partition-table.bin" "${BINS_DIR}/"
-cp "${BUILD_DIR}/eink-devdash.bin"           "${BINS_DIR}/"
+"${SCRIPT_DIR}/sync-bins.sh"
 
 echo "==> Serving flash-server/ on http://localhost:8080"
 echo "    Open in Chrome on your local machine and click Install."

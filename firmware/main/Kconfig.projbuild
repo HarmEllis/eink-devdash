@@ -70,6 +70,30 @@ config DEVDASH_OFFLINE_RETRY_INTERVAL_S
         Seconds to wait between retry attempts when WiFi or the API is
         unreachable and DEVDASH_RETRY_FOREVER_WHEN_OFFLINE is enabled.
 
+config DEVDASH_OTA_THROTTLE_CYCLES
+    int "OTA throttle cycles after a failed update attempt"
+    range 0 100
+    default 6
+    help
+        After a failed OTA manifest fetch or firmware download, skip this
+        many subsequent wake cycles before trying again. At the default
+        5-minute refresh interval this is ~30 minutes of back-off. The
+        counter lives in RTC_NOINIT memory so it survives deep sleep but
+        zeroes on cold boot or power loss. A successful update also
+        zeroes it.
+
+config DEVDASH_WARN_FULL_REFRESH_INTERVAL_S
+    int "Warn when full e-paper refreshes are closer than this (seconds)"
+    range 0 600
+    default 180
+    help
+        Soft guardrail for the WeAct 2.9 inch e-paper panel. The firmware
+        routes every full-panel refresh through a central helper and logs a
+        warning when two full refreshes happen closer than this interval in
+        the same wake cycle. OTA itself avoids extra redraws by design; this
+        warning is for catching accidental retry-loop or multi-poster paths
+        without blocking the UX for minutes.
+
 menu "E-paper pin mapping"
 
 config EINK_SPI_MOSI

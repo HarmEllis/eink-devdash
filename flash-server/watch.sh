@@ -7,21 +7,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/../firmware/build"
-BINS_DIR="${SCRIPT_DIR}/bins"
 BIN="${BUILD_DIR}/eink-devdash.bin"
 
 copy_bins() {
-    mkdir -p "$BINS_DIR"
-    cp "${BUILD_DIR}/bootloader/bootloader.bin"       "${BINS_DIR}/"
-    cp "${BUILD_DIR}/partition_table/partition-table.bin" "${BINS_DIR}/"
-    cp "${BIN}"                                        "${BINS_DIR}/"
+    "${SCRIPT_DIR}/sync-bins.sh"
     echo "[watch] bins updated — $(date '+%H:%M:%S')"
 }
-
-if [[ ! -f "$BIN" ]]; then
-    echo "ERROR: firmware not built yet. Run: cd firmware && idf.py build"
-    exit 1
-fi
 
 copy_bins
 

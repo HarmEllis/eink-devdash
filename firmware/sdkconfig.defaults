@@ -1,6 +1,25 @@
 # Flash
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Partition layout: custom 2-slot OTA CSV (firmware/partitions.csv) so the
+# device can pull OTA updates from the local API + GitHub Releases. ESP-IDF's
+# stock TWO_OTA preset uses 1 MB slots plus a 1 MB factory partition; our
+# binary is ~1.07 MB once esp_https_ota + the mbedtls cert bundle are linked
+# in, so we ship a slightly larger 1.5 MB / 1.5 MB layout. Migrating from
+# SINGLE_APP_LARGE shifts the app region, so the first install of an
+# OTA-capable image triggers a webflasher erase prompt and the user
+# re-provisions Wi-Fi + API token once. See docs/decisions/0005-ota-updates.md.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# OTA download path: bundled Mozilla root CAs so esp_https_ota can validate
+# github.com / objects.githubusercontent.com without shipping a per-host PEM.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+
+# Mark a newly OTA-installed image as PENDING_VERIFY at boot; firmware calls
+# esp_ota_mark_app_valid_cancel_rollback() once a fetch + render succeeds.
+# A crash/reset before that point reverts to the previous slot automatically.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Main task stack: default 3584 B is for trivial main tasks. app_main here
 # runs Wi-Fi setup, API fetch, JSON parse, and display rendering on the main

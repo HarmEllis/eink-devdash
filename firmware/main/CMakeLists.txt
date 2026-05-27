@@ -8,6 +8,7 @@ idf_component_register(
         "api_client.c"
         "storage.c"
         "boot_button.c"
+        "ota_client.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_event
@@ -15,6 +16,9 @@ idf_component_register(
         esp_wifi
         esp_http_client
         esp_http_server
+        esp_https_ota
+        app_update
+        esp-tls
         esp_timer
         nvs_flash
         driver

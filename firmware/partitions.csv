@@ -1,0 +1,21 @@
+# Custom partition table for OTA on 4 MB flash.
+#
+# IDF's stock CONFIG_PARTITION_TABLE_TWO_OTA preset ships 1 MB app slots
+# plus a 1 MB factory partition. The current eink-devdash binary is
+# ~1.07 MB once esp_https_ota + mbedtls cert bundle are linked in, so
+# 1 MB slots are too small. This CSV drops the factory partition and
+# enlarges each OTA slot to 1.5 MB. See docs/decisions/0005-ota-updates.md.
+#
+# Migration consequence: existing v0.1.x devices store NVS at the old
+# 0x9000+0x6000 region; the new layout keeps the same offset/size, so
+# the NVS region itself does not shift. The app slot moves, however,
+# and the bootloader rejects an unsigned image with the wrong partition
+# magic, so the webflasher prompts to erase on first install. See the
+# README "Updating from v0.1.x" section for the user-facing procedure.
+#
+# Name,    Type, SubType, Offset,   Size,     Flags
+nvs,       data, nvs,     0x9000,   0x6000,
+otadata,   data, ota,     0xf000,   0x2000,
+phy_init,  data, phy,     0x11000,  0x1000,
+ota_0,     app,  ota_0,   0x20000,  0x180000,
+ota_1,     app,  ota_1,   0x1A0000, 0x180000,
