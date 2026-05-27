@@ -574,14 +574,20 @@ typedef struct {
  * spans the full panel when the API response has no GitHub object. */
 static void draw_provider(int ox, int oy, int width, const provider_layout_t *layout,
                           const char *title, int ses, int wk,
-                          int ses_reset_s, int wk_reset_s)
+                          int ses_reset_s, int wk_reset_s,
+                          bool auth_err)
 {
     char pct_s[8], ses_s[8], wk_s[8];
 
-    draw_str(ox, oy, title, 0);
+    draw_str(ox, oy, title, auth_err);
 
-    format_reset_countdown(ses_s, sizeof(ses_s), ses_reset_s);
-    format_reset_countdown(wk_s,  sizeof(wk_s),  wk_reset_s);
+    if (auth_err) {
+        snprintf(ses_s, sizeof(ses_s), "--");
+        snprintf(wk_s,  sizeof(wk_s),  "--");
+    } else {
+        format_reset_countdown(ses_s, sizeof(ses_s), ses_reset_s);
+        format_reset_countdown(wk_s,  sizeof(wk_s),  wk_reset_s);
+    }
 
     const int text_gap = 2;
     const int hg_gap   = 4;
@@ -591,10 +597,10 @@ static void draw_provider(int ox, int oy, int width, const provider_layout_t *la
     int x_slash = x_wk - text_gap - str_w("/");
     int x_ses   = x_slash - text_gap - str_w(ses_s);
     int x_hg    = x_ses - hg_gap - hg_w;
-    icon_hourglass(x_hg, oy, 0);
-    draw_str(x_ses,   oy, ses_s, ses > 80);
-    draw_str(x_slash, oy, "/",   0);
-    draw_str(x_wk,    oy, wk_s,  wk  > 80);
+    icon_hourglass(x_hg, oy, auth_err);
+    draw_str(x_ses,   oy, ses_s, auth_err || ses > 80);
+    draw_str(x_slash, oy, "/",   auth_err);
+    draw_str(x_wk,    oy, wk_s,  auth_err || wk  > 80);
 
     int bar_x = ox + layout->row_label_w;
     int bar_w = width - layout->row_label_w - layout->pct_w;
@@ -602,15 +608,25 @@ static void draw_provider(int ox, int oy, int width, const provider_layout_t *la
     int wk_y  = ses_y + layout->bar_row_h + 2;
     int bar_dy = (layout->bar_row_h - layout->bar_h) / 2;
 
-    draw_str(ox, ses_y + 2, "5H", 0);
-    draw_bar_cfg(bar_x, ses_y + bar_dy, bar_w, layout->bar_h, layout->seg_w, ses);
-    snprintf(pct_s, sizeof(pct_s), "%d%%", ses);
-    draw_str(ox + width - str_w(pct_s) - 2, ses_y + 2, pct_s, ses > 80);
+    draw_str(ox, ses_y + 2, "5H", auth_err);
+    draw_bar_cfg(bar_x, ses_y + bar_dy, bar_w, layout->bar_h, layout->seg_w,
+                 auth_err ? 0 : ses);
+    if (auth_err) {
+        snprintf(pct_s, sizeof(pct_s), "ERR");
+    } else {
+        snprintf(pct_s, sizeof(pct_s), "%d%%", ses);
+    }
+    draw_str(ox + width - str_w(pct_s) - 2, ses_y + 2, pct_s, auth_err || ses > 80);
 
-    draw_str(ox, wk_y + 2, "WK", 0);
-    draw_bar_cfg(bar_x, wk_y + bar_dy, bar_w, layout->bar_h, layout->seg_w, wk);
-    snprintf(pct_s, sizeof(pct_s), "%d%%", wk);
-    draw_str(ox + width - str_w(pct_s) - 2, wk_y + 2, pct_s, wk > 80);
+    draw_str(ox, wk_y + 2, "WK", auth_err);
+    draw_bar_cfg(bar_x, wk_y + bar_dy, bar_w, layout->bar_h, layout->seg_w,
+                 auth_err ? 0 : wk);
+    if (auth_err) {
+        snprintf(pct_s, sizeof(pct_s), "ERR");
+    } else {
+        snprintf(pct_s, sizeof(pct_s), "%d%%", wk);
+    }
+    draw_str(ox + width - str_w(pct_s) - 2, wk_y + 2, pct_s, auth_err || wk > 80);
 }
 
 /* ── icon row (left column) ─────────────────────────────────────────────── */
@@ -1158,28 +1174,33 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
         draw_provider(112, 20, 182, &compact_provider, "CLAUDE",
                       claude_ses, claude_wk,
                       data->claude.five_hour.reset_in_seconds,
-                      data->claude.weekly.reset_in_seconds);
+                      data->claude.weekly.reset_in_seconds,
+                      data->claude.auth_error);
         draw_provider(112, 66, 182, &compact_provider, "CODEX",
                       codex_ses, codex_wk,
                       data->codex.short_reset_in_seconds,
-                      data->codex.long_reset_in_seconds);
+                      data->codex.long_reset_in_seconds,
+                      false);
     } else {
         /* GitHub integration disabled upstream: use the whole canvas for the
          * provider panels instead of rendering an empty GitHub side. */
         draw_provider(4, 20, 288, &wide_provider, "CLAUDE",
                       claude_ses, claude_wk,
                       data->claude.five_hour.reset_in_seconds,
-                      data->claude.weekly.reset_in_seconds);
+                      data->claude.weekly.reset_in_seconds,
+                      data->claude.auth_error);
         draw_provider(4, 76, 288, &wide_provider, "CODEX",
                       codex_ses, codex_wk,
                       data->codex.short_reset_in_seconds,
-                      data->codex.long_reset_in_seconds);
+                      data->codex.long_reset_in_seconds,
+                      false);
     }
 
     bool need_red = deps_alert || auth_err || offline
            || claude_ses > 80 || claude_wk > 80
            || codex_ses > 80  || codex_wk  > 80
-           || data->codex.reached;
+           || data->codex.reached
+           || data->claude.auth_error;
     return need_red;
 }
 

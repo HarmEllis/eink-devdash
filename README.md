@@ -129,20 +129,53 @@ Environment variables read by the API container. Set them in `.env` next to
 | `CODEX_LIVE_USAGE` | no | `true` | Set to `false` to skip the live Codex app-server probe and read only the on-disk session JSONL. |
 | `CODEX_CLI_PATH` | no | empty | Override the Codex CLI binary path. |
 | `CODEX_APP_SERVER_TIMEOUT_MS` | no | `8000` | Timeout for the Codex live probe. |
-| `CODEX_HOME` | no | `/home/node/.codex-runtime` | Writable Codex runtime home inside the container. Set by `docker-compose.yml`. |
+| `HOST_UID` | no | `1000` | UID the container runs as. Set to `$(id -u)` so the API can write `~/.claude/.credentials.json` as the host user that owns it. |
+| `HOST_GID` | no | `1000` | GID the container runs as. Set to `$(id -g)`. |
+| `CODEX_HOME` | no | `/tmp/devdash-codex-runtime` | Writable Codex runtime home inside the container. Set by `docker-compose.yml`. Lives under `/tmp` so it stays writable for any UID. |
 | `CODEX_SOURCE_HOME` | no | `/home/node/.codex-source` | Read-only host Codex home mount used as the source for auth/config sync. Set by `docker-compose.yml`. |
 | `CODEX_SESSIONS_DIR` | no | `/home/node/.codex-source/sessions` | Codex session JSONL directory used by the fallback reader. Set by `docker-compose.yml`. |
 | `MDNS_ENABLED` | no | `true` | Set to `false` to disable mDNS advertising. |
 | `MDNS_NAME` | no | `devdash-api` | Hostname under `.local`. |
 | `IMAGE_TAG` | no | `latest` | Pin the published image to a specific tag (e.g. `v0.1.0`). |
 
-The container mounts `~/.claude` read-only and mounts host `~/.codex`
-read-only at `/home/node/.codex-source`. Before each live Codex usage probe,
-the API syncs auth/config files from that source into the writable
-`/home/node/.codex-runtime` directory used by `codex app-server`. Session JSONL
-fallback reads directly from `/home/node/.codex-source/sessions`, so new host
-sessions are visible without copying session history into the container. No
-keys are baked into the image.
+The container mounts `~/.claude` **read-write** and mounts host `~/.codex`
+read-only at `/home/node/.codex-source`. The Claude side needs write access
+because the API refreshes the OAuth access token in place (surgical edit of
+`claudeAiOauth.{accessToken,expiresAt,refreshToken}`, all other fields
+untouched, atomic temp-file + rename) so the dashboard stays live while
+Claude Code is idle. The Claude CLI keeps working transparently with the
+refreshed credentials.
+
+For the refresh path to work, the container must run as the **same UID/GID
+as the host user that owns `~/.claude`**. Set `HOST_UID` and `HOST_GID` in
+`.env`:
+
+```bash
+echo "HOST_UID=$(id -u)" >> .env
+echo "HOST_GID=$(id -g)" >> .env
+```
+
+`docker-compose.yml` passes these to the container via the `user:`
+directive, so the API writes credentials as your own host user — no `chown`
+or ACL on `~/.claude` required, and no extra principal gains access. If
+`HOST_UID`/`HOST_GID` are unset the container defaults to `1000:1000`,
+which only works when your host user happens to be uid `1000`. If the UIDs
+don't match the api logs `cannot write to /home/node/.claude` and falls
+back to the read-only path; the dashboard still works whenever the on-disk
+token is fresh.
+
+Run **either** the default `api` service **or** the host-network
+`api-mdns-host` profile, not both at once: the credentials write path is
+guarded by a file lock so concurrent api processes won't corrupt the file,
+but two services serving the dashboard simultaneously isn't an intended
+deployment.
+
+Before each live Codex usage probe, the API syncs auth/config files from
+the Codex source into `/tmp/devdash-codex-runtime` (writable for any UID)
+used by `codex app-server`. Session JSONL fallback reads directly from
+`/home/node/.codex-source/sessions`, so new host sessions are visible
+without copying session history into the container. No keys are baked into
+the image.
 
 ### Network security
 
@@ -536,7 +569,7 @@ in RTC slow memory and survives deep sleep but resets on power-on.
 | Source | How |
 |--------|-----|
 | GitHub | REST API v3 via PAT (`repo` + `security_events` scopes) |
-| Claude Code | Reads `~/.claude/.credentials.json` (OAuth token) for rate-limit headers — no Anthropic API key required |
+| Claude Code | Reads `~/.claude/.credentials.json` (OAuth token) for rate-limit headers and refreshes the access token in-place when it expires, so the dashboard stays live during long idle periods. No Anthropic API key required. |
 | Codex | Live `codex app-server` `account/rateLimits/read` response, falling back to the latest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count.rate_limits` event |
 
 ---
