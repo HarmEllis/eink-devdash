@@ -5,7 +5,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ${HOME}/.claude:/home/node/.claude:ro
+      - ${HOME}/.claude:/home/node/.claude:rw
       - ${HOME}/.codex:/home/node/.codex-source:ro
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
@@ -28,7 +28,7 @@ services:
     build: ./api
     network_mode: host
     volumes:
-      - ${HOME}/.claude:/home/node/.claude:ro
+      - ${HOME}/.claude:/home/node/.claude:rw
       - ${HOME}/.codex:/home/node/.codex-source:ro
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}

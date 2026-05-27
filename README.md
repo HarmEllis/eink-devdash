@@ -136,13 +136,44 @@ Environment variables read by the API container. Set them in `.env` next to
 | `MDNS_NAME` | no | `devdash-api` | Hostname under `.local`. |
 | `IMAGE_TAG` | no | `latest` | Pin the published image to a specific tag (e.g. `v0.1.0`). |
 
-The container mounts `~/.claude` read-only and mounts host `~/.codex`
-read-only at `/home/node/.codex-source`. Before each live Codex usage probe,
-the API syncs auth/config files from that source into the writable
-`/home/node/.codex-runtime` directory used by `codex app-server`. Session JSONL
-fallback reads directly from `/home/node/.codex-source/sessions`, so new host
-sessions are visible without copying session history into the container. No
-keys are baked into the image.
+The container mounts `~/.claude` **read-write** and mounts host `~/.codex`
+read-only at `/home/node/.codex-source`. The Claude side needs write access
+because the API refreshes the OAuth access token in place (surgical edit of
+`claudeAiOauth.{accessToken,expiresAt,refreshToken}`, all other fields
+untouched, atomic temp-file + rename) so the dashboard stays live while
+Claude Code is idle. The Claude CLI keeps working transparently with the
+refreshed credentials. For the refresh path to be friction-free, the host `~/.claude` directory
+must be writable by the container's `node` user. The image's `node` user is
+uid `1000`; check your host with `id -u` and, if it matches, no action is
+needed. If it doesn't match and the api logs `cannot write to
+/home/node/.claude`, grant write access narrowly — for example with an ACL
+just for that uid:
+
+```bash
+setfacl -m u:1000:rwx ~/.claude
+setfacl -m u:1000:rw  ~/.claude/.credentials.json
+```
+
+Avoid `chown -R 1000:1000 ~/.claude`: it pulls the entire Claude home,
+including session history and unrelated state, away from your host user and
+can break the local Claude CLI. The refresh path only needs write access to
+the credentials file plus its parent directory (for the temp-file + rename
++ lock-file pattern). If you'd rather skip this entirely, the dashboard
+falls back to the read-only path and still works whenever the on-disk
+token is fresh.
+
+Run **either** the default `api` service **or** the host-network
+`api-mdns-host` profile, not both at once: the credentials write path is
+guarded by a file lock so concurrent api processes won't corrupt the file,
+but two services serving the dashboard simultaneously isn't an intended
+deployment.
+
+Before each live Codex usage probe, the API syncs auth/config files from
+the Codex source into the writable `/home/node/.codex-runtime` directory
+used by `codex app-server`. Session JSONL fallback reads directly from
+`/home/node/.codex-source/sessions`, so new host sessions are visible
+without copying session history into the container. No keys are baked into
+the image.
 
 ### Network security
 
@@ -536,7 +567,7 @@ in RTC slow memory and survives deep sleep but resets on power-on.
 | Source | How |
 |--------|-----|
 | GitHub | REST API v3 via PAT (`repo` + `security_events` scopes) |
-| Claude Code | Reads `~/.claude/.credentials.json` (OAuth token) for rate-limit headers — no Anthropic API key required |
+| Claude Code | Reads `~/.claude/.credentials.json` (OAuth token) for rate-limit headers and refreshes the access token in-place when it expires, so the dashboard stays live during long idle periods. No Anthropic API key required. |
 | Codex | Live `codex app-server` `account/rateLimits/read` response, falling back to the latest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count.rate_limits` event |
 
 ---

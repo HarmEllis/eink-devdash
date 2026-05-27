@@ -1,6 +1,4 @@
-import { readFile } from 'fs/promises'
-import { homedir } from 'os'
-import { join } from 'path'
+import { ClaudeCredentialStore } from './claude-credentials.js'
 
 type RateLimit = { used: number; limit: number; resetInSeconds: number }
 type ClaudeUsage = {
@@ -9,23 +7,7 @@ type ClaudeUsage = {
   authError: boolean
 }
 
-const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json')
-
-async function readOAuthToken(): Promise<string | null> {
-  try {
-    const raw = await readFile(CREDENTIALS_PATH, 'utf8')
-    const creds = JSON.parse(raw)
-    const token = creds?.claudeAiOauth?.accessToken
-    if (!token) return null
-
-    const expiresAt = creds?.claudeAiOauth?.expiresAt
-    if (expiresAt && Date.now() > expiresAt) return null
-
-    return token as string
-  } catch {
-    return null
-  }
-}
+const credentialStore = new ClaudeCredentialStore()
 
 type ParsedRateLimit = { rate: RateLimit; present: boolean }
 
@@ -54,16 +36,18 @@ function parseRateLimit(headers: Headers, window: '5h' | '7d'): ParsedRateLimit 
   return { rate: { used, limit, resetInSeconds }, present }
 }
 
-export async function getClaudeUsage(): Promise<ClaudeUsage> {
-  const empty: ClaudeUsage = {
-    fiveHour: { used: 0, limit: 0, resetInSeconds: 0 },
-    weekly: { used: 0, limit: 0, resetInSeconds: 0 },
-    authError: true,
-  }
+const EMPTY: ClaudeUsage = {
+  fiveHour: { used: 0, limit: 0, resetInSeconds: 0 },
+  weekly: { used: 0, limit: 0, resetInSeconds: 0 },
+  authError: true,
+}
 
-  const token = await readOAuthToken()
-  if (!token) return empty
+type ProbeOutcome =
+  | { kind: 'usage'; usage: ClaudeUsage }
+  | { kind: 'unauthorized' }
+  | { kind: 'empty' }
 
+async function probeUsage(token: string): Promise<ProbeOutcome> {
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -84,30 +68,44 @@ export async function getClaudeUsage(): Promise<ClaudeUsage> {
       }),
     })
 
-    if (res.status === 401) return empty
+    if (res.status === 401) return { kind: 'unauthorized' }
     if (!res.ok) {
       console.warn(`[claude] usage probe HTTP ${res.status}`)
-      return empty
+      return { kind: 'empty' }
     }
 
     const fiveHour = parseRateLimit(res.headers, '5h')
     const weekly = parseRateLimit(res.headers, '7d')
 
     if (!fiveHour.present && !weekly.present) {
-      // 200 OK but no unified headers — token authenticates but the rate-
-      // limit surface is unavailable for this account. Surface as an
-      // explicit error rather than silently rendering 0% bars.
       console.warn('[claude] unified ratelimit headers missing on 200 response')
-      return empty
+      return { kind: 'empty' }
     }
 
     return {
-      fiveHour: fiveHour.rate,
-      weekly: weekly.rate,
-      authError: false,
+      kind: 'usage',
+      usage: { fiveHour: fiveHour.rate, weekly: weekly.rate, authError: false },
     }
   } catch (err) {
-    console.warn('[claude] usage probe failed', err)
-    return empty
+    console.warn('[claude] usage probe failed', err instanceof Error ? err.message : err)
+    return { kind: 'empty' }
   }
+}
+
+export async function getClaudeUsage(): Promise<ClaudeUsage> {
+  const token = await credentialStore.getAccessToken()
+  if (!token) return EMPTY
+
+  const first = await probeUsage(token)
+  if (first.kind === 'usage') return first.usage
+  if (first.kind === 'empty') return EMPTY
+
+  // 401 path: cached/disk token was rejected. Invalidate the cache, force a
+  // fresh refresh against disk, and retry once before surfacing authError.
+  credentialStore.invalidateCache()
+  const refreshed = await credentialStore.getAccessToken({ forceRefresh: true })
+  if (!refreshed || refreshed === token) return EMPTY
+
+  const second = await probeUsage(refreshed)
+  return second.kind === 'usage' ? second.usage : EMPTY
 }
