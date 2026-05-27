@@ -129,7 +129,9 @@ Environment variables read by the API container. Set them in `.env` next to
 | `CODEX_LIVE_USAGE` | no | `true` | Set to `false` to skip the live Codex app-server probe and read only the on-disk session JSONL. |
 | `CODEX_CLI_PATH` | no | empty | Override the Codex CLI binary path. |
 | `CODEX_APP_SERVER_TIMEOUT_MS` | no | `8000` | Timeout for the Codex live probe. |
-| `CODEX_HOME` | no | `/home/node/.codex-runtime` | Writable Codex runtime home inside the container. Set by `docker-compose.yml`. |
+| `HOST_UID` | no | `1000` | UID the container runs as. Set to `$(id -u)` so the API can write `~/.claude/.credentials.json` as the host user that owns it. |
+| `HOST_GID` | no | `1000` | GID the container runs as. Set to `$(id -g)`. |
+| `CODEX_HOME` | no | `/tmp/devdash-codex-runtime` | Writable Codex runtime home inside the container. Set by `docker-compose.yml`. Lives under `/tmp` so it stays writable for any UID. |
 | `CODEX_SOURCE_HOME` | no | `/home/node/.codex-source` | Read-only host Codex home mount used as the source for auth/config sync. Set by `docker-compose.yml`. |
 | `CODEX_SESSIONS_DIR` | no | `/home/node/.codex-source/sessions` | Codex session JSONL directory used by the fallback reader. Set by `docker-compose.yml`. |
 | `MDNS_ENABLED` | no | `true` | Set to `false` to disable mDNS advertising. |
@@ -142,24 +144,24 @@ because the API refreshes the OAuth access token in place (surgical edit of
 `claudeAiOauth.{accessToken,expiresAt,refreshToken}`, all other fields
 untouched, atomic temp-file + rename) so the dashboard stays live while
 Claude Code is idle. The Claude CLI keeps working transparently with the
-refreshed credentials. For the refresh path to be friction-free, the host `~/.claude` directory
-must be writable by the container's `node` user. The image's `node` user is
-uid `1000`; check your host with `id -u` and, if it matches, no action is
-needed. If it doesn't match and the api logs `cannot write to
-/home/node/.claude`, grant write access narrowly — for example with an ACL
-just for that uid:
+refreshed credentials.
+
+For the refresh path to work, the container must run as the **same UID/GID
+as the host user that owns `~/.claude`**. Set `HOST_UID` and `HOST_GID` in
+`.env`:
 
 ```bash
-setfacl -m u:1000:rwx ~/.claude
-setfacl -m u:1000:rw  ~/.claude/.credentials.json
+echo "HOST_UID=$(id -u)" >> .env
+echo "HOST_GID=$(id -g)" >> .env
 ```
 
-Avoid `chown -R 1000:1000 ~/.claude`: it pulls the entire Claude home,
-including session history and unrelated state, away from your host user and
-can break the local Claude CLI. The refresh path only needs write access to
-the credentials file plus its parent directory (for the temp-file + rename
-+ lock-file pattern). If you'd rather skip this entirely, the dashboard
-falls back to the read-only path and still works whenever the on-disk
+`docker-compose.yml` passes these to the container via the `user:`
+directive, so the API writes credentials as your own host user — no `chown`
+or ACL on `~/.claude` required, and no extra principal gains access. If
+`HOST_UID`/`HOST_GID` are unset the container defaults to `1000:1000`,
+which only works when your host user happens to be uid `1000`. If the UIDs
+don't match the api logs `cannot write to /home/node/.claude` and falls
+back to the read-only path; the dashboard still works whenever the on-disk
 token is fresh.
 
 Run **either** the default `api` service **or** the host-network
@@ -169,7 +171,7 @@ but two services serving the dashboard simultaneously isn't an intended
 deployment.
 
 Before each live Codex usage probe, the API syncs auth/config files from
-the Codex source into the writable `/home/node/.codex-runtime` directory
+the Codex source into `/tmp/devdash-codex-runtime` (writable for any UID)
 used by `codex app-server`. Session JSONL fallback reads directly from
 `/home/node/.codex-source/sessions`, so new host sessions are visible
 without copying session history into the container. No keys are baked into

@@ -2,18 +2,20 @@ services:
   api:
     image: ghcr.io/harmellis/eink-devdash:${IMAGE_TAG:-latest}
     build: ./api
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     ports:
       - "3000:3000"
     volumes:
       - ${HOME}/.claude:/home/node/.claude:rw
       - ${HOME}/.codex:/home/node/.codex-source:ro
     environment:
+      - HOME=/home/node
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE:-}
       - CODEX_LIVE_USAGE=${CODEX_LIVE_USAGE:-true}
       - CODEX_CLI_PATH=${CODEX_CLI_PATH:-}
       - CODEX_APP_SERVER_TIMEOUT_MS=${CODEX_APP_SERVER_TIMEOUT_MS:-}
-      - CODEX_HOME=/home/node/.codex-runtime
+      - CODEX_HOME=/tmp/devdash-codex-runtime
       - CODEX_SOURCE_HOME=/home/node/.codex-source
       - CODEX_SESSIONS_DIR=/home/node/.codex-source/sessions
       - DEVICE_TOKEN=${DEVICE_TOKEN}
@@ -26,17 +28,19 @@ services:
       - mdns-host
     image: ghcr.io/harmellis/eink-devdash:${IMAGE_TAG:-latest}
     build: ./api
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     network_mode: host
     volumes:
       - ${HOME}/.claude:/home/node/.claude:rw
       - ${HOME}/.codex:/home/node/.codex-source:ro
     environment:
+      - HOME=/home/node
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE:-}
       - CODEX_LIVE_USAGE=${CODEX_LIVE_USAGE:-true}
       - CODEX_CLI_PATH=${CODEX_CLI_PATH:-}
       - CODEX_APP_SERVER_TIMEOUT_MS=${CODEX_APP_SERVER_TIMEOUT_MS:-}
-      - CODEX_HOME=/home/node/.codex-runtime
+      - CODEX_HOME=/tmp/devdash-codex-runtime
       - CODEX_SOURCE_HOME=/home/node/.codex-source
       - CODEX_SESSIONS_DIR=/home/node/.codex-source/sessions
       - DEVICE_TOKEN=${DEVICE_TOKEN}

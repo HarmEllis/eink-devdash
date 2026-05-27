@@ -7,9 +7,7 @@ RUN npm run build
 
 FROM node:24-alpine
 WORKDIR /app
-RUN apk add --no-cache bubblewrap \
-  && mkdir -p /home/node/.codex-runtime \
-  && chown -R node:node /home/node/.codex-runtime
+RUN apk add --no-cache bubblewrap
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
