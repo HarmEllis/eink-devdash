@@ -100,8 +100,9 @@ jobs:
           mkdir -p bins
           cp firmware/build/bootloader/bootloader.bin           bins/
           cp firmware/build/partition_table/partition-table.bin bins/
+          cp firmware/build/ota_data_initial.bin                bins/
           cp firmware/build/eink-devdash.bin                    bins/
-          ( cd bins && sha256sum bootloader.bin partition-table.bin eink-devdash.bin > SHA256SUMS )
+          ( cd bins && sha256sum bootloader.bin partition-table.bin ota_data_initial.bin eink-devdash.bin > SHA256SUMS )
 
       - name: Upload firmware artifact
         # TODO: pin to a commit SHA once a known-good version is verified.
@@ -147,6 +148,7 @@ jobs:
           gh release upload "$TAG" \
             bins/bootloader.bin \
             bins/partition-table.bin \
+            bins/ota_data_initial.bin \
             bins/eink-devdash.bin \
             bins/SHA256SUMS \
             --clobber

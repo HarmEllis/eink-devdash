@@ -8,7 +8,8 @@
       "parts": [
         { "path": "bins/bootloader.bin",        "offset": 0 },
         { "path": "bins/partition-table.bin",   "offset": 32768 },
-        { "path": "bins/eink-devdash.bin",      "offset": 65536 }
+        { "path": "bins/ota_data_initial.bin",  "offset": 61440 },
+        { "path": "bins/eink-devdash.bin",      "offset": 131072 }
       ]
     }
   ]

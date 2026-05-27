@@ -8,9 +8,9 @@ updated on a configurable interval via deep sleep.
 [![Docker image](https://img.shields.io/badge/ghcr.io-eink--devdash-blue?logo=docker)](https://github.com/HarmEllis/eink-devdash/pkgs/container/eink-devdash)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-| Boot screen | Dashboard |
-|-------------|-----------|
-| <img src="docs/assets/readme-boot-screen.svg" alt="DevDash boot screen" width="420"> | <img src="docs/assets/readme-dashboard-screen.svg" alt="DevDash dashboard screen" width="420"> |
+| Boot screen | Dashboard | OTA update |
+|-------------|-----------|------------|
+| <img src="docs/assets/readme-boot-screen.svg" alt="DevDash boot screen" width="280"> | <img src="docs/assets/readme-dashboard-screen.svg" alt="DevDash dashboard screen" width="280"> | <img src="docs/assets/readme-ota-screen.svg" alt="DevDash OTA update screen" width="280"> |
 
 Red ink highlights alerts: Dependabot findings, usage above 80%, or auth
 errors.
@@ -136,6 +136,7 @@ Environment variables read by the API container. Set them in `.env` next to
 | `CODEX_SESSIONS_DIR` | no | `/home/node/.codex-source/sessions` | Codex session JSONL directory used by the fallback reader. Set by `docker-compose.yml`. |
 | `MDNS_ENABLED` | no | `true` | Set to `false` to disable mDNS advertising. |
 | `MDNS_NAME` | no | `devdash-api` | Hostname under `.local`. |
+| `OTA_ENABLED` | no | `true` | Set to `false` to make `/ota/manifest` report `{otaEnabled:false}` regardless of `APP_VERSION`. Pins all devices on the network to their installed firmware. |
 | `IMAGE_TAG` | no | `latest` | Pin the published image to a specific tag (e.g. `v0.1.0`). |
 
 The container mounts `~/.claude` **read-write** and mounts host `~/.codex`
@@ -230,7 +231,8 @@ sha256sum -c SHA256SUMS
 esptool.py --chip esp32s3 -p /dev/ttyACM0 write_flash \
   0x0     bootloader.bin \
   0x8000  partition-table.bin \
-  0x10000 eink-devdash.bin
+  0xf000  ota_data_initial.bin \
+  0x20000 eink-devdash.bin
 ```
 
 ### Option B — Build locally, flash with the local web flasher
@@ -252,6 +254,28 @@ Open `http://localhost:8080` in Chrome or Edge on the host machine and
 click **Install**. The browser, not the devcontainer, talks to the ESP32-S3
 over Web Serial. To wipe stored credentials, use the erase prompt in the
 web flasher before installing.
+
+### Updating from v0.1.x — one-time re-provisioning
+
+Starting with the first OTA-capable release the device uses a two-slot
+OTA partition layout (`firmware/partitions.csv`) instead of the v0.1.x
+`SINGLE_APP_LARGE` layout. The webflasher prompts to erase the chip for
+this one-time migration, which wipes the saved Wi-Fi networks and API
+token. After that, every subsequent update flows over the air without USB.
+
+To migrate an existing v0.1.x device:
+
+1. Open <https://harmellis.github.io/eink-devdash/> in Chrome or Edge
+   on desktop.
+2. Click **Install**. The flasher prompts to erase the chip first —
+   accept.
+3. After install, the device boots into the SoftAP captive portal.
+   Re-enter Wi-Fi and the API token exactly as on a fresh device
+   (see [Provisioning over WiFi](#provisioning-over-wifi)).
+
+From there on, the device polls the API for new firmware on every wake
+and updates itself. The webflasher remains the escape hatch for a
+bricked image.
 
 ---
 
@@ -362,6 +386,42 @@ Returns current dashboard data. Requires `Authorization: Bearer <token>`.
 
 Returns `{ "ok": true }`. No authentication required. Use it for container
 health checks.
+
+### `GET /ota/manifest`
+
+Tells the device which firmware version is current and where to download
+it. Requires `Authorization: Bearer <token>` (the same hook gates this as
+`/dashboard`).
+
+When `OTA_ENABLED=true` (default) and the container was built with an
+`APP_VERSION`:
+
+```json
+{
+  "otaEnabled": true,
+  "latestVersion": "v0.2.0",
+  "downloadUrl": "https://github.com/HarmEllis/eink-devdash/releases/download/v0.2.0/eink-devdash.bin"
+}
+```
+
+When `OTA_ENABLED=false`, or when the image has no baked-in
+`APP_VERSION` (e.g. a local dev build):
+
+```json
+{ "otaEnabled": false }
+```
+
+The owner/repo slug in `downloadUrl` is a build-time constant in
+`api/src/routes/ota.ts`. The firmware downloads the binary directly
+from GitHub Releases over HTTPS; the API only advertises the URL.
+Before writing flash, the device paints one static OTA screen with the
+source/target version, target slot, and a red `DO NOT UNPLUG` warning.
+The firmware does not animate OTA progress. It also logs when full e-paper
+refreshes happen closer together than the configured manufacturer guidance,
+without blocking the UI for minutes on rare recovery paths.
+
+See [docs/decisions/0005-ota-updates.md](docs/decisions/0005-ota-updates.md)
+for the full design.
 
 ---
 

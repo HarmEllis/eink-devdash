@@ -19,6 +19,7 @@
 #include "esp_attr.h"
 #include "esp_mac.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "nvs.h"
 #include "qrcode.h"
 #include "sdkconfig.h"
@@ -135,6 +136,10 @@ static const uint8_t font5x7[][5] = {
     /* x     */ {0x44,0x28,0x10,0x28,0x44},
     /* y     */ {0x0C,0x50,0x50,0x50,0x3C},
     /* z     */ {0x44,0x64,0x54,0x4C,0x44},
+    /* {     */ {0x08,0x36,0x41,0x00,0x00},
+    /* |     */ {0x00,0x00,0x7F,0x00,0x00},
+    /* }     */ {0x00,0x00,0x41,0x36,0x08},
+    /* ~     */ {0x08,0x04,0x08,0x10,0x08},
 };
 
 /* ── framebuffers ───────────────────────────────────────────────────────── */
@@ -179,7 +184,7 @@ static void vline(int lx, int ly, int len)
 /* ── text ───────────────────────────────────────────────────────────────── */
 static void draw_char(int lx, int ly, char c, int use_red)
 {
-    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    if ((unsigned char)c < 32 || (unsigned char)c > 126) c = '?';
     const uint8_t *g = font5x7[(unsigned char)c - 32];
     for (int col = 0; col < 5; col++)
         for (int row = 0; row < 7; row++)
@@ -189,7 +194,7 @@ static void draw_char(int lx, int ly, char c, int use_red)
 
 static void draw_char_bw(int lx, int ly, char c, int black)
 {
-    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    if ((unsigned char)c < 32 || (unsigned char)c > 126) c = '?';
     const uint8_t *g = font5x7[(unsigned char)c - 32];
     for (int col = 0; col < 5; col++)
         for (int row = 0; row < 7; row++)
@@ -231,7 +236,7 @@ static int str_w_adv(const char *s, int advance)
 /* 2× scaled */
 static void draw_char2x(int lx, int ly, char c, int use_red)
 {
-    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    if ((unsigned char)c < 32 || (unsigned char)c > 126) c = '?';
     const uint8_t *g = font5x7[(unsigned char)c - 32];
     for (int col = 0; col < 5; col++)
         for (int row = 0; row < 7; row++)
@@ -248,7 +253,7 @@ static int str2x_w(const char *s) { return (int)strlen(s) * FONT2_W; }
 
 static void draw_char4x_bw(int lx, int ly, char c, int black)
 {
-    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    if ((unsigned char)c < 32 || (unsigned char)c > 126) c = '?';
     const uint8_t *g = font5x7[(unsigned char)c - 32];
     for (int col = 0; col < 5; col++)
         for (int row = 0; row < 7; row++)
@@ -266,7 +271,7 @@ static void draw_str4x_bw(int lx, int ly, const char *s, int black)
 
 static void draw_char_inv(int lx, int ly, char c)
 {
-    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    if ((unsigned char)c < 32 || (unsigned char)c > 126) c = '?';
     const uint8_t *g = font5x7[(unsigned char)c - 32];
     for (int col = 0; col < 5; col++) {
         for (int row = 0; row < 7; row++) {
@@ -288,7 +293,7 @@ static void draw_str_inv_adv(int lx, int ly, const char *s, int advance)
 
 static void draw_char4x_inv(int lx, int ly, char c)
 {
-    if ((unsigned char)c < 32 || (unsigned char)c > 122) c = '?';
+    if ((unsigned char)c < 32 || (unsigned char)c > 126) c = '?';
     const uint8_t *g = font5x7[(unsigned char)c - 32];
     for (int col = 0; col < 5; col++) {
         for (int row = 0; row < 7; row++) {
@@ -305,6 +310,28 @@ static void draw_str4x_inv(int lx, int ly, const char *s)
     while (*s) {
         draw_char4x_inv(lx, ly, *s++);
         lx += 23;
+    }
+}
+
+static void draw_char3x_inv(int lx, int ly, char c)
+{
+    if ((unsigned char)c < 32 || (unsigned char)c > 126) c = '?';
+    const uint8_t *g = font5x7[(unsigned char)c - 32];
+    for (int col = 0; col < 5; col++) {
+        for (int row = 0; row < 7; row++) {
+            if (g[col] & (1 << row)) {
+                fill_rect(lx + col * 3, ly + row * 3, 3, 3, 0, 0);
+                fill_rect(lx + col * 3, ly + row * 3, 3, 3, 0, 1);
+            }
+        }
+    }
+}
+
+static void draw_str3x_inv(int lx, int ly, const char *s)
+{
+    while (*s) {
+        draw_char3x_inv(lx, ly, *s++);
+        lx += 17;
     }
 }
 
@@ -342,6 +369,17 @@ static void icon_box_logo(int ox, int oy)
     fill_rect(ox,   oy,   9, 9, 1, 0);  /* 9×9 solid black  */
     fill_rect(ox+2, oy+2, 5, 5, 0, 0);  /* 5×5 white cutout */
     fill_rect(ox+3, oy+3, 3, 3, 1, 0);  /* 3×3 black centre */
+}
+
+static void icon_down_arrow(int ox, int oy)
+{
+    static const int8_t pts[] = {
+        3,0, 3,1, 3,2, 3,3, 3,4, 3,5,
+        1,4, 2,5, 3,6, 4,5, 5,4,
+    };
+    for (size_t i = 0; i < sizeof(pts) / sizeof(pts[0]) / 2; i++) {
+        lpix(ox + pts[i * 2], oy + pts[i * 2 + 1], 1, 0);
+    }
 }
 
 /* Issue icon: bordered circle with centre dot */
@@ -658,6 +696,7 @@ static RTC_DATA_ATTR bool    s_last_bw_valid       = false;
 static RTC_DATA_ATTR bool    s_last_data_valid     = false;
 static RTC_DATA_ATTR dashboard_data_t s_last_data;
 static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
+static int64_t s_last_full_refresh_us = 0;
 
 #define MAX_BW_FAST_REFRESHES_BEFORE_FULL 10
 
@@ -679,6 +718,7 @@ typedef enum {
     DISPLAY_FRAME_OFFLINE_WIFI = 4,
     DISPLAY_FRAME_OFFLINE_SETUP_TIMEOUT = 5,
     DISPLAY_FRAME_CONNECTING = 6,
+    DISPLAY_FRAME_OTA = 7,
 } display_frame_t;
 
 typedef struct {
@@ -987,6 +1027,34 @@ static void ensure_init(void)
     }
 }
 
+static void warn_if_full_refresh_is_early(const char *reason)
+{
+#if CONFIG_DEVDASH_WARN_FULL_REFRESH_INTERVAL_S > 0
+    if (s_last_full_refresh_us <= 0) return;
+
+    int64_t now = esp_timer_get_time();
+    int64_t min_us =
+        (int64_t)CONFIG_DEVDASH_WARN_FULL_REFRESH_INTERVAL_S * 1000000LL;
+    int64_t elapsed = now - s_last_full_refresh_us;
+    if (elapsed >= min_us || elapsed < 0) return;
+
+    ESP_LOGW(TAG,
+             "%s full refresh only %lld s after previous full refresh",
+             reason ? reason : "Display",
+             (long long)(elapsed / 1000000LL));
+#else
+    (void)reason;
+#endif
+}
+
+static void display_full_refresh(eink_refresh_mode_t mode, const char *reason)
+{
+    warn_if_full_refresh_is_early(reason);
+    eink_set_framebuffer(bw_buf, red_buf);
+    eink_refresh(&s_eink, mode);
+    s_last_full_refresh_us = esp_timer_get_time();
+}
+
 static void remember_current_bw_frame(void)
 {
     memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
@@ -1251,8 +1319,7 @@ void display_render(const dashboard_data_t *data)
             eink_refresh_mode_t mode = EINK_REFRESH_FULL_COLOR;
             s_bw_fast_cycle_count = 0;
 
-            eink_set_framebuffer(bw_buf, red_buf);
-            eink_refresh(&s_eink, mode);
+            display_full_refresh(mode, "dashboard");
             eink_sleep(&s_eink);
             ESP_LOGI(TAG, "Dashboard refresh (mode=%s)",
                      mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
@@ -1327,8 +1394,7 @@ static bool display_show_compact_status(const char *status)
     }
     if (!did_partial) {
 #endif
-        eink_set_framebuffer(bw_buf, red_buf);
-        eink_refresh(&s_eink, mode);
+        display_full_refresh(mode, "status");
         s_bw_fast_cycle_count = 0;
 #if DISPLAY_ENABLE_BW_EXPERIMENT
     }
@@ -1440,8 +1506,7 @@ static void display_show_boot_poster(const dash_config_v2_t *cfg)
 
     draw_boot_footer();
 
-    eink_set_framebuffer(bw_buf, red_buf);
-    eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
+    display_full_refresh(EINK_REFRESH_FULL_COLOR, "boot");
     eink_sleep(&s_eink);
     remember_current_bw_frame();
     s_first_refresh_done = true;
@@ -1474,8 +1539,7 @@ static void display_show_wait_page(const char *header_status,
     static const char *HINT = "Please wait";
     draw_str((296 - str_w(HINT)) / 2, 82, HINT, 0);
 
-    eink_set_framebuffer(bw_buf, red_buf);
-    eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
+    display_full_refresh(EINK_REFRESH_FULL_COLOR, "wait");
     eink_sleep(&s_eink);
     remember_current_bw_frame();
     s_first_refresh_done = true;
@@ -1619,8 +1683,7 @@ void display_show_qr(const char *ssid, const char *pop)
         }
     }
 
-    eink_set_framebuffer(bw_buf, red_buf);
-    eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
+    display_full_refresh(EINK_REFRESH_FULL_COLOR, "provisioning");
     eink_sleep(&s_eink);
     remember_current_bw_frame();
     s_first_refresh_done = true;
@@ -1654,8 +1717,7 @@ void display_show_setup_failed(void)
     static const char *S3 = "check serial";
     draw_str(qr_centre_x - str_w(S3) / 2, 84, S3, 0);
 
-    eink_set_framebuffer(bw_buf, red_buf);
-    eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
+    display_full_refresh(EINK_REFRESH_FULL_COLOR, "setup failed");
     eink_sleep(&s_eink);
     remember_current_bw_frame();
     s_first_refresh_done = true;
@@ -1688,14 +1750,126 @@ void display_show_offline(display_offline_reason_t reason,
     } else {
         draw_unreachable_poster(reason, cfg, network_idx, wifi_diag, api_diag);
     }
-    eink_set_framebuffer(bw_buf, red_buf);
     /* The offline frame paints red; BW_FAST cannot write the red plane, so
      * always use FULL_COLOR here. */
-    eink_refresh(&s_eink, EINK_REFRESH_FULL_COLOR);
+    display_full_refresh(EINK_REFRESH_FULL_COLOR, "offline");
     eink_sleep(&s_eink);
     remember_current_bw_frame();
     s_first_refresh_done = true;
     s_last_red_state     = true;
     s_bw_fast_cycle_count = 0;
     display_mark_frame(frame);
+}
+
+static void draw_ota_header(void)
+{
+    icon_box_logo(6, 4);
+    draw_str_adv(19, 4, "DEVDASH", 1, FONT_BOOT_W);
+
+    static const char *label = "OTA UPDATE";
+    int label_w = str_w_adv(label, FONT_BOOT_W);
+    int label_x = 290 - label_w;
+    icon_down_arrow(label_x - 11, 4);
+    draw_str_adv(label_x, 4, label, 1, FONT_BOOT_W);
+    hline(2, 14, 293);
+}
+
+static void copy_display_version(char *out, size_t out_sz, const char *version)
+{
+    if (out_sz == 0) return;
+    if (!version || !version[0]) version = "unknown";
+    if (version[0] == 'v' && version[1] != '\0') version++;
+    strlcpy(out, version, out_sz);
+}
+
+static void draw_ota_identity(const char *from_version, const char *to_version)
+{
+    char from[16], to[16], pair[40], pair_fit[24];
+    copy_display_version(from, sizeof(from), from_version);
+    copy_display_version(to, sizeof(to), to_version);
+    snprintf(pair, sizeof(pair), "fw %s > %s", from, to);
+    fit_text_ascii(pair_fit, sizeof(pair_fit), pair, 100);
+
+    fill_rect(6, 20, 108, 90, 1, 0);
+    draw_str3x_inv(9, 24, "OTA");
+    draw_str3x_inv(9, 54, "UPDATE");
+    draw_str_inv_adv(9, 98, pair_fit, FONT_BOOT_W);
+}
+
+static void draw_ota_plan_row(int row, const char *name, const char *meta)
+{
+    const int y = 41 + row * 10;
+    char idx[3] = { (char)('1' + row), '.', '\0' };
+    draw_str_adv(130 - str_w_adv(idx, FONT_BOOT_W), y, idx, 1,
+                 FONT_BOOT_W);
+
+    int meta_w = str_w(meta);
+    draw_str(290 - meta_w, y, meta, 0);
+
+    int name_left = 134;
+    int name_w = 290 - meta_w - 4 - name_left;
+    char name_fit[32];
+    fit_text_ascii(name_fit, sizeof(name_fit), name, name_w);
+    draw_str_adv(name_left, y, name_fit, 1, FONT_BOOT_W);
+}
+
+static void draw_ota_footer_eta(void)
+{
+    static const char *ETA = "~40s";
+    static const char *REBOOT = "reboot once";
+    int eta_w = str_w_adv(ETA, FONT_BOOT_W);
+    int reboot_w = str_w_adv(REBOOT, FONT_BOOT_W);
+    int lx = 290 - (eta_w + 3 * FONT_BOOT_W + reboot_w);
+
+    draw_str_adv(lx, 117, ETA, 1, FONT_BOOT_W);
+    lx += eta_w + FONT_BOOT_W;
+    fill_rect(lx + 1, 120, 2, 2, 1, 0);
+    lx += 2 * FONT_BOOT_W;
+    draw_str_adv(lx, 117, REBOOT, 1, FONT_BOOT_W);
+}
+
+void display_show_ota_update(const char *from_version,
+                             const char *to_version,
+                             const char *slot_name,
+                             const char *slot_label)
+{
+    ensure_init();
+    memset(bw_buf,  0xFF, sizeof(bw_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
+
+    hline(1,   1,   294);
+    hline(1,   126, 294);
+    vline(1,   1,   126);
+    vline(294, 1,   126);
+
+    draw_ota_header();
+    draw_ota_identity(from_version, to_version);
+
+    draw_str_adv(122, 22, "INSTALLING UPDATE", 1, FONT_BOOT_W);
+    hline(122, 35, 169);
+    draw_ota_plan_row(0, "download", "GitHub");
+    draw_ota_plan_row(1, "verify app", "image hdr");
+
+    char flash_meta[24], boot_meta[20], flash_name[16];
+    snprintf(flash_name, sizeof(flash_name), "flash %s",
+             slot_name && slot_name[0] ? slot_name : "ota");
+    snprintf(flash_meta, sizeof(flash_meta), "partition %s",
+             slot_label && slot_label[0] ? slot_label : "?");
+    snprintf(boot_meta, sizeof(boot_meta), "boot %s",
+             slot_label && slot_label[0] ? slot_label : "?");
+    draw_ota_plan_row(2, flash_name, flash_meta);
+    draw_ota_plan_row(3, "reboot", boot_meta);
+
+    hline(2, 114, 293);
+    fill_rect(6, 119, 3, 3, 1, 1);
+    draw_str(13, 117, "DO NOT UNPLUG", 1);
+    draw_ota_footer_eta();
+
+    display_full_refresh(EINK_REFRESH_FULL_COLOR, "OTA update");
+    eink_sleep(&s_eink);
+    remember_current_bw_frame();
+    s_first_refresh_done = true;
+    s_last_red_state     = true;
+    s_bw_fast_cycle_count = 0;
+    display_mark_frame(DISPLAY_FRAME_OTA);
 }

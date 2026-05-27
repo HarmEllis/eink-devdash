@@ -23,8 +23,8 @@ function parseFont(source) {
   for (const glyph of match[1].matchAll(glyphPattern)) {
     glyphs.push(glyph.slice(1).map((v) => Number.parseInt(v, 16)));
   }
-  if (glyphs.length !== 91) {
-    throw new Error(`expected 91 glyphs, found ${glyphs.length}`);
+  if (glyphs.length !== 95) {
+    throw new Error(`expected 95 glyphs, found ${glyphs.length}`);
   }
   return glyphs;
 }
@@ -64,7 +64,7 @@ class Frame {
 
   drawChar(x, y, ch, useRed) {
     const code = ch.charCodeAt(0);
-    const safe = code < 32 || code > 122 ? "?".charCodeAt(0) : code;
+    const safe = code < 32 || code > 126 ? "?".charCodeAt(0) : code;
     const glyph = font5x7[safe - 32];
     for (let col = 0; col < 5; col++) {
       for (let row = 0; row < 7; row++) {
@@ -75,7 +75,7 @@ class Frame {
 
   drawCharBw(x, y, ch, black) {
     const code = ch.charCodeAt(0);
-    const safe = code < 32 || code > 122 ? "?".charCodeAt(0) : code;
+    const safe = code < 32 || code > 126 ? "?".charCodeAt(0) : code;
     const glyph = font5x7[safe - 32];
     for (let col = 0; col < 5; col++) {
       for (let row = 0; row < 7; row++) {
@@ -100,7 +100,7 @@ class Frame {
 
   drawCharInv(x, y, ch) {
     const code = ch.charCodeAt(0);
-    const safe = code < 32 || code > 122 ? "?".charCodeAt(0) : code;
+    const safe = code < 32 || code > 126 ? "?".charCodeAt(0) : code;
     const glyph = font5x7[safe - 32];
     for (let col = 0; col < 5; col++) {
       for (let row = 0; row < 7; row++) {
@@ -131,7 +131,7 @@ class Frame {
 
   drawChar2x(x, y, ch, useRed) {
     const code = ch.charCodeAt(0);
-    const safe = code < 32 || code > 122 ? "?".charCodeAt(0) : code;
+    const safe = code < 32 || code > 126 ? "?".charCodeAt(0) : code;
     const glyph = font5x7[safe - 32];
     for (let col = 0; col < 5; col++) {
       for (let row = 0; row < 7; row++) {
@@ -149,7 +149,7 @@ class Frame {
 
   drawChar4xBw(x, y, ch, black) {
     const code = ch.charCodeAt(0);
-    const safe = code < 32 || code > 122 ? "?".charCodeAt(0) : code;
+    const safe = code < 32 || code > 126 ? "?".charCodeAt(0) : code;
     const glyph = font5x7[safe - 32];
     for (let col = 0; col < 5; col++) {
       for (let row = 0; row < 7; row++) {
@@ -167,7 +167,7 @@ class Frame {
 
   drawChar4xInv(x, y, ch) {
     const code = ch.charCodeAt(0);
-    const safe = code < 32 || code > 122 ? "?".charCodeAt(0) : code;
+    const safe = code < 32 || code > 126 ? "?".charCodeAt(0) : code;
     const glyph = font5x7[safe - 32];
     for (let col = 0; col < 5; col++) {
       for (let row = 0; row < 7; row++) {
@@ -183,6 +183,27 @@ class Frame {
     for (const ch of text) {
       this.drawChar4xInv(x, y, ch);
       x += 23;
+    }
+  }
+
+  drawChar3xInv(x, y, ch) {
+    const code = ch.charCodeAt(0);
+    const safe = code < 32 || code > 126 ? "?".charCodeAt(0) : code;
+    const glyph = font5x7[safe - 32];
+    for (let col = 0; col < 5; col++) {
+      for (let row = 0; row < 7; row++) {
+        if (glyph[col] & (1 << row)) {
+          this.fillRect(x + col * 3, y + row * 3, 3, 3, 0, 0);
+          this.fillRect(x + col * 3, y + row * 3, 3, 3, 0, 1);
+        }
+      }
+    }
+  }
+
+  drawStr3xInv(x, y, text) {
+    for (const ch of text) {
+      this.drawChar3xInv(x, y, ch);
+      x += 17;
     }
   }
 
@@ -284,6 +305,16 @@ function iconBoxLogo(f, ox, oy) {
   f.fillRect(ox, oy, 9, 9, 1, 0);
   f.fillRect(ox + 2, oy + 2, 5, 5, 0, 0);
   f.fillRect(ox + 3, oy + 3, 3, 3, 1, 0);
+}
+
+function iconDownArrow(f, ox, oy) {
+  const pts = [
+    3, 0, 3, 1, 3, 2, 3, 3, 3, 4, 3, 5,
+    1, 4, 2, 5, 3, 6, 4, 5, 5, 4,
+  ];
+  for (let i = 0; i < pts.length / 2; i++) {
+    f.lpix(ox + pts[i * 2], oy + pts[i * 2 + 1], 1, 0);
+  }
 }
 
 function iconIssue(f, ox, oy, useRed) {
@@ -608,6 +639,76 @@ function renderBoot() {
   return f;
 }
 
+function drawOtaHeader(f) {
+  iconBoxLogo(f, 6, 4);
+  f.drawStrAdv(19, 4, "DEVDASH", 1, FONT_BOOT_W);
+  const label = "OTA UPDATE";
+  const labelW = strWAdv(label, FONT_BOOT_W);
+  const labelX = 290 - labelW;
+  iconDownArrow(f, labelX - 11, 4);
+  f.drawStrAdv(labelX, 4, label, 1, FONT_BOOT_W);
+  f.hline(2, 14, 293);
+}
+
+function drawOtaIdentity(f, fromVersion, toVersion) {
+  const pair = fitTextAscii(`fw ${fromVersion} > ${toVersion}`, 100);
+  f.fillRect(6, 20, 108, 90, 1, 0);
+  f.drawStr3xInv(9, 24, "OTA");
+  f.drawStr3xInv(9, 54, "UPDATE");
+  f.drawStrInvAdv(9, 98, pair, FONT_BOOT_W);
+}
+
+function drawOtaPlanRow(f, row, name, meta) {
+  const y = 41 + row * 10;
+  const idx = `${row + 1}.`;
+  f.drawStrAdv(130 - strWAdv(idx, FONT_BOOT_W), y, idx, 1, FONT_BOOT_W);
+
+  const metaW = strW(meta);
+  f.drawStr(290 - metaW, y, meta, 0);
+
+  const nameLeft = 134;
+  const nameW = 290 - metaW - 4 - nameLeft;
+  f.drawStrAdv(nameLeft, y, fitTextAscii(name, nameW), 1, FONT_BOOT_W);
+}
+
+function drawOtaFooterEta(f) {
+  const eta = "~40s";
+  const reboot = "reboot once";
+  const etaW = strWAdv(eta, FONT_BOOT_W);
+  const rebootW = strWAdv(reboot, FONT_BOOT_W);
+  let lx = 290 - (etaW + 3 * FONT_BOOT_W + rebootW);
+
+  f.drawStrAdv(lx, 117, eta, 1, FONT_BOOT_W);
+  lx += etaW + FONT_BOOT_W;
+  f.fillRect(lx + 1, 120, 2, 2, 1, 0);
+  lx += 2 * FONT_BOOT_W;
+  f.drawStrAdv(lx, 117, reboot, 1, FONT_BOOT_W);
+}
+
+function renderOta() {
+  const f = new Frame();
+  f.hline(1, 1, 294);
+  f.hline(1, 126, 294);
+  f.vline(1, 1, 126);
+  f.vline(294, 1, 126);
+
+  drawOtaHeader(f);
+  drawOtaIdentity(f, "0.4.1", "0.5.0");
+
+  f.drawStrAdv(122, 22, "INSTALLING UPDATE", 1, FONT_BOOT_W);
+  f.hline(122, 35, 169);
+  drawOtaPlanRow(f, 0, "download", "GitHub");
+  drawOtaPlanRow(f, 1, "verify app", "image hdr");
+  drawOtaPlanRow(f, 2, "flash app1", "partition B");
+  drawOtaPlanRow(f, 3, "reboot", "boot B");
+
+  f.hline(2, 114, 293);
+  f.fillRect(6, 119, 3, 3, 1, 1);
+  f.drawStr(13, 117, "DO NOT UNPLUG", 1);
+  drawOtaFooterEta(f);
+  return f;
+}
+
 function drawS1Chrome(f) {
   f.hline(1, 1, 294);
   f.hline(1, 126, 294);
@@ -777,6 +878,7 @@ mkdirSync(outDir, { recursive: true });
 const screens = [
   ["readme-boot-screen.svg", renderBoot(), "DevDash boot screen"],
   ["readme-dashboard-screen.svg", renderDashboard(), "DevDash dashboard screen"],
+  ["readme-ota-screen.svg", renderOta(), "DevDash OTA update screen"],
   ["readme-provision-screen.svg", renderProvision(), "DevDash provisioning screen"],
   ["readme-no-wifi-screen.svg", renderOffline("wifi"), "DevDash no WiFi screen"],
   ["readme-api-error-screen.svg", renderOffline("api"), "DevDash API error screen"],

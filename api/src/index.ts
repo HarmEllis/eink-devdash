@@ -1,6 +1,7 @@
 import Fastify from 'fastify'
 import { Bonjour } from 'bonjour-service'
 import { dashboardRoute } from './routes/dashboard.js'
+import { otaRoute } from './routes/ota.js'
 
 const app = Fastify({ logger: true })
 const PORT = 3000
@@ -23,6 +24,7 @@ app.addHook('onRequest', async (req, reply) => {
 
 app.get('/health', async () => ({ ok: true }))
 app.register(dashboardRoute)
+app.register(otaRoute)
 
 function startMdns() {
   if (!MDNS_ENABLED) {

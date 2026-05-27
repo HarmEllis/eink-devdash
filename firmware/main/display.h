@@ -27,3 +27,13 @@ void display_show_offline(display_offline_reason_t reason,
                           int network_idx,
                           const wifi_unreachable_diag_t *wifi_diag,
                           const api_unreachable_diag_t *api_diag);
+
+/* Static OTA install poster. This is intentionally a single full-refresh
+ * frame shown before flash erase/write starts. The display layer must not
+ * animate progress during OTA because the panel and flash operations are
+ * both long-running. OTA draws no progress/success/failure frames, so this
+ * is the only e-paper refresh in the update path before reboot. */
+void display_show_ota_update(const char *from_version,
+                             const char *to_version,
+                             const char *slot_name,
+                             const char *slot_label);
