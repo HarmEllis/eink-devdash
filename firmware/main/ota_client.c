@@ -279,12 +279,21 @@ static esp_err_t download_and_install(const char *download_url,
 
     /* Cert bundle covers both github.com and the 302 redirect to
      * objects.githubusercontent.com; esp_http_client follows the redirect
-     * automatically. */
+     * automatically. The redirect target is a signed S3 URL whose path+query
+     * is ~870 B; the outgoing "GET <path> HTTP/1.1\r\n" request-line built in
+     * http_client_prepare_first_line() lives in the TX buffer
+     * (buffer_size_tx, default 512 B) and overflows with the generic
+     * "HTTP_CLIENT: Out of buffer" error before any payload byte is read.
+     * 4096 gives plenty of headroom for variance in GitHub's signed URLs.
+     * buffer_size is the RX buffer; not the bottleneck here, but bumped to
+     * 4096 for symmetry. */
     esp_http_client_config_t http_cfg = {
         .url = download_url,
         .timeout_ms = OTA_DOWNLOAD_TIMEOUT_MS,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .keep_alive_enable = true,
+        .buffer_size = 4096,
+        .buffer_size_tx = 4096,
     };
     esp_https_ota_config_t ota_cfg = {
         .http_config = &http_cfg,
