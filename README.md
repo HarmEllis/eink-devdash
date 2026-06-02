@@ -44,16 +44,34 @@ errors.
 | Part | Spec |
 |------|------|
 | MCU | ESP32-S3 Super Mini |
-| Display | WeAct 2.9" SSD1680 e-ink (128×296 px) — Black/White/Red (BWR), with Black/White (BW) variant in experimental support |
+| Display | WeAct 2.9" SSD1680 e-ink (128×296 px) — Black/White/Red (BWR) or Black/White (BW) |
 | Driver IC | SSD1680 (SPI) |
 
-The BWR panel is the reference / production target. Support for the BW
-variant of the same WeAct 2.9" SSD1680 module is wired through the
-provisioning portal and the NVS schema, but is **experimental and pending
-Phase 0 hardware validation** (see Gate 0.A and Gate 0.B in
-`firmware/BOARD_NOTES.md`). Both variants share the same SPI wiring and
-the same firmware binary; on a BW panel the firmware folds red drawing
-operations to black at the framebuffer level.
+Both the BWR and BW variants of the WeAct 2.9" SSD1680 module are supported
+from the same firmware binary and the same SPI wiring. On a BW panel the
+firmware folds red drawing operations to black at the framebuffer level and
+runs a per-region partial-refresh path (validated by Phase 0 Gate 0.A in
+`firmware/BOARD_NOTES.md`); on a BWR panel the existing full-colour refresh is
+unchanged.
+
+The panel SKU is build-stamped via `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` so a
+factory image knows its panel before the first draw (Phase 0 Gate 0.B showed the
+old panel-agnostic recovery path could not clear pre-existing red on a BWR
+panel). A user can still change the variant per-device in the provisioning
+portal under "Display"; the chosen value is persisted in NVS and wins over the
+build default.
+
+**SKU build matrix:**
+
+| SKU build      | `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` | Wrong-SKU recovery                       |
+|----------------|----------------------------------------|------------------------------------------|
+| WeAct 2.9" BWR | `0`                                    | cold-boot: send `B` over USB-Serial-JTAG, or hold BOOT through the boot window → BW |
+| WeAct 2.9" BW  | `1`                                    | cold-boot: send `R` over USB-Serial-JTAG → BWR |
+| repo dev / CI  | `0` (BWR, via `sdkconfig.defaults`)    | as above                                 |
+
+The override applies to that one boot only (no NVS write); use the portal to
+persist a different panel. The override window runs only on a cold boot, so
+battery deep-sleep refresh wakes are never delayed.
 
 ### Wiring
 
@@ -614,17 +632,20 @@ first, wait for CI, and re-tag.
 
 ### Refresh strategy
 
-| Mode | Duration | Trigger |
-|------|----------|---------|
-| BW fast monochrome | ~2–4 s | Dashboard metrics changed while both the previous and current frame are black/white-only |
-| Full 3-color (Mode 1 LUT) | ~15–27 s | Red content changed, previous frame had red, first render, controller wake, or after ten fast monochrome refreshes |
+| Mode | Panel | Duration | Trigger |
+|------|-------|----------|---------|
+| BW per-region partial | BW | ~2–4 s | Dashboard metrics changed, no red involved, and all changes fall inside the active layout's region rects (≤5 partials per region between full refreshes) |
+| BW full (`BW_FULL`) | BW | ~10–15 s | First render, controller wake, layout flip, red→BW fold, region cap hit, or the 24 h ghost-clear cap |
+| Full 3-color (`FULL_COLOR`, Mode 1 LUT) | BWR | ~15–27 s | Any change on a BWR panel (the BWR runtime path is always a full refresh) |
 
 Timestamp and reset-countdown changes by themselves do not repaint the
 panel. Minimum refresh interval: 3 minutes (configurable 3–60 min).
 
-> The BW partial-refresh path is currently disabled at compile time
-> (`DISPLAY_ENABLE_BW_EXPERIMENT 0`) pending hardware validation — see
-> [`docs/decisions/0003-red-free-bw-partial-refresh.md`](docs/decisions/0003-red-free-bw-partial-refresh.md).
+The BW per-region partial path was validated on hardware in Phase 0 Gate 0.A
+(BW V2 partial waveform LUT `0x32` + update trigger `0xCC`, geometry
+`RAMX=1..16`) — see `firmware/BOARD_NOTES.md`. The diff is computed per region
+(Layout A: 6 regions with GitHub, Layout B: 3 regions without); any change
+outside the active region union forces a full refresh.
 
 ### NVS layout
 

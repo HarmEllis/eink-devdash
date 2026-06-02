@@ -72,6 +72,11 @@ void storage_erase(void);
 
 void storage_cfg_v2_defaults(dash_config_v2_t *cfg);
 void storage_cfg_v2_normalize(dash_config_v2_t *cfg);
+
+/* Build-stamped SKU default panel variant (CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT).
+   Seeds the defaults / migration when no real saved variant exists; a genuine
+   saved v3 panel_variant always wins. See Gate 0.B in BOARD_NOTES. */
+eink_panel_variant_t storage_default_panel_variant(void);
 bool storage_validate_api_url(const char *url);
 uint32_t storage_next_profile_id(const dash_config_v2_t *cfg);
 void storage_mask_token(const char *token, char *out, size_t out_sz);

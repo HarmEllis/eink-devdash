@@ -36,6 +36,11 @@ CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 # CONFIG_ESP_CONSOLE_SECONDARY_NONE is not set
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 
+# Panel SKU. The repo dev / CI build targets the WeAct 2.9" BWR module (0).
+# Per-SKU factory builds override this (0=BWR, 1=BW); see Gate 0.B in
+# BOARD_NOTES. Leaving it at the Kconfig sentinel (-1) fails the build closed.
+CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT=0
+
 # Deep sleep
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y

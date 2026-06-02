@@ -32,6 +32,27 @@ config DEVDASH_REFRESH_MIN
         Minutes between dashboard refreshes (deep-sleep duration). The display
         cannot reliably refresh faster than every ~3 minutes.
 
+config DEVDASH_DEFAULT_PANEL_VARIANT
+    int "Default panel variant SKU (-1=unset, 0=BWR, 1=BW)"
+    range -1 1
+    default -1
+    help
+        Build-stamped panel SKU. Used as the panel variant when NVS has no
+        real saved config yet (first boot / erased) and as the storage
+        defaults / v2->v3 migration seed. A genuine saved v3 config (chosen
+        via the provisioning portal) always wins over this value.
+
+        This is the Gate 0.B fallback (see BOARD_NOTES): the panel-agnostic
+        SAFE_BW bootstrap is not reliable on a red-preconditioned BWR panel,
+        so the variant must be known at boot. Factory / SKU builds MUST set
+        this to 0 (WeAct 2.9" BWR) or 1 (WeAct 2.9" BW). The firmware fails
+        the build closed (#error) if it is left at -1; the repo dev / CI build
+        sets 0 in sdkconfig.defaults.
+
+        Wrong-SKU recovery: on a cold boot, send 'B' (BW) or 'R' (BWR) over
+        USB-Serial-JTAG within the first few seconds, or hold the BOOT button
+        through the boot window to force BW for that one boot.
+
 config DEVDASH_PROV_TIMEOUT_S
     int "Provisioning timeout (seconds, 0 = no timeout)"
     range 0 3600

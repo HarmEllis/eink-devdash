@@ -4,25 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
-> **Status:** the BW-panel and `SAFE_BW` work below is **experimental and
-> pending Phase 0 hardware validation**. Gate 0.A (BW partial-refresh
-> feasibility) and Gate 0.B (`SAFE_BW` non-destructiveness on BWR) results
-> are recorded in `firmware/BOARD_NOTES.md` and must be PASS before this
-> section is promoted to a tagged release. Until then, treat the entries
-> as work-in-progress on `main` for early adopters running both panels.
+> **Status:** Phase 0 hardware gates are recorded in `firmware/BOARD_NOTES.md`.
+> Gate 0.A (BW partial-refresh feasibility) **passed**; Gate 0.B (panel-agnostic
+> `SAFE_BW` recovery) **failed on a red-preconditioned BWR panel**, so the
+> recovery design switched to a build-stamped panel SKU with serial/BOOT
+> overrides (below). On-hardware flash verification of the per-region partials
+> and the BWR recovery red-clear is the remaining step before this section is
+> promoted to a tagged release.
 
 ### Added
 
-- Experimental support for the WeAct Studio 2.9" Black/White (BW) SSD1680 panel alongside the existing Black/White/Red (BWR) panel out of the same firmware binary. The active variant is selected per-device in the provisioning portal under "Display" and persisted in NVS. On a BW panel the firmware folds red drawing operations to black at the framebuffer level and drives the controller with a BW-only refresh sequence (`EINK_REFRESH_BW_FULL`); on a BWR panel the existing BWR refresh (`EINK_REFRESH_FULL_COLOR`) is unchanged.
-- Panel-agnostic `EINK_REFRESH_SAFE_BW` mode used by the provisioning recovery / setup-timeout paths, where the firmware does not yet know which panel is wired. Configured with `0x21=0x00,0x00` and the BWR `0x26` write skipped so the same waveform shows the QR / alert chrome on both panels, with BW-only icon redraws so the visuals are readable on BWR. The safety of this on the BWR panel is documented in the driver and is the explicit subject of Phase 0 Gate 0.B in `firmware/BOARD_NOTES.md`.
-- NVS schema v3: `dash_config_v2_t` gains a trailing `panel_variant` byte. The v3 layout is byte-prefix-identical to v2, so v2 blobs are migrated in place on first load by reading the legacy bytes, validating the v2 CRC, defaulting `panel_variant` to BWR, and persisting as v3.
-- Phase 0 BW-panel bring-up harness on the `phase0/harness-bw-29` branch (`firmware/main/phase0_harness.c`, `CONFIG_DEVDASH_PHASE0_HARNESS`) with Gate 0.A (BW partial-refresh feasibility) and Gate 0.B (`SAFE_BW` non-destructiveness on BWR) scenarios, plus a Phase 0 results section in `firmware/BOARD_NOTES.md`.
+- Support for the WeAct Studio 2.9" Black/White (BW) SSD1680 panel alongside the existing Black/White/Red (BWR) panel out of the same firmware binary. The variant is selected per-device in the provisioning portal under "Display" and persisted in NVS. On a BW panel the firmware folds red drawing operations to black and drives the controller with BW-only refresh sequences; on a BWR panel the existing `EINK_REFRESH_FULL_COLOR` refresh is unchanged.
+- Per-region partial refresh on the BW panel (Phase 0 Gate 0.A passed): the dashboard is diffed against the last frame per region (Layout A = 6 regions with GitHub, Layout B = 3 regions without) and only changed regions are repainted with a narrow-X partial (BW V2 partial waveform LUT `0x32` + update trigger `0xCC`, geometry `RAMX=1..16`), capped at 5 partials per region between full refreshes. Any change outside the active region union, a layout flip, or the 24 h ghost-clear cap forces a `BW_FULL`. Shared state is committed only after every partial in a render succeeds.
+- Build-stamped panel SKU `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` (Kconfig `int`, `range -1 1`, `default -1` so a SKU build fails the build closed if left unset; the repo dev/CI build sets `0` = BWR in `sdkconfig.defaults`). This is the Gate 0.B fallback: the panel variant is known before the first draw, so recovery surfaces use the correct refresh instead of the panel-agnostic `SAFE_BW` path that could not clear pre-existing red on a BWR panel.
+- Cold-boot-only wrong-SKU recovery overrides: send `B` (BW) / `R` (BWR) over USB-Serial-JTAG, or hold the BOOT button through the boot window (→ BW), within the first few seconds of a cold boot. The override applies to that one boot only; the override window never runs on a deep-sleep wake, so battery refresh wakes are not delayed.
+- NVS schema v3: `dash_config_v2_t` gains a trailing `panel_variant` byte. The v3 layout is byte-prefix-identical to v2, so v2 blobs are migrated in place on first load by reading the legacy bytes, validating the v2 CRC, seeding `panel_variant` from the SKU default (`CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT`), and persisting as v3. A genuine saved v3 `panel_variant` always wins over the build default.
+- Phase 0 BW-panel bring-up harness on the `phase0/harness-bw-29` branch (`CONFIG_DEVDASH_PHASE0_HARNESS`) with Gate 0.A / Gate 0.B scenarios, plus a Phase 0 results section in `firmware/BOARD_NOTES.md`.
 - `CONFIG_DEVDASH_DEMO_PANEL_VARIANT` Kconfig so demo builds (which skip NVS) can pick BWR or BW for the static demo dashboard.
 
 ### Changed
 
-- `eink_init()` is now mode-agnostic: it performs hardware + software reset only and leaves the handle in `asleep=true`, so the first `eink_refresh()` programs the controller for whichever mode the caller actually asked for. This is what makes a single binary safe to drive both panel variants and `SAFE_BW` from cold boot.
-- The display layer routes provisioning-recovery and setup-failed / setup-timeout draws through `EINK_REFRESH_SAFE_BW` and tracks the last refresh's panel variant in RTC memory so a variant change forces a full refresh on the next wake.
+- `eink_init()` is now mode-agnostic: it performs hardware + software reset only and leaves the handle in `asleep=true`, so the first `eink_refresh()` programs the controller for whichever mode the caller actually asked for. This is what makes a single binary safe to drive both panel variants from cold boot.
+- Provisioning / recovery surfaces (QR, connecting, wait, setup-failed, setup-timeout offline) now render through the variant-aware `display_full_refresh()` — `FULL_COLOR` on BWR (which drives the red plane and clears any prior red) and `BW_FULL` on BW — instead of `EINK_REFRESH_SAFE_BW`. `EINK_REFRESH_SAFE_BW` / `display_full_refresh_safe()` are retained but dormant.
 
 ## [0.2.0] - 2026-05-27
 

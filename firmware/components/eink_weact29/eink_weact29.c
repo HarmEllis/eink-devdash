@@ -357,7 +357,8 @@ static void reset_controller_bw_partial(eink_handle_t *h)
 static void reset_controller_fast_bw(eink_handle_t *h)
 {
     /* Waveshare 2.9B V4 Init_Fast sequence — used by the BWR BW_FAST
-       experiment branch (DISPLAY_ENABLE_BW_EXPERIMENT == 0 in product). */
+       experiment path (EINK_REFRESH_BW_FAST), which the display layer no
+       longer drives in product (BW now uses the per-region partial path). */
     gpio_set_level(h->rst_pin, 1);
     vTaskDelay(pdMS_TO_TICKS(200));
     gpio_set_level(h->rst_pin, 0);
@@ -515,9 +516,9 @@ void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
         ESP_LOGI(TAG, "SSD1680 init for BW_FAST");
 
         write_full_plane(h, CMD_WRITE_BW_RAM, bw_framebuf);
-        /* Current behavior preserved: red plane is written even on BW_FAST
-           branch (see eink_weact29.c history). This branch is gated by
-           DISPLAY_ENABLE_BW_EXPERIMENT == 0 in product. */
+        /* Current behavior preserved: red plane is written even on the
+           BW_FAST branch (see eink_weact29.c history). EINK_REFRESH_BW_FAST is
+           no longer driven by the display layer in product. */
         write_full_plane(h, CMD_WRITE_RED_RAM, red_framebuf);
 
         send_cmd(h, CMD_DISP_UPDATE_CTRL2);

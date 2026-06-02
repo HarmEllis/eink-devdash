@@ -14,12 +14,67 @@
 #include "display.h"
 #include "boot_button.h"
 #include "ota_client.h"
+#include "driver/usb_serial_jtag.h"
 #include <string.h>
 
 static const char *TAG = "main";
 static const char *BUILD_MARKER =
     "diag-api-display-2026-05-21T21:25+02:00";
 #define BOOT_WAKE_GPIO GPIO_NUM_0
+
+/* Cold-boot-only panel-variant override (Gate 0.B wrong-SKU recovery). Runs
+   ONLY on a cold boot (caller gates on wake cause UNDEFINED) — never on a
+   deep-sleep wake, so battery timer wakes stay fast and the EXT0 BOOT gestures
+   (short = refresh, long = portal) are untouched. Within a short bounded
+   window it watches for:
+     - serial 'B'/'b' -> BW or 'R'/'r' -> BWR over USB-Serial-JTAG (returns
+       immediately when a character arrives), and
+     - BOOT (GPIO0) held continuously through the whole window -> BW.
+   Returns true and sets *out when an override fires. The override applies to
+   this boot only (no NVS write); the portal panel selector is the persistence
+   path. USB-Serial-JTAG is the secondary console here; if its driver cannot be
+   installed the serial path is skipped and only the BOOT-hold path is active. */
+#define PANEL_OVERRIDE_WINDOW_MS 2500
+#define PANEL_OVERRIDE_STEP_MS   50
+
+static bool panel_variant_cold_boot_override(eink_panel_variant_t *out)
+{
+    bool boot_held = boot_button_is_pressed();
+
+    bool usj = false;
+    usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
+        usj = true;
+    } else {
+        ESP_LOGW(TAG, "Panel override: USB-Serial-JTAG read unavailable; "
+                      "only the BOOT-hold override is active this boot");
+    }
+
+    const int steps = PANEL_OVERRIDE_WINDOW_MS / PANEL_OVERRIDE_STEP_MS;
+    for (int i = 0; i < steps; i++) {
+        if (usj) {
+            uint8_t ch = 0;
+            while (usb_serial_jtag_read_bytes(&ch, 1, 0) == 1) {
+                if (ch == 'B' || ch == 'b') {
+                    *out = EINK_PANEL_WEACT_29_BW;  return true;
+                }
+                if (ch == 'R' || ch == 'r') {
+                    *out = EINK_PANEL_WEACT_29_BWR; return true;
+                }
+            }
+        }
+        if (boot_held && !boot_button_is_pressed()) boot_held = false;
+        vTaskDelay(pdMS_TO_TICKS(PANEL_OVERRIDE_STEP_MS));
+    }
+
+    if (boot_held) {
+        ESP_LOGI(TAG, "Panel override: BOOT held through window -> BW");
+        boot_button_wait_release();
+        *out = EINK_PANEL_WEACT_29_BW;
+        return true;
+    }
+    return false;
+}
 
 static void enter_deep_sleep(uint8_t minutes)
 {
@@ -100,16 +155,34 @@ void app_main(void)
     /* Always seed the refresh interval — even on a defaulted cfg — so the
        display layer's 24h forced-full cap uses the right cadence. */
     display_set_refresh_min(cfg.refresh_min);
-    /* Only mark the panel variant known when a real persisted blob loaded.
-       On a fresh / erased NVS the cfg.panel_variant is the BWR-by-default
-       value from storage_cfg_v2_defaults() and would lead recovery
-       surfaces down the BWR-aware path on whichever panel is plugged in.
-       Leaving s_variant_known == false keeps first-boot QR / connecting
-       / setup-failed on the SAFE_BW path until the user submits the
-       portal form and the post-restart boot reloads cfg as v3. */
+    /* Resolve the panel variant for this boot (Gate 0.B fallback): it is always
+       known by the first draw, so recovery / provisioning surfaces render
+       through the correct variant path (FULL_COLOR clears red on BWR) instead
+       of the dormant panel-agnostic SAFE_BW path that failed on a
+       red-preconditioned BWR panel.
+         - a real saved v3 config wins (portal choice / migrated value);
+         - otherwise the build-stamped SKU default
+           (CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT, via storage_default_panel_variant);
+         - a cold-boot serial 'B'/'R' or BOOT-hold override wins for this boot. */
+    eink_panel_variant_t variant;
+    const char *variant_src;
     if (cfg_loaded) {
-        display_set_panel_variant((eink_panel_variant_t)cfg.panel_variant);
+        variant = (eink_panel_variant_t)cfg.panel_variant;
+        variant_src = "cfg";
+    } else {
+        variant = storage_default_panel_variant();
+        variant_src = "default";
     }
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED) {
+        eink_panel_variant_t ov;
+        if (panel_variant_cold_boot_override(&ov)) {
+            variant = ov;
+            variant_src = "override";
+        }
+    }
+    display_set_panel_variant(variant);
+    ESP_LOGI(TAG, "Panel variant=%s (source=%s)",
+             variant == EINK_PANEL_WEACT_29_BW ? "BW" : "BWR", variant_src);
 
     esp_sleep_wakeup_cause_t wake = esp_sleep_get_wakeup_cause();
     esp_reset_reason_t reset = esp_reset_reason();

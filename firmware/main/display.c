@@ -1286,12 +1286,14 @@ static void display_full_refresh(bool need_red, const char *reason)
     commit_full_refresh_shared(need_red, /*wrote_safe_mode=*/false);
 }
 
-/* Panel-agnostic full refresh — provisioning / recovery surfaces only
-   (QR, setup-failed, setup-timeout offline, plus boot/connect/wait
-   when invoked with DISPLAY_CTX_PROVISIONING_RECOVERY). Always uses
-   EINK_REFRESH_SAFE_BW: no LUT load, no 0x26 transfer, no red drawing,
-   dispatched by mode and not by h->variant. Readability on a BWR panel
-   is gated on Phase 0 Gate 0.B's recorded result in BOARD_NOTES.md. */
+/* Panel-agnostic SAFE_BW full refresh. DORMANT since Gate 0.B: SAFE_BW could
+   not clear pre-existing red on a red-preconditioned BWR panel, so recovery /
+   provisioning surfaces now render through the variant-aware display_full_refresh()
+   (FULL_COLOR clears red on BWR; BW_FULL on BW), with the panel variant resolved
+   at boot from the saved config, the CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT SKU
+   default, or the cold-boot serial/BOOT override. This helper is retained as a
+   build-stamped escape hatch but is no longer wired to any surface. */
+__attribute__((unused))
 static void display_full_refresh_safe(const char *reason)
 {
     warn_if_full_refresh_is_early(reason);
@@ -1893,11 +1895,11 @@ static void display_show_boot_poster(display_context_t ctx,
 
     draw_boot_footer();
 
-    if (ctx == DISPLAY_CTX_PROVISIONING_RECOVERY) {
-        display_full_refresh_safe("boot");
-    } else {
-        display_full_refresh(/*need_red=*/false, "boot");
-    }
+    /* Variant-aware in both contexts now (Gate 0.B): the panel variant is
+       known at boot, so recovery uses FULL_COLOR on BWR (clears red) / BW_FULL
+       on BW, not the dormant SAFE_BW path. */
+    (void)ctx;
+    display_full_refresh(/*need_red=*/false, "boot");
     eink_sleep(&s_eink);
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
@@ -1928,11 +1930,9 @@ static void display_show_wait_page(display_context_t ctx,
     static const char *HINT = "Please wait";
     draw_str((296 - str_w(HINT)) / 2, 82, HINT, 0);
 
-    if (ctx == DISPLAY_CTX_PROVISIONING_RECOVERY) {
-        display_full_refresh_safe("wait");
-    } else {
-        display_full_refresh(/*need_red=*/false, "wait");
-    }
+    /* Variant-aware in both contexts now (Gate 0.B); see display_show_boot_poster. */
+    (void)ctx;
+    display_full_refresh(/*need_red=*/false, "wait");
     eink_sleep(&s_eink);
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
@@ -2081,7 +2081,7 @@ void display_show_qr(const char *ssid, const char *pop)
         }
     }
 
-    display_full_refresh_safe("provisioning");
+    display_full_refresh(/*need_red=*/false, "provisioning");
     eink_sleep(&s_eink);
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
@@ -2118,7 +2118,7 @@ void display_show_setup_failed(void)
     static const char *S3 = "check serial";
     draw_str(qr_centre_x - str_w(S3) / 2, 84, S3, 0);
 
-    display_full_refresh_safe("setup failed");
+    display_full_refresh(/*need_red=*/false, "setup failed");
     eink_sleep(&s_eink);
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
@@ -2161,7 +2161,7 @@ void display_show_offline(display_offline_reason_t reason,
         draw_unreachable_poster(reason, cfg, network_idx, wifi_diag, api_diag);
     }
     if (is_setup_timeout) {
-        display_full_refresh_safe("offline-setup-timeout");
+        display_full_refresh(/*need_red=*/false, "offline-setup-timeout");
     } else {
         display_full_refresh(/*need_red=*/true, "offline");
     }

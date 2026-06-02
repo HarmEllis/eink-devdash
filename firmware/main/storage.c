@@ -12,6 +12,18 @@
 static const char *TAG = "storage";
 static const char *CFG_V2_KEY = "cfg_v2";
 
+/* Fail the build closed if the panel SKU was never chosen (Gate 0.B fallback).
+   Factory / SKU builds must set CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT to 0 (BWR)
+   or 1 (BW); the repo dev / CI build sets 0 in sdkconfig.defaults. */
+#if CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT < 0
+#error "Set CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT to a panel SKU (0=BWR, 1=BW)."
+#endif
+
+eink_panel_variant_t storage_default_panel_variant(void)
+{
+    return (eink_panel_variant_t)CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT;
+}
+
 /* Legacy struct used to read v0.2.0-era cfg_v2 blobs from NVS. Must mirror
    the pre-v3 dash_config_v2_t layout exactly. The v3 struct adds a single
    uint8_t panel_variant at the end, so every prefix offset is byte-identical
@@ -142,7 +154,7 @@ void storage_cfg_v2_defaults(dash_config_v2_t *cfg)
     cfg->refresh_min = clamp_refresh(CONFIG_DEVDASH_REFRESH_MIN);
     cfg->last_success_network_idx = -1;
     cfg->last_success_api_idx = -1;
-    cfg->panel_variant = EINK_PANEL_WEACT_29_BWR;
+    cfg->panel_variant = storage_default_panel_variant();
 }
 
 bool storage_validate_api_url(const char *url)
@@ -171,7 +183,7 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
     cfg->max_apis_per_network = MAX_APIS_PER_NETWORK;
     cfg->refresh_min = clamp_refresh(cfg->refresh_min);
     if (!panel_variant_is_known(cfg->panel_variant)) {
-        cfg->panel_variant = EINK_PANEL_WEACT_29_BWR;
+        cfg->panel_variant = storage_default_panel_variant();
     }
     if (cfg->network_count > MAX_WIFI_NETWORKS) cfg->network_count = MAX_WIFI_NETWORKS;
 
@@ -288,7 +300,9 @@ bool storage_load_v2(dash_config_v2_t *cfg)
         }
         ESP_LOGW(TAG, "cfg_v2_legacy: migrating to v3");
         cfg->version = DASH_CFG_V2_VERSION;
-        cfg->panel_variant = EINK_PANEL_WEACT_29_BWR;
+        /* Legacy v2 blobs carry no panel_variant byte. Seed the SKU default so
+           an upgraded BW-SKU device resolves to BW, not a hardcoded BWR. */
+        cfg->panel_variant = storage_default_panel_variant();
         cfg->max_wifi_networks = MAX_WIFI_NETWORKS;
         cfg->max_apis_per_network = MAX_APIS_PER_NETWORK;
         /* Persist the migrated config so subsequent boots take the fast
