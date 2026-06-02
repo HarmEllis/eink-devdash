@@ -1,8 +1,14 @@
 # eink-devdash
 
-A physical developer dashboard on a 2.9" black/red e-ink display, driven by
-an ESP32-S3. Shows GitHub activity, Claude Code rate limits, and Codex usage,
-updated on a configurable interval via deep sleep.
+A physical developer dashboard on a 2.9" e-ink display, driven by an
+ESP32-S3. The reference panel is the WeAct Studio 2.9" SSD1680
+Black/White/Red (BWR) module with red alert highlights; the same
+firmware binary also carries **experimental** support for the
+Black/White (BW) variant of that module (red operations collapse to
+black), selected by the user in the provisioning portal and pending
+Phase 0 hardware validation. Shows GitHub activity, Claude Code rate
+limits, and Codex usage, updated on a configurable interval via deep
+sleep.
 
 [![CI](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml/badge.svg)](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml)
 [![Docker image](https://img.shields.io/badge/ghcr.io-eink--devdash-blue?logo=docker)](https://github.com/HarmEllis/eink-devdash/pkgs/container/eink-devdash)
@@ -38,8 +44,16 @@ errors.
 | Part | Spec |
 |------|------|
 | MCU | ESP32-S3 Super Mini |
-| Display | WeAct 2.9" Black/Red e-ink (128×296 px) |
+| Display | WeAct 2.9" SSD1680 e-ink (128×296 px) — Black/White/Red (BWR), with Black/White (BW) variant in experimental support |
 | Driver IC | SSD1680 (SPI) |
+
+The BWR panel is the reference / production target. Support for the BW
+variant of the same WeAct 2.9" SSD1680 module is wired through the
+provisioning portal and the NVS schema, but is **experimental and pending
+Phase 0 hardware validation** (see Gate 0.A and Gate 0.B in
+`firmware/BOARD_NOTES.md`). Both variants share the same SPI wiring and
+the same firmware binary; on a BW panel the firmware folds red drawing
+operations to black at the framebuffer level.
 
 ### Wiring
 
@@ -618,8 +632,8 @@ Namespace `devdash`.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `cfg_v2` | blob | WiFi profiles, API endpoints, refresh interval |
-| `ap_password` | string | Persisted SoftAP password |
+| `cfg_v2` | blob | Schema v3: WiFi profiles, API endpoints, refresh interval, `panel_variant` (BWR / BW). v2 blobs are migrated to v3 in place on first load. |
+| `ap_pwd` | string | Persisted SoftAP password |
 
 Refresh-cycle bookkeeping (`bw_fast_cycle_count`, `last_red_state`) lives
 in RTC slow memory and survives deep sleep but resets on power-on.

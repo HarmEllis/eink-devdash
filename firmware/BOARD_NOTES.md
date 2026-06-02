@@ -155,3 +155,72 @@ generated once at first boot via `storage_get_or_init_ap_password` and
 persisted under NVS key `ap_pwd` in the `devdash` namespace. Factory
 reset (`storage_erase`) clears the key; the next boot generates a new
 password. ADR-0002 records the policy.
+
+## Phase 0 — WeAct 2.9" BW panel + per-region partial refresh bring-up
+
+The driver paths and refresh modes that support the second panel
+(`EINK_PANEL_WEACT_29_BW`) plus the SAFE_BW recovery surface
+(`EINK_REFRESH_SAFE_BW`) are validated on a throwaway harness branch
+(`phase0/harness-bw-29`) before the Phase 1 feature branch is merged.
+
+### Harness usage
+
+Flash a phase0 harness build by enabling
+`CONFIG_DEVDASH_PHASE0_HARNESS=y` in menuconfig. Pick one panel
+(`CONFIG_DEVDASH_PHASE0_PANEL_BWR` / `_BW`) and one scenario
+(`CONFIG_DEVDASH_PHASE0_TEST_GATE_A`,
+`_GATE_B_CLEARED`, `_GATE_B_RED`, or `_GATE_B_WRONG_VARIANT`).
+The harness boots, runs the scenario once, then idles. Press EN/RST or
+power-cycle to rerun. Re-flash to switch scenarios.
+
+### Gate 0.A — narrow-X partial windows on BW
+
+Pass criteria (all must hold):
+- Pixels inside each narrow-X partial window update cleanly.
+- Pixels outside the window do not change.
+- After 10 consecutive narrow-X partials followed by `EINK_REFRESH_BW_FULL`,
+  no permanent ghost stripes remain.
+
+Branch decision:
+- **PASS** → Phase 1 removes the full-row clamp in
+  `find_bw_diff_rect()` (`rect->x = 0; rect->w = EINK_WIDTH;` in
+  `firmware/main/display.c`) under `effective_panel_variant() == BW` and
+  ships the per-region table as designed (Layout A: 6 regions, Layout B:
+  3 regions).
+- **FAIL** → Phase 1 keeps the clamp and falls back to two full-row Y-band
+  regions (`band_left`, `band_right`).
+
+Result: _TBD — record `Narrow-X partial bring-up — <date> — PASS/FAIL on WeAct 2.9 BW` here, with the test windows used and a photo if useful._
+
+### Gate 0.B — SAFE_BW QR readability across panels and recovery
+
+Pass criteria (all must hold for every scenario below):
+- A QR-like pattern rendered via `EINK_REFRESH_SAFE_BW` is scannable.
+- On BWR, no red residue / pigment / ghost remains anywhere on the panel.
+- The harness logs show `SAFE_BW reset: 0x21 = 0x00, 0x00 (mode-dispatched)`
+  and the absence of any `CMD_WRITE_RED_RAM` (0x26) SPI transfer,
+  regardless of `h->variant`.
+
+Scenarios:
+- BW panel, `h.variant = BW` (native baseline).
+- BWR panel, `h.variant = BWR`, cleared start (cleared FULL_COLOR then SAFE_BW).
+- BWR panel, `h.variant = BWR`, red-preconditioned start (red-heavy
+  FULL_COLOR poster then SAFE_BW), covering sub-cases
+  (a) immediate, (c) software-reset entry, (d) power-cycle entry.
+  Sub-case (b) — deep-sleep wake — is effectively identical to
+  software-reset entry here because the SSD1680 enters deep sleep between
+  renders.
+- BW panel, `h.variant = BWR` (mismatched-variant simulation — the
+  saved-BWR-config + swapped-in-BW-module recovery case).
+
+Branch decision:
+- **All PASS** → Phase 1 proceeds with the bootstrap / recovery design.
+- **Any FAIL on BWR** → fall back to a real selectable bootstrap path
+  (`CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` + BOOT-button override + serial
+  override). Update this section and `README.md` with the SKU-specific
+  build matrix.
+
+Result: _TBD — record `Safe-mode bring-up — <date> — PASS/FAIL on WeAct 2.9 BWR (bootstrap + recovery) and WeAct 2.9 BW` here per scenario._
+
+Phase 1 implementation steps are not merged to `main` until both Gate 0.A
+and Gate 0.B results are recorded above.
