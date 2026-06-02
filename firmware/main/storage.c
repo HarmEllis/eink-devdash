@@ -12,12 +12,38 @@
 static const char *TAG = "storage";
 static const char *CFG_V2_KEY = "cfg_v2";
 
+/* Legacy struct used to read v0.2.0-era cfg_v2 blobs from NVS. Must mirror
+   the pre-v3 dash_config_v2_t layout exactly. The v3 struct adds a single
+   uint8_t panel_variant at the end, so every prefix offset is byte-identical
+   with this legacy struct — that's the migration invariant the static
+   assertions below pin down. */
+typedef struct {
+    uint16_t version;
+    uint8_t max_wifi_networks;
+    uint8_t max_apis_per_network;
+    uint8_t refresh_min;
+    uint8_t network_count;
+    int8_t last_success_network_idx;
+    int8_t last_success_api_idx;
+    uint32_t write_counter;
+    uint32_t crc32;
+    dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
+} dash_config_v2_legacy_t;
+
 _Static_assert(sizeof(dash_api_profile_t) <= 272,
                "dash_api_profile_t grew unexpectedly — recompute blob budget");
 _Static_assert(sizeof(dash_wifi_profile_t) <= 1464,
                "dash_wifi_profile_t grew unexpectedly — recompute blob budget");
 _Static_assert(sizeof(dash_config_v2_t) <= DASH_CFG_V2_MAX_BYTES,
                "cfg_v2 exceeds DASH_CFG_V2_MAX_BYTES — switch to per-network blobs");
+_Static_assert(offsetof(dash_config_v2_t, crc32) ==
+               offsetof(dash_config_v2_legacy_t, crc32),
+               "v3 crc32 offset must match v2 — migration invariant");
+_Static_assert(offsetof(dash_config_v2_t, networks) ==
+               offsetof(dash_config_v2_legacy_t, networks),
+               "v3 networks offset must match v2 — migration invariant");
+_Static_assert(sizeof(dash_config_v2_t) > sizeof(dash_config_v2_legacy_t),
+               "v3 struct must be larger than v2 (added panel_variant)");
 /* Caps×counts budget: keeps the comfort margin obvious if caps move. */
 _Static_assert((size_t)DASH_API_URL_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS +
                (size_t)DASH_DEVICE_TOKEN_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS <=
@@ -56,6 +82,28 @@ static uint32_t cfg_crc(const dash_config_v2_t *cfg)
     return crc;
 }
 
+static uint32_t cfg_crc_legacy(const dash_config_v2_t *cfg)
+{
+    /* Same algorithm as cfg_crc but over the legacy struct size. Operates
+       on the v3 struct because the prefix is byte-identical (asserted at
+       compile time above); the v3-only panel_variant field is excluded
+       implicitly. */
+    const uint8_t *bytes = (const uint8_t *)cfg;
+    const size_t legacy_size = sizeof(dash_config_v2_legacy_t);
+    const size_t crc_off = offsetof(dash_config_v2_t, crc32);
+    static const uint8_t zero_crc[sizeof(((dash_config_v2_t *)0)->crc32)] = {0};
+    uint32_t crc = esp_rom_crc32_le(UINT32_MAX, bytes, crc_off);
+    crc = esp_rom_crc32_le(crc, zero_crc, sizeof(zero_crc));
+    crc = esp_rom_crc32_le(crc, bytes + crc_off + sizeof(zero_crc),
+                           legacy_size - crc_off - sizeof(zero_crc));
+    return crc;
+}
+
+static bool panel_variant_is_known(uint8_t v)
+{
+    return v == EINK_PANEL_WEACT_29_BWR || v == EINK_PANEL_WEACT_29_BW;
+}
+
 static bool cfg_v2_is_valid(const dash_config_v2_t *cfg)
 {
     if (!cfg) return false;
@@ -64,10 +112,25 @@ static bool cfg_v2_is_valid(const dash_config_v2_t *cfg)
     if (cfg->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
     if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
     if (cfg->refresh_min < 3 || cfg->refresh_min > 60) return false;
+    if (!panel_variant_is_known(cfg->panel_variant)) return false;
     for (uint8_t i = 0; i < cfg->network_count; i++) {
         if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
     }
     return cfg->crc32 == cfg_crc(cfg);
+}
+
+static bool cfg_v2_legacy_is_valid(const dash_config_v2_t *cfg)
+{
+    if (!cfg) return false;
+    if (cfg->version != 2) return false;
+    if (cfg->max_wifi_networks != MAX_WIFI_NETWORKS) return false;
+    if (cfg->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
+    if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
+    if (cfg->refresh_min < 3 || cfg->refresh_min > 60) return false;
+    for (uint8_t i = 0; i < cfg->network_count; i++) {
+        if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
+    }
+    return cfg->crc32 == cfg_crc_legacy(cfg);
 }
 
 void storage_cfg_v2_defaults(dash_config_v2_t *cfg)
@@ -79,6 +142,7 @@ void storage_cfg_v2_defaults(dash_config_v2_t *cfg)
     cfg->refresh_min = clamp_refresh(CONFIG_DEVDASH_REFRESH_MIN);
     cfg->last_success_network_idx = -1;
     cfg->last_success_api_idx = -1;
+    cfg->panel_variant = EINK_PANEL_WEACT_29_BWR;
 }
 
 bool storage_validate_api_url(const char *url)
@@ -106,6 +170,9 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
     cfg->max_wifi_networks = MAX_WIFI_NETWORKS;
     cfg->max_apis_per_network = MAX_APIS_PER_NETWORK;
     cfg->refresh_min = clamp_refresh(cfg->refresh_min);
+    if (!panel_variant_is_known(cfg->panel_variant)) {
+        cfg->panel_variant = EINK_PANEL_WEACT_29_BWR;
+    }
     if (cfg->network_count > MAX_WIFI_NETWORKS) cfg->network_count = MAX_WIFI_NETWORKS;
 
     for (uint8_t i = 0; i < cfg->network_count; i++) {
@@ -173,28 +240,76 @@ void storage_init(void)
              (unsigned)DASH_CFG_V2_MAX_BYTES);
 }
 
-void storage_load_v2(dash_config_v2_t *cfg)
+bool storage_load_v2(dash_config_v2_t *cfg)
 {
     storage_cfg_v2_defaults(cfg);
 
     nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        storage_cfg_v2_normalize(cfg);
+        return false;
+    }
+
+    size_t blob_len = 0;
+    esp_err_t err = nvs_get_blob(h, CFG_V2_KEY, NULL, &blob_len);
+    if (err != ESP_OK) {
+        nvs_close(h);
+        storage_cfg_v2_normalize(cfg);
+        return false;
+    }
+
+    if (blob_len == sizeof(dash_config_v2_t)) {
         size_t len = sizeof(*cfg);
-        esp_err_t err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
+        err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
         nvs_close(h);
         if (err == ESP_OK && len == sizeof(*cfg) && cfg_v2_is_valid(cfg)) {
             storage_cfg_v2_normalize(cfg);
-            return;
+            return true;
         }
-        if (err == ESP_OK) {
-            ESP_LOGW(TAG, "Ignoring invalid cfg_v2 blob");
-        }
+        if (err == ESP_OK) ESP_LOGW(TAG, "Ignoring invalid cfg_v2 v3 blob");
+        storage_cfg_v2_defaults(cfg);
+        storage_cfg_v2_normalize(cfg);
+        return false;
     }
 
-    /* No (valid) cfg_v2 blob yet. Leave network_count=0 so app_main runs the
-     * provisioning flow. Defaults already cover refresh_min and the version
-     * fields. */
+    if (blob_len == sizeof(dash_config_v2_legacy_t)) {
+        /* Re-zero the v3 struct so the trailing panel_variant byte (and its
+           padding) start clean before we overlay the legacy blob's bytes
+           onto the prefix. */
+        memset(cfg, 0, sizeof(*cfg));
+        size_t len = blob_len;
+        err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
+        nvs_close(h);
+        if (err != ESP_OK || len != blob_len || !cfg_v2_legacy_is_valid(cfg)) {
+            if (err == ESP_OK) ESP_LOGW(TAG, "Ignoring invalid legacy cfg_v2 blob");
+            storage_cfg_v2_defaults(cfg);
+            storage_cfg_v2_normalize(cfg);
+            return false;
+        }
+        ESP_LOGW(TAG, "cfg_v2_legacy: migrating to v3");
+        cfg->version = DASH_CFG_V2_VERSION;
+        cfg->panel_variant = EINK_PANEL_WEACT_29_BWR;
+        cfg->max_wifi_networks = MAX_WIFI_NETWORKS;
+        cfg->max_apis_per_network = MAX_APIS_PER_NETWORK;
+        /* Persist the migrated config so subsequent boots take the fast
+           sizeof(v3) path. A transient NVS error is non-fatal: log and
+           continue with the in-memory migrated cfg — the next boot retries
+           the migration rather than dropping the user's WiFi/API entries. */
+        esp_err_t save_err = storage_save_v2(cfg);
+        if (save_err != ESP_OK) {
+            ESP_LOGW(TAG, "v2→v3 migration save failed (err=0x%x); using in-memory cfg",
+                     save_err);
+            storage_cfg_v2_normalize(cfg);
+        }
+        return true;
+    }
+
+    nvs_close(h);
+    ESP_LOGW(TAG, "Unknown cfg_v2 blob length %u; resetting to defaults",
+             (unsigned)blob_len);
+    storage_cfg_v2_defaults(cfg);
     storage_cfg_v2_normalize(cfg);
+    return false;
 }
 
 esp_err_t storage_save_v2(dash_config_v2_t *cfg)

@@ -1022,7 +1022,10 @@ static void draw_unreachable_poster(display_offline_reason_t reason,
 static void ensure_init(void)
 {
     if (!s_initialized) {
-        ESP_ERROR_CHECK(eink_init(&s_eink));
+        /* Bundle A placeholder: variant is hardcoded BWR until Bundle B
+           introduces effective_panel_variant() and the s_variant_known
+           bootstrap state. */
+        ESP_ERROR_CHECK(eink_init(&s_eink, EINK_PANEL_WEACT_29_BWR));
         s_initialized = true;
     }
 }
@@ -1302,7 +1305,8 @@ void display_render(const dashboard_data_t *data)
         if (!need_red && !s_last_red_state && s_last_content_valid &&
             previous_frame_is_content && has_bw_diff &&
             s_bw_fast_cycle_count < MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
-            did_partial = eink_refresh_bw_partial(&s_eink, bw_buf, diff_rect);
+            did_partial = eink_refresh_bw_partial(&s_eink, s_last_bw_buf,
+                                                   bw_buf, diff_rect);
             if (did_partial) {
                 eink_sleep(&s_eink);
                 s_bw_fast_cycle_count++;
@@ -1387,7 +1391,8 @@ static bool display_show_compact_status(const char *status)
 #if DISPLAY_ENABLE_BW_EXPERIMENT
     bool did_partial = false;
     if (s_bw_fast_cycle_count < MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
-        did_partial = eink_refresh_bw_partial(&s_eink, bw_buf, diff_rect);
+        did_partial = eink_refresh_bw_partial(&s_eink, s_last_bw_buf,
+                                              bw_buf, diff_rect);
         if (did_partial) {
             s_bw_fast_cycle_count++;
         }

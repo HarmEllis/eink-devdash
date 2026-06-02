@@ -20,8 +20,35 @@
 /* MISO not connected (-1), VCC = 3V3 */
 
 typedef enum {
-    EINK_REFRESH_BW_FAST,    /* ~2-4s,   BW RAM only, Mode 2 LUT */
-    EINK_REFRESH_FULL_COLOR, /* ~15-27s, BW+Red RAM,  Mode 1 LUT */
+    EINK_PANEL_WEACT_29_BWR = 0,   /* WeAct 2.9" Black/White/Red */
+    EINK_PANEL_WEACT_29_BW  = 1,   /* WeAct 2.9" Black/White */
+} eink_panel_variant_t;
+
+_Static_assert(EINK_PANEL_WEACT_29_BW <= 0xFF,
+               "eink_panel_variant_t must fit in uint8_t");
+
+typedef enum {
+    EINK_REFRESH_BW_FAST,    /* BWR experiment, Mode 2 LUT (inert in product) */
+    EINK_REFRESH_FULL_COLOR, /* BWR full color, Mode 1 LUT */
+    EINK_REFRESH_BW_FULL,    /* BW panel, stock OTP GC waveform.
+                                Requires h->variant == EINK_PANEL_WEACT_29_BW. */
+    EINK_REFRESH_SAFE_BW,    /* BW-only refresh whose DISPATCH is
+                                panel-agnostic: no custom LUT load, no
+                                0x26 transfer, mode-selected reset path
+                                regardless of h->variant. Intended for
+                                provisioning / recovery surfaces that
+                                must render correctly even when the saved
+                                variant disagrees with the physically
+                                attached panel.
+                                Readability on a BWR panel with stale
+                                0x26 RAM is "safe by verification", not
+                                "safe by construction" — see Phase 0
+                                Gate 0.B in BOARD_NOTES.md. Callers must
+                                treat the recorded gate result as a hard
+                                precondition before relying on this mode
+                                for first-boot/recovery surfaces; the
+                                Kconfig+BOOT+serial fallback in the plan
+                                covers the Gate-0.B-fails-on-BWR case. */
 } eink_refresh_mode_t;
 
 typedef struct {
@@ -37,19 +64,41 @@ typedef struct {
     gpio_num_t rst_pin;
     gpio_num_t busy_pin;
     bool asleep;
+    eink_panel_variant_t variant;
 } eink_handle_t;
 
-/* Initializes SPI bus + device and resets the panel. */
-esp_err_t eink_init(eink_handle_t *h);
+/* Initialize SPI bus + device and bring the controller to a known reset
+   state. Mode-agnostic: programs no OTP/LUT/0x21 bytes. The first
+   eink_refresh() call after init runs the variant- and mode-appropriate
+   reset_controller_* helper because h->asleep is left true here. */
+esp_err_t eink_init(eink_handle_t *h, eink_panel_variant_t variant);
 
 /* Copy buffers into internal framebuffers (NULL = keep current). */
 void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf);
 
-/* Trigger a display update. */
+/* Trigger a display update.
+
+   Dispatch rules:
+   - EINK_REFRESH_SAFE_BW    — always reset_controller_safe_bw(h), 0x24 only,
+                                no 0x26 transfer, ignores h->variant.
+   - EINK_REFRESH_BW_FAST    — BWR experiment path (current behavior).
+   - EINK_REFRESH_BW_FULL    — requires h->variant == EINK_PANEL_WEACT_29_BW;
+                                reset_controller_bw_full(h), 0x24 only.
+   - EINK_REFRESH_FULL_COLOR — requires h->variant == EINK_PANEL_WEACT_29_BWR;
+                                BWR full reset on wake, writes 0x24 + 0x26. */
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode);
 
-/* Trigger a black/white partial update from a retained previous frame. */
+/* Trigger a black/white partial update.
+
+   - BWR variant: prev_bw is ignored; behaves as the current Mode-2 LUT path.
+   - BW variant:  prev_bw is written into the old-frame RAM (0x26), next_bw
+                  into the new-frame RAM (0x24); the DU trigger then diffs
+                  the two RAMs over the window. Callers must pass the buffer
+                  that matches what is currently displayed for prev_bw, and
+                  must only commit their "last displayed" snapshot after this
+                  call returns true. */
 bool eink_refresh_bw_partial(eink_handle_t *h,
+                             const uint8_t *prev_bw,
                              const uint8_t *next_bw,
                              eink_rect_t rect);
 
