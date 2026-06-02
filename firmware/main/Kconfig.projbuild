@@ -10,6 +10,20 @@ config DEVDASH_DEMO_MODE
         without needing network connectivity or configuration. Production
         builds must keep this disabled.
 
+config DEVDASH_DEMO_PANEL_VARIANT
+    int "Demo mode panel variant (0=BWR, 1=BW)"
+    range 0 1
+    default 0
+    depends on DEVDASH_DEMO_MODE
+    help
+        Picks the e-paper panel variant the demo build runs against.
+        Demo builds return before NVS / storage_load_v2() and so cannot
+        consult cfg.panel_variant. This Kconfig drives the explicit
+        display_set_panel_variant() call inside the demo block.
+        0 = WeAct 2.9" BWR (default, preserves the current "BWR with red"
+        demo appearance). 1 = WeAct 2.9" BW (collapses red operations
+        to black via the lpix red-fold).
+
 config DEVDASH_REFRESH_MIN
     int "Refresh interval (minutes)"
     range 3 60

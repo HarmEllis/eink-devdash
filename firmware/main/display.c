@@ -2,7 +2,7 @@
  * V3 Dashboard — landscape layout (logical 296×128 px).
  *
  * Physical buffer: 128 wide × 296 tall (portrait, SSD1680).
- * Coordinate rotation 90° CW: logical (lx, ly) → physical (127−ly, lx).
+ * Coordinate rotation 90° CW: logical (lx, ly) → physical (ly, 295−lx).
  *
  * Color convention in the physical buffer:
  *   bw_buf  bit 1 = white,  bit 0 = black
@@ -26,6 +26,7 @@
 #include "wifi_prov.h"
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 static const char *TAG = "display";
 
@@ -146,8 +147,18 @@ static const uint8_t font5x7[][5] = {
 static uint8_t bw_buf[EINK_BUF_SIZE];
 static uint8_t red_buf[EINK_BUF_SIZE];
 
+/* Forward decl so lpix() (and helpers below it) can read the effective
+   variant — the actual state and definition live further down with the
+   rest of the dashboard refresh state. */
+static eink_panel_variant_t effective_panel_variant(void);
+
 /* ── landscape pixel primitive ──────────────────────────────────────────── */
-/* lx ∈ [0,295], ly ∈ [0,127].  Rotation 90° CW → physical px=127−ly, py=lx */
+/* lx ∈ [0,295], ly ∈ [0,127]. Rotation 90° CW → physical px=ly, py=295-lx
+   (the leading-comment "127-ly" in earlier revisions was stale — the code
+   below is authoritative). On a BW panel every red operation collapses
+   into a BW operation so use_red=1,black=1 → BW black and use_red=1,
+   black=0 → BW white (preserves the existing white-hole semantics
+   inside red regions). */
 static void lpix(int lx, int ly, int black, int use_red)
 {
     int px = ly;
@@ -155,6 +166,13 @@ static void lpix(int lx, int ly, int black, int use_red)
     if ((unsigned)px >= EINK_WIDTH || (unsigned)py >= EINK_HEIGHT) return;
     int i = (py * EINK_WIDTH + px) / 8;
     int b = 7 - ((py * EINK_WIDTH + px) % 8);
+
+    if (effective_panel_variant() == EINK_PANEL_WEACT_29_BW) {
+        if (black) bw_buf[i] &= ~(1 << b);
+        else       bw_buf[i] |=  (1 << b);
+        return;
+    }
+
     if (use_red) {
         if (black) red_buf[i] |=  (1 << b);
         else       red_buf[i] &= ~(1 << b);
@@ -541,6 +559,7 @@ static void icon_globe(int ox, int oy)
 }
 
 /* Big-X (19×19) error glyph, RED. Two diagonals share (9,9). */
+__attribute__((unused))
 static void icon_big_cross_red(int ox, int oy)
 {
     for (int i = 0; i < 19; i++) {
@@ -699,10 +718,52 @@ static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
 static int64_t s_last_full_refresh_us = 0;
 
 #define MAX_BW_FAST_REFRESHES_BEFORE_FULL 10
+#define MAX_BW_PARTIALS_PER_REGION 5
 
-#define DISPLAY_META_NAMESPACE "disp_meta"
-#define DISPLAY_META_KEY       "state"
-#define DISPLAY_META_MAGIC     0xD15DA5E1u
+#define DISPLAY_META_NAMESPACE       "disp_meta"
+#define DISPLAY_META_KEY             "state"
+#define DISPLAY_META_KEY_LAST_VAR    "last_var"
+#define DISPLAY_META_KEY_LAST_FULL   "last_full_s"
+#define DISPLAY_META_MAGIC           0xD15DA5E1u
+
+/* Panel variant state. effective_panel_variant() returns BW until
+   display_set_panel_variant() is called from main.c with a real
+   persisted config, so first-boot / recovery surfaces route through the
+   BW-safe path even on an erased-NVS device. */
+static eink_panel_variant_t s_panel_variant = EINK_PANEL_WEACT_29_BWR;
+static bool                 s_variant_known = false;
+static uint8_t              s_refresh_min   = CONFIG_DEVDASH_REFRESH_MIN;
+
+/* Per-region partial machinery (BW path). REGION_COUNT_MAX is the
+   maximum of Layout A (6 regions) and Layout B (3 regions); the active
+   layout fills the prefix and the unused tail stays zero-initialised. */
+#define REGION_COUNT_MAX 6
+static RTC_DATA_ATTR uint8_t  s_region_partial_count[REGION_COUNT_MAX];
+static RTC_DATA_ATTR bool     s_force_full_refresh          = false;
+static RTC_DATA_ATTR uint16_t s_renders_since_full          = 0;
+/* Bundle C scaffolding: the per-region partial machinery uses these to
+   detect a show_github layout flip between renders. Bundle B does not
+   plan partials yet, so they sit zero-initialised until Bundle C wires
+   them in. */
+__attribute__((unused))
+static RTC_DATA_ATTR bool     s_last_dashboard_show_github  = false;
+__attribute__((unused))
+static RTC_DATA_ATTR bool     s_last_dashboard_layout_valid = false;
+
+static eink_panel_variant_t effective_panel_variant(void)
+{
+    return s_variant_known ? s_panel_variant : EINK_PANEL_WEACT_29_BW;
+}
+
+static uint16_t render_count_cap(uint8_t refresh_min)
+{
+    if (refresh_min < 3)  refresh_min = 3;
+    if (refresh_min > 60) refresh_min = 60;
+    uint16_t raw = (uint16_t)((24u * 60u + refresh_min - 1u) / refresh_min);
+    if (raw < 8)   raw = 8;
+    if (raw > 480) raw = 480;
+    return raw;
+}
 
 #define HEADER_STATUS_X 220
 #define HEADER_STATUS_Y 2
@@ -762,6 +823,94 @@ static void display_mark_frame(display_frame_t frame)
     nvs_close(h);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "display metadata save failed: %s", esp_err_to_name(err));
+    }
+}
+
+/* Demo builds (CONFIG_DEVDASH_DEMO_MODE) return before nvs_flash_init(),
+   so the meta wrappers must tolerate ESP_ERR_NVS_NOT_INITIALIZED quietly
+   instead of warning on every render. */
+static void log_meta_open_err(const char *key, esp_err_t err)
+{
+    if (err == ESP_ERR_NVS_NOT_INITIALIZED) {
+        ESP_LOGD(TAG, "%s: NVS not initialized (demo build?)", key);
+    } else {
+        ESP_LOGW(TAG, "%s open: %s", key, esp_err_to_name(err));
+    }
+}
+
+static bool disp_meta_get_last_var(uint8_t *out)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READONLY, &h);
+    if (err != ESP_OK) { log_meta_open_err("last_var", err); return false; }
+    err = nvs_get_u8(h, DISPLAY_META_KEY_LAST_VAR, out);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+static void disp_meta_set_last_var(uint8_t v)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) { log_meta_open_err("last_var", err); return; }
+    err = nvs_set_u8(h, DISPLAY_META_KEY_LAST_VAR, v);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) ESP_LOGW(TAG, "last_var save: %s", esp_err_to_name(err));
+}
+
+__attribute__((unused))
+static bool disp_meta_get_last_full(uint32_t *out)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READONLY, &h);
+    if (err != ESP_OK) { log_meta_open_err("last_full_s", err); return false; }
+    err = nvs_get_u32(h, DISPLAY_META_KEY_LAST_FULL, out);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+static void disp_meta_set_last_full(uint32_t v)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) { log_meta_open_err("last_full_s", err); return; }
+    err = nvs_set_u32(h, DISPLAY_META_KEY_LAST_FULL, v);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) ESP_LOGW(TAG, "last_full_s save: %s", esp_err_to_name(err));
+}
+
+void display_force_full_refresh_next(void)
+{
+    s_force_full_refresh = true;
+}
+
+void display_set_refresh_min(uint8_t refresh_min)
+{
+    if (refresh_min < 3)  refresh_min = 3;
+    if (refresh_min > 60) refresh_min = 60;
+    s_refresh_min = refresh_min;
+}
+
+void display_set_panel_variant(eink_panel_variant_t v)
+{
+    const eink_panel_variant_t old_raw = s_panel_variant;
+    const bool                 was_known = s_variant_known;
+    const eink_panel_variant_t old_eff =
+        was_known ? old_raw : EINK_PANEL_WEACT_29_BW;
+    const eink_panel_variant_t new_eff = v;
+
+    s_panel_variant = v;
+    s_variant_known = true;
+
+    if (s_initialized && new_eff != old_eff) {
+        /* Live-update the driver handle. The SPI bus + GPIOs are already up;
+           the next refresh's reset_controller_* will reload the right
+           waveform for free. */
+        s_eink.variant = new_eff;
+        s_eink.asleep  = true;
+        display_force_full_refresh_next();
     }
 }
 
@@ -1022,10 +1171,7 @@ static void draw_unreachable_poster(display_offline_reason_t reason,
 static void ensure_init(void)
 {
     if (!s_initialized) {
-        /* Bundle A placeholder: variant is hardcoded BWR until Bundle B
-           introduces effective_panel_variant() and the s_variant_known
-           bootstrap state. */
-        ESP_ERROR_CHECK(eink_init(&s_eink, EINK_PANEL_WEACT_29_BWR));
+        ESP_ERROR_CHECK(eink_init(&s_eink, effective_panel_variant()));
         s_initialized = true;
     }
 }
@@ -1050,18 +1196,85 @@ static void warn_if_full_refresh_is_early(const char *reason)
 #endif
 }
 
-static void display_full_refresh(eink_refresh_mode_t mode, const char *reason)
-{
-    warn_if_full_refresh_is_early(reason);
-    eink_set_framebuffer(bw_buf, red_buf);
-    eink_refresh(&s_eink, mode);
-    s_last_full_refresh_us = esp_timer_get_time();
-}
-
+__attribute__((unused))
 static void remember_current_bw_frame(void)
 {
     memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
     s_last_bw_valid = true;
+}
+
+/* Wall-clock-trusted predicate: anything below 2024-01-01 UTC is treated
+   as "SNTP has not corrected our RTC yet" — the firmware does not run
+   SNTP today so this is dormant, but keeps the 24h forced-full path
+   ready for the day it does. */
+static bool wall_time_trusted(time_t *out_now)
+{
+    time_t now = time(NULL);
+    if (now < (time_t)1704067200) return false;
+    if (out_now) *out_now = now;
+    return true;
+}
+
+static void commit_full_refresh_shared(bool need_red, bool wrote_safe_mode)
+{
+    /* Shared state after any successful full refresh (variant-aware or
+       safe). Differences between the two profiles are layered on top by
+       each caller below. */
+    memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
+    s_last_bw_valid = true;
+    s_last_red_state =
+        (effective_panel_variant() == EINK_PANEL_WEACT_29_BWR) ? need_red
+                                                               : false;
+    memset(s_region_partial_count, 0, sizeof(s_region_partial_count));
+    s_renders_since_full = 0;
+    s_force_full_refresh = false;
+    s_last_full_refresh_us = esp_timer_get_time();
+    s_first_refresh_done = true;
+    /* Variant-aware path persists last_var so the next render's
+       variant-change detection compares against the last dashboard
+       variant. Safe path skips last_var because a safe refresh does
+       not represent the dashboard's variant. */
+    if (!wrote_safe_mode) {
+        disp_meta_set_last_var((uint8_t)effective_panel_variant());
+    }
+    /* Both paths count toward the 24h ghost-accumulation bound — a clean
+       GC pass clears the panel regardless of which OTP waveform ran. */
+    time_t now = 0;
+    if (wall_time_trusted(&now)) {
+        disp_meta_set_last_full((uint32_t)now);
+    }
+}
+
+/* Variant-aware full refresh. Used by post-provisioning surfaces
+   (dashboard, OTA, non-setup-timeout offline, status), all of which run
+   with s_variant_known == true. */
+static void display_full_refresh(bool need_red, const char *reason)
+{
+    warn_if_full_refresh_is_early(reason);
+    eink_refresh_mode_t mode =
+        (effective_panel_variant() == EINK_PANEL_WEACT_29_BW)
+            ? EINK_REFRESH_BW_FULL
+            : EINK_REFRESH_FULL_COLOR;
+    eink_set_framebuffer(bw_buf, red_buf);
+    eink_refresh(&s_eink, mode);
+    commit_full_refresh_shared(need_red, /*wrote_safe_mode=*/false);
+}
+
+/* Panel-agnostic full refresh — provisioning / recovery surfaces only
+   (QR, setup-failed, setup-timeout offline, plus boot/connect/wait
+   when invoked with DISPLAY_CTX_PROVISIONING_RECOVERY). Always uses
+   EINK_REFRESH_SAFE_BW: no LUT load, no 0x26 transfer, no red drawing,
+   dispatched by mode and not by h->variant. Readability on a BWR panel
+   is gated on Phase 0 Gate 0.B's recorded result in BOARD_NOTES.md. */
+static void display_full_refresh_safe(const char *reason)
+{
+    warn_if_full_refresh_is_early(reason);
+    /* Pass NULL for red_buf so the driver's internal red plane keeps
+       whatever junk it held — SAFE_BW skips 0x26 anyway, and the NULL
+       makes the intent explicit. */
+    eink_set_framebuffer(bw_buf, NULL);
+    eink_refresh(&s_eink, EINK_REFRESH_SAFE_BW);
+    commit_full_refresh_shared(/*need_red=*/false, /*wrote_safe_mode=*/true);
 }
 
 #if DISPLAY_ENABLE_BW_EXPERIMENT
@@ -1279,7 +1492,6 @@ void display_render(const dashboard_data_t *data)
 {
     ensure_init();
     bool need_red = draw_dashboard_frame(data, NULL);
-    bool displayed_frame_matches_buffer = true;
     eink_rect_t diff_rect = {0};
     bool has_bw_diff = s_last_bw_valid &&
                        find_bw_diff_rect(s_last_bw_buf, bw_buf, &diff_rect);
@@ -1287,19 +1499,44 @@ void display_render(const dashboard_data_t *data)
     bool previous_frame_is_content =
         display_meta_load(&meta) && meta.frame == DISPLAY_FRAME_CONTENT;
 
+    /* Variant-change check: a different variant has just taken effect
+       (saved BWR → BW or vice versa via the portal restart path), so
+       force a full refresh. The driver's variant field is already up to
+       date through display_set_panel_variant() / ensure_init(). */
+    uint8_t last_var = 0xFF;
+    bool variant_changed = disp_meta_get_last_var(&last_var) &&
+                           last_var != (uint8_t)effective_panel_variant();
+
+    /* 24 h cycle-count fallback. Tick once per dashboard wake regardless
+       of outcome (partial, full, or unchanged-skip) so an idle dashboard
+       still gets a periodic full refresh to clear ghost accumulation. */
+    uint16_t cap = render_count_cap(s_refresh_min);
+    uint16_t staged_count = (uint16_t)(s_renders_since_full + 1u);
+    bool cap_reached = staged_count >= cap;
+
+    bool force_full = !s_first_refresh_done || s_force_full_refresh ||
+                      variant_changed || cap_reached;
+
     ESP_LOGI(TAG,
-             "Dashboard render decision: need_red=%d last_red=%d first=%d bw_valid=%d content_valid=%d frame_content=%d bw_diff=%d diff=(%u,%u %ux%u) cycle=%u",
+             "Dashboard render decision: variant=%s need_red=%d last_red=%d "
+             "first=%d bw_valid=%d content_valid=%d frame_content=%d "
+             "bw_diff=%d diff=(%u,%u %ux%u) renders=%u/%u force_full=%d "
+             "variant_changed=%d",
+             effective_panel_variant() == EINK_PANEL_WEACT_29_BW ? "BW" : "BWR",
              need_red, s_last_red_state, s_first_refresh_done, s_last_bw_valid,
              s_last_content_valid, previous_frame_is_content, has_bw_diff,
              diff_rect.x, diff_rect.y, diff_rect.w, diff_rect.h,
-             s_bw_fast_cycle_count);
+             (unsigned)staged_count, (unsigned)cap, force_full,
+             variant_changed);
 
-    if (s_last_bw_valid && !need_red && !s_last_red_state &&
+    bool did_partial = false;
+
+    if (!force_full && s_last_bw_valid && !need_red && !s_last_red_state &&
         !has_bw_diff) {
         ESP_LOGI(TAG, "Dashboard unchanged; skipping refresh");
         eink_sleep(&s_eink);
-    } else {
-        bool did_partial = false;
+        s_renders_since_full = staged_count;
+    } else if (!force_full) {
 #if DISPLAY_ENABLE_BW_EXPERIMENT
         bool volatile_only = dashboard_data_volatile_only_changed(data);
         if (!need_red && !s_last_red_state && s_last_content_valid &&
@@ -1313,28 +1550,32 @@ void display_render(const dashboard_data_t *data)
                 ESP_LOGI(TAG, "Dashboard BW partial refresh (%s, cycle=%u)",
                          volatile_only ? "volatile-only" : "content",
                          s_bw_fast_cycle_count);
+                remember_current_bw_frame();
+                s_renders_since_full = staged_count;
             } else {
                 ESP_LOGW(TAG, "Dashboard BW partial failed; falling back");
             }
         }
 #endif
-
         if (!did_partial) {
-            eink_refresh_mode_t mode = EINK_REFRESH_FULL_COLOR;
             s_bw_fast_cycle_count = 0;
-
-            display_full_refresh(mode, "dashboard");
+            display_full_refresh(need_red, "dashboard");
             eink_sleep(&s_eink);
-            ESP_LOGI(TAG, "Dashboard refresh (mode=%s)",
-                     mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
+            ESP_LOGI(TAG, "Dashboard refresh (mode=full, variant=%s)",
+                     effective_panel_variant() == EINK_PANEL_WEACT_29_BW
+                         ? "BW_FULL"
+                         : "FULL_COLOR");
         }
+    } else {
+        s_bw_fast_cycle_count = 0;
+        const char *reason = variant_changed ? "variant-change"
+                                             : (cap_reached ? "24h-cap"
+                                                            : "dashboard");
+        display_full_refresh(need_red, reason);
+        eink_sleep(&s_eink);
+        ESP_LOGI(TAG, "Dashboard refresh forced full (reason=%s)", reason);
     }
 
-    if (displayed_frame_matches_buffer) {
-        remember_current_bw_frame();
-    }
-    s_last_red_state     = need_red;
-    s_first_refresh_done = true;
     if (!data->offline && !data->stale) {
         s_last_content_valid = true;
         memcpy(&s_last_data, data, sizeof(s_last_data));
@@ -1362,6 +1603,16 @@ void display_set_connection_slots(const dash_config_v2_t *cfg,
 
 static bool display_show_compact_status(const char *status)
 {
+    /* Hard precondition: compact status layers on top of an already-
+       displayed dashboard frame, so the saved variant must match the
+       physically attached panel. The provisioning / recovery path
+       (s_variant_known == false) falls back to the full-screen status
+       through display_show_refreshing() / display_show_connecting() with
+       the safe helper. */
+    if (!s_variant_known) {
+        ESP_LOGW(TAG, "Compact status skipped: variant not yet known");
+        return false;
+    }
     if (!s_last_content_valid || !s_first_refresh_done ||
         !s_last_bw_valid || s_last_red_state) {
         return false;
@@ -1387,7 +1638,6 @@ static bool display_show_compact_status(const char *status)
         return true;
     }
 
-    eink_refresh_mode_t mode = EINK_REFRESH_FULL_COLOR;
 #if DISPLAY_ENABLE_BW_EXPERIMENT
     bool did_partial = false;
     if (s_bw_fast_cycle_count < MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
@@ -1395,20 +1645,18 @@ static bool display_show_compact_status(const char *status)
                                               bw_buf, diff_rect);
         if (did_partial) {
             s_bw_fast_cycle_count++;
+            remember_current_bw_frame();
         }
     }
     if (!did_partial) {
 #endif
-        display_full_refresh(mode, "status");
+        display_full_refresh(/*need_red=*/false, "status");
         s_bw_fast_cycle_count = 0;
 #if DISPLAY_ENABLE_BW_EXPERIMENT
     }
 #endif
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    ESP_LOGI(TAG, "Status refresh (mode=%s)",
-             mode == EINK_REFRESH_FULL_COLOR ? "FULL_COLOR" : "BW_EXPERIMENT");
+    ESP_LOGI(TAG, "Status refresh done");
     return true;
 }
 
@@ -1481,7 +1729,8 @@ static void draw_boot_networks(const dash_config_v2_t *cfg)
     }
 }
 
-static void display_show_boot_poster(const dash_config_v2_t *cfg)
+static void display_show_boot_poster(display_context_t ctx,
+                                     const dash_config_v2_t *cfg)
 {
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
@@ -1511,16 +1760,18 @@ static void display_show_boot_poster(const dash_config_v2_t *cfg)
 
     draw_boot_footer();
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "boot");
+    if (ctx == DISPLAY_CTX_PROVISIONING_RECOVERY) {
+        display_full_refresh_safe("boot");
+    } else {
+        display_full_refresh(/*need_red=*/false, "boot");
+    }
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = false;
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
 }
 
-static void display_show_wait_page(const char *header_status,
+static void display_show_wait_page(display_context_t ctx,
+                                   const char *header_status,
                                    const char *title,
                                    const char *sub)
 {
@@ -1544,29 +1795,38 @@ static void display_show_wait_page(const char *header_status,
     static const char *HINT = "Please wait";
     draw_str((296 - str_w(HINT)) / 2, 82, HINT, 0);
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "wait");
+    if (ctx == DISPLAY_CTX_PROVISIONING_RECOVERY) {
+        display_full_refresh_safe("wait");
+    } else {
+        display_full_refresh(/*need_red=*/false, "wait");
+    }
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = false;
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
 }
 
-void display_show_connecting(bool compact, const dash_config_v2_t *cfg)
+void display_show_connecting(display_context_t ctx, bool compact,
+                             const dash_config_v2_t *cfg)
 {
-    if (compact && display_show_compact_status("connecting")) {
+    /* Compact status overlays a saved dashboard frame, so it requires
+       s_variant_known == true. The display_show_compact_status guard
+       already enforces that and bails out otherwise; fall through to
+       the variant-aware full poster below. */
+    if (compact && ctx == DISPLAY_CTX_NORMAL_BOOT &&
+        display_show_compact_status("connecting")) {
         return;
     }
-    display_show_boot_poster(cfg);
+    display_show_boot_poster(ctx, cfg);
 }
 
-void display_show_refreshing(bool compact)
+void display_show_refreshing(display_context_t ctx, bool compact)
 {
-    if (compact && display_show_compact_status("refreshing")) {
+    if (compact && ctx == DISPLAY_CTX_NORMAL_BOOT &&
+        display_show_compact_status("refreshing")) {
         return;
     }
-    display_show_wait_page("REFRESH", "Refreshing", "Fetching dashboard data");
+    display_show_wait_page(ctx, "REFRESH", "Refreshing",
+                           "Fetching dashboard data");
 }
 
 /* QR-render callback. Paints the QR matrix at the painted-area origin given
@@ -1688,11 +1948,8 @@ void display_show_qr(const char *ssid, const char *pop)
         }
     }
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "provisioning");
+    display_full_refresh_safe("provisioning");
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = false;   /* S1 prompt paints no red */
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
 }
@@ -1709,24 +1966,27 @@ void display_show_setup_failed(void)
     draw_s1_chrome();
     draw_s1_info_column(NULL, NULL, NULL, false);
 
-    /* BigCross 19×19 centred horizontally in the 89×89 QR slot. The slot
-     * starts at x=12 and is 89 wide; (89-19)/2 = 35 → cross origin x = 47. */
-    icon_big_cross_red(47, 32);
-    /* SETUP / FAILED two-line red, centred under the cross. */
+    /* BigCross 19×19 centred horizontally in the 89×89 QR slot.
+       Recovery surface: always rendered through SAFE_BW. Drawn in
+       black-only so the BWR "no 0x26 transfer on SAFE_BW" gate does
+       not strip the cross / SETUP-FAILED text. (Pre-Phase-1 BWR
+       behavior rendered the cross in red; the variant-aware OTA /
+       offline / dashboard alerts elsewhere still do that on BWR via
+       display_full_refresh.) */
+    for (int i = 0; i < 19; i++) {
+        lpix(47 + i,        32 + i,        1, 0);
+        if (i != 9) lpix(47 + i, 32 + 18 - i, 1, 0);
+    }
     static const char *S1 = "SETUP";
     static const char *S2 = "FAILED";
     int qr_centre_x = 12 + 89 / 2;
-    draw_str(qr_centre_x - str_w(S1) / 2, 60, S1, 1);
-    draw_str(qr_centre_x - str_w(S2) / 2, 70, S2, 1);
-    /* Black "check serial" hint below. */
+    draw_str(qr_centre_x - str_w(S1) / 2, 60, S1, 0);
+    draw_str(qr_centre_x - str_w(S2) / 2, 70, S2, 0);
     static const char *S3 = "check serial";
     draw_str(qr_centre_x - str_w(S3) / 2, 84, S3, 0);
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "setup failed");
+    display_full_refresh_safe("setup failed");
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = true;    /* big-cross + SETUP/FAILED are red */
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
 }
@@ -1747,21 +2007,32 @@ void display_show_offline(display_offline_reason_t reason,
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
     memset(red_buf, 0x00, sizeof(red_buf));
-    if (reason == DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT) {
-        icon_cross_sync(6, 4);
-        draw_str(19, 5, "OFFLINE", 1);
+
+    bool is_setup_timeout =
+        (reason == DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT);
+
+    if (is_setup_timeout) {
+        /* Provisioning recovery surface — readable on either physical
+           panel via SAFE_BW. Draw the alert in BW only (inlined cross
+           with use_red=0) so the BWR "no 0x26 transfer" gate does not
+           strip the icon. icon_cross_sync() hardcodes use_red=1 and is
+           used elsewhere by variant-aware paths where red is desired. */
+        for (int i = 0; i < 8; i++) lpix(6 + i, 4 + i, 1, 0);
+        static const int8_t d2[] = {0,7, 1,6, 2,5, 3,4, 5,3, 6,2, 7,1};
+        for (int i = 0; i < 7; i++)
+            lpix(6 + d2[i*2], 4 + d2[i*2+1], 1, 0);
+        draw_str(19, 5, "OFFLINE", 0);
         hline(2, 15, 292);
         draw_str(6, 30, offline_message_for_reason(reason), 0);
     } else {
         draw_unreachable_poster(reason, cfg, network_idx, wifi_diag, api_diag);
     }
-    /* The offline frame paints red; BW_FAST cannot write the red plane, so
-     * always use FULL_COLOR here. */
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "offline");
+    if (is_setup_timeout) {
+        display_full_refresh_safe("offline-setup-timeout");
+    } else {
+        display_full_refresh(/*need_red=*/true, "offline");
+    }
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = true;
     s_bw_fast_cycle_count = 0;
     display_mark_frame(frame);
 }
@@ -1870,11 +2141,8 @@ void display_show_ota_update(const char *from_version,
     draw_str(13, 117, "DO NOT UNPLUG", 1);
     draw_ota_footer_eta();
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "OTA update");
+    display_full_refresh(/*need_red=*/true, "OTA update");
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = true;
     s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_OTA);
 }

@@ -57,6 +57,8 @@ typedef struct {
     net_form_t nets[MAX_WIFI_NETWORKS];
     int        iv;
     bool       iv_present;
+    uint8_t    pv;         /* Display panel variant (eink_panel_variant_t). */
+    bool       pv_present; /* True iff a valid `pv` field was in the form. */
 } portal_form_t;
 
 /* Connection is driven explicitly by wifi_roam_connect (esp_wifi_connect on
@@ -201,6 +203,16 @@ static void apply_field(portal_form_t *form,
         form_decode(buf, sizeof(buf), val, vlen);
         form->iv = atoi(buf);
         form->iv_present = true;
+        return;
+    }
+    if (klen == 2 && key[0] == 'p' && key[1] == 'v') {
+        char buf[8] = {0};
+        form_decode(buf, sizeof(buf), val, vlen);
+        int pv = atoi(buf);
+        if (pv == EINK_PANEL_WEACT_29_BWR || pv == EINK_PANEL_WEACT_29_BW) {
+            form->pv = (uint8_t)pv;
+            form->pv_present = true;
+        }
         return;
     }
     if (klen < 4 || key[0] != 'w') return;
@@ -702,9 +714,34 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
         "min=\"3\" max=\"60\" step=\"1\" value=\"%d\"><span class=\"unit\">min</span></div>"
         "<p class=\"full\" style=\"margin:0;color:#6b7280;font-size:12px\">"
         "3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.</p>"
+        "</div>",
+        iv, iv);
+    CHUNK(req, page_buf);
+
+    /* Panel variant selector — two radio buttons. Checked state reflects
+       the saved cfg->panel_variant so a save with the form unchanged keeps
+       the previous choice. */
+    int pv_bwr = (cfg->panel_variant == EINK_PANEL_WEACT_29_BWR);
+    int pv_bw  = (cfg->panel_variant == EINK_PANEL_WEACT_29_BW);
+    if (!pv_bwr && !pv_bw) pv_bwr = 1;
+    snprintf(page_buf, sizeof(page_buf),
+        "<div style=\"margin-top:14px\">"
+        "<label class=\"lab full\" style=\"font-size:14px;color:#1c1f24\">Panel</label>"
+        "<p style=\"margin:2px 0 8px;color:#6b7280;font-size:12px\">"
+        "Pick the e-paper module you have wired up. Restart applies the "
+        "selection.</p>"
+        "<label style=\"display:block;margin:4px 0;font-size:13px;color:#1c1f24\">"
+        "<input type=\"radio\" name=\"pv\" value=\"%d\"%s> "
+        "WeAct 2.9&quot; Black/White/Red (default)"
+        "</label>"
+        "<label style=\"display:block;margin:4px 0;font-size:13px;color:#1c1f24\">"
+        "<input type=\"radio\" name=\"pv\" value=\"%d\"%s> "
+        "WeAct 2.9&quot; Black/White"
+        "</label>"
         "</div>"
         "</section>",
-        iv, iv);
+        (int)EINK_PANEL_WEACT_29_BWR, pv_bwr ? " checked" : "",
+        (int)EINK_PANEL_WEACT_29_BW,  pv_bw  ? " checked" : "");
     CHUNK(req, page_buf);
 
     CHUNK(req,
@@ -806,6 +843,17 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
         cfg->refresh_min = (uint8_t)form->iv;
     } else {
         cfg->refresh_min = prev->refresh_min ? prev->refresh_min : 5;
+    }
+
+    /* If the form posted a valid `pv`, take it; otherwise preserve the
+       prev value so a BW device saving an unrelated WiFi/API change with
+       a form that omits `pv` (old browser cache, crafted POST) does not
+       silently revert to BWR. storage_cfg_v2_normalize() further clamps
+       anything unexpected to BWR. */
+    if (form->pv_present) {
+        cfg->panel_variant = form->pv;
+    } else {
+        cfg->panel_variant = prev->panel_variant;
     }
 
     int out_n = 0;

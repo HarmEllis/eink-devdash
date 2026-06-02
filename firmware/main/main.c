@@ -71,6 +71,12 @@ void app_main(void)
         .offline = false,
     };
     ESP_LOGI(TAG, "DEMO mode: rendering static sample dashboard");
+    /* Demo builds skip NVS, so storage_load_v2() never runs. Wire the
+       display setters by hand so red still renders on a BWR demo unit
+       (default) or collapses to BW on a BW demo unit. */
+    display_set_refresh_min(CONFIG_DEVDASH_REFRESH_MIN);
+    display_set_panel_variant(
+        (eink_panel_variant_t)CONFIG_DEVDASH_DEMO_PANEL_VARIANT);
     display_render(&demo);
     for (;;) vTaskDelay(portMAX_DELAY);
 #endif
@@ -90,7 +96,20 @@ void app_main(void)
      * (CONFIG_ESP_MAIN_TASK_STACK_SIZE is only 3584 bytes). */
     static dash_config_v2_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    storage_load_v2(&cfg);
+    bool cfg_loaded = storage_load_v2(&cfg);
+    /* Always seed the refresh interval — even on a defaulted cfg — so the
+       display layer's 24h forced-full cap uses the right cadence. */
+    display_set_refresh_min(cfg.refresh_min);
+    /* Only mark the panel variant known when a real persisted blob loaded.
+       On a fresh / erased NVS the cfg.panel_variant is the BWR-by-default
+       value from storage_cfg_v2_defaults() and would lead recovery
+       surfaces down the BWR-aware path on whichever panel is plugged in.
+       Leaving s_variant_known == false keeps first-boot QR / connecting
+       / setup-failed on the SAFE_BW path until the user submits the
+       portal form and the post-restart boot reloads cfg as v3. */
+    if (cfg_loaded) {
+        display_set_panel_variant((eink_panel_variant_t)cfg.panel_variant);
+    }
 
     esp_sleep_wakeup_cause_t wake = esp_sleep_get_wakeup_cause();
     esp_reset_reason_t reset = esp_reset_reason();
@@ -172,7 +191,7 @@ void app_main(void)
                          wake == ESP_SLEEP_WAKEUP_EXT0);
     bool prefer_last_success_api = wake_refresh;
     if (!wake_refresh) {
-        display_show_connecting(false, &cfg);
+        display_show_connecting(DISPLAY_CTX_NORMAL_BOOT, false, &cfg);
     }
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
