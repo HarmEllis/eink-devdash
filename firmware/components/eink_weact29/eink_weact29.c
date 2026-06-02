@@ -1,4 +1,5 @@
 #include "eink_weact29.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,6 +18,7 @@ static const char *TAG = "eink";
 #define CMD_WRITE_RED_RAM       0x26
 #define CMD_DATA_ENTRY_MODE     0x11
 #define CMD_BORDER_WAVEFORM     0x3C
+#define CMD_WRITE_LUT           0x32
 #define CMD_SET_RAM_X_ADDR      0x44
 #define CMD_SET_RAM_Y_ADDR      0x45
 #define CMD_SET_RAM_X_COUNT     0x4E
@@ -27,8 +29,41 @@ static const char *TAG = "eink";
 static uint8_t bw_framebuf[EINK_BUF_SIZE];
 static uint8_t red_framebuf[EINK_BUF_SIZE];
 static uint8_t partial_framebuf[EINK_BUF_SIZE];
+static uint8_t zero_framebuf[EINK_BUF_SIZE];
 
 #define EINK_ROW_BYTES (EINK_WIDTH / 8)
+
+/* Waveshare 2.9" BW V2 / GDEM029T94 partial waveform table from GxEPD2.
+   This panel variant has no usable partial update waveform in OTP, so the
+   differential waveform must be loaded before a partial update. */
+static const uint8_t bw_v2_partial_lut[] = {
+    0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x80, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x40, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x22,
+    0x22, 0x22, 0x22, 0x22, 0x00, 0x00, 0x00,
+};
+
+static uint8_t ram_x_offset(const eink_handle_t *h)
+{
+    /* The WeAct 2.9" mono BW glass maps its 128 visible source columns to
+       SSD1680 RAM X addresses 1..16. The BWR module maps them to 0..15. */
+    return h->variant == EINK_PANEL_WEACT_29_BW ? 1 : 0;
+}
 
 static void wait_busy(const eink_handle_t *h)
 {
@@ -57,14 +92,21 @@ static void send_cmd(const eink_handle_t *h, uint8_t cmd)
 {
     gpio_set_level(h->dc_pin, 0);
     spi_transaction_t t = { .length = 8, .tx_buffer = &cmd };
-    spi_device_polling_transmit(h->spi, &t);
+    esp_err_t err = spi_device_polling_transmit(h->spi, &t);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SPI command 0x%02X failed: %s", cmd, esp_err_to_name(err));
+    }
 }
 
 static void send_data(const eink_handle_t *h, const uint8_t *data, size_t len)
 {
     gpio_set_level(h->dc_pin, 1);
     spi_transaction_t t = { .length = len * 8, .tx_buffer = data };
-    spi_device_polling_transmit(h->spi, &t);
+    esp_err_t err = spi_device_polling_transmit(h->spi, &t);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SPI data transfer len=%u failed: %s",
+                 (unsigned)len, esp_err_to_name(err));
+    }
 }
 
 static void send_byte(const eink_handle_t *h, uint8_t byte)
@@ -103,22 +145,41 @@ static void set_ram_counter(const eink_handle_t *h,
 static void write_full_plane(const eink_handle_t *h, uint8_t cmd,
                              const uint8_t *buf)
 {
-    set_ram_window(h, 0, EINK_ROW_BYTES - 1, 0, EINK_HEIGHT - 1);
-    set_ram_counter(h, 0, 0);
+    uint8_t x_offset = ram_x_offset(h);
+    set_ram_window(h, x_offset, x_offset + EINK_ROW_BYTES - 1,
+                   0, EINK_HEIGHT - 1);
+    set_ram_counter(h, x_offset, 0);
     send_cmd(h, cmd);
     send_data(h, buf, EINK_BUF_SIZE);
+}
+
+static void write_bw_panel_base_planes(const eink_handle_t *h,
+                                       const uint8_t *buf)
+{
+    /* The mono 2.9" SSD1680 path treats 0x26 as old/base RAM, not as red RAM.
+       Full GC/base updates need both RAM areas initialized; otherwise the
+       untouched old-plane tail can bleed into the visible bottom rows. */
+    write_full_plane(h, CMD_WRITE_BW_RAM, buf);
+    write_full_plane(h, CMD_WRITE_RED_RAM, buf);
+}
+
+static void load_bw_v2_partial_lut(const eink_handle_t *h)
+{
+    send_cmd(h, CMD_WRITE_LUT);
+    send_data(h, bw_v2_partial_lut, sizeof(bw_v2_partial_lut));
 }
 
 static void write_bw_window(const eink_handle_t *h, uint8_t cmd,
                             const uint8_t *buf, eink_rect_t rect)
 {
-    uint16_t x_byte = rect.x / 8;
+    uint16_t buf_x_byte = rect.x / 8;
+    uint16_t ctrl_x_byte = buf_x_byte + ram_x_offset(h);
     uint16_t x_bytes = rect.w / 8;
     uint16_t y_end = rect.y + rect.h - 1;
     size_t len = (size_t)x_bytes * rect.h;
 
-    set_ram_window(h, x_byte, x_byte + x_bytes - 1, rect.y, y_end);
-    set_ram_counter(h, x_byte, rect.y);
+    set_ram_window(h, ctrl_x_byte, ctrl_x_byte + x_bytes - 1, rect.y, y_end);
+    set_ram_counter(h, ctrl_x_byte, rect.y);
     send_cmd(h, cmd);
 
     if (x_bytes == EINK_ROW_BYTES) {
@@ -128,7 +189,7 @@ static void write_bw_window(const eink_handle_t *h, uint8_t cmd,
 
     for (uint16_t row = 0; row < rect.h; row++) {
         memcpy(partial_framebuf + row * x_bytes,
-               buf + (rect.y + row) * EINK_ROW_BYTES + x_byte,
+               buf + (rect.y + row) * EINK_ROW_BYTES + buf_x_byte,
                x_bytes);
     }
     send_data(h, partial_framebuf, len);
@@ -167,7 +228,9 @@ static void reset_controller_bwr_full(eink_handle_t *h)
     send_cmd(h, CMD_DATA_ENTRY_MODE);
     send_byte(h, 0x03);
 
-    set_ram_window(h, 0, EINK_ROW_BYTES - 1, 0, EINK_HEIGHT - 1);
+    uint8_t x_offset = ram_x_offset(h);
+    set_ram_window(h, x_offset, x_offset + EINK_ROW_BYTES - 1,
+                   0, EINK_HEIGHT - 1);
 
     /* Border waveform: VSS (avoids red border artefacts) */
     send_cmd(h, CMD_BORDER_WAVEFORM);
@@ -189,7 +252,7 @@ static void reset_controller_bwr_full(eink_handle_t *h)
     h->asleep = false;
 }
 
-/* ----- BW full-color reset (mode-dispatched OTP GC) ---------------------- */
+/* ----- BW full reset (mode-dispatched OTP GC) ---------------------------- */
 static void reset_controller_bw_full(eink_handle_t *h)
 {
     hw_reset_and_sw_reset(h);
@@ -201,14 +264,16 @@ static void reset_controller_bw_full(eink_handle_t *h)
     send_cmd(h, CMD_DATA_ENTRY_MODE);
     send_byte(h, 0x03);
 
-    set_ram_window(h, 0, EINK_ROW_BYTES - 1, 0, EINK_HEIGHT - 1);
+    uint8_t x_offset = ram_x_offset(h);
+    set_ram_window(h, x_offset, x_offset + EINK_ROW_BYTES - 1,
+                   0, EINK_HEIGHT - 1);
 
     /* Border waveform: VSS, follow LUT for refresh */
     send_cmd(h, CMD_BORDER_WAVEFORM);
     send_byte(h, 0x05);
 
-    /* Display Update Control 1: both bytes zero — no red-plane bypass, no
-       0x26 transfer follows on this path. */
+    /* Display Update Control 1: both bytes zero. On the mono panel, 0x26 is
+       the old/base RAM and is seeded by the refresh path after reset. */
     send_cmd(h, CMD_DISP_UPDATE_CTRL1);
     send_byte(h, 0x00);
     send_byte(h, 0x00);
@@ -220,24 +285,10 @@ static void reset_controller_bw_full(eink_handle_t *h)
     h->asleep = false;
 }
 
-/* ----- Safe BW reset (mode-dispatched, byte-identical to BW full) --------
+/* ----- Safe BW reset (mode-dispatched, matches BW full setup) ------------
    This path is selected by refresh mode (EINK_REFRESH_SAFE_BW), NOT by
-   h->variant. The byte sequence — including the explicit 0x21=0x00,0x00 —
-   matches reset_controller_bw_full, so the controller ends up in the same
-   state regardless of whether the saved/persisted variant is BWR or BW.
-
-   Safety profile: "safe by verification", NOT "safe by construction".
-   Picking 0x21=0x00,0x00 instead of the BWR 0x00,0x80 byte 2 means the
-   stale 0x26 red RAM polarity is no longer guaranteed normal on a BWR
-   panel that previously displayed red content. The plan's contract is
-   that this byte sequence is verified to render a scannable QR on BWR
-   with cleared, red-preconditioned (after deep-sleep wake, after
-   esp_restart, after power-cycle) and mismatched-variant starts — that
-   verification is Phase 0 Gate 0.B on the throwaway harness branch and
-   is recorded in BOARD_NOTES.md before this Phase 1 work merges to main.
-   If Gate 0.B fails on BWR, the plan switches to a SKU-stamped Kconfig
-   default plus BOOT-button and serial overrides instead of routing
-   first-boot/recovery surfaces through this path. */
+   h->variant for controller reset. SAFE_BW still initializes 0x26 to a known
+   state: mono old/base RAM for BW, no-red RAM for BWR. */
 static void reset_controller_safe_bw(eink_handle_t *h)
 {
     hw_reset_and_sw_reset(h);
@@ -249,7 +300,9 @@ static void reset_controller_safe_bw(eink_handle_t *h)
     send_cmd(h, CMD_DATA_ENTRY_MODE);
     send_byte(h, 0x03);
 
-    set_ram_window(h, 0, EINK_ROW_BYTES - 1, 0, EINK_HEIGHT - 1);
+    uint8_t x_offset = ram_x_offset(h);
+    set_ram_window(h, x_offset, x_offset + EINK_ROW_BYTES - 1,
+                   0, EINK_HEIGHT - 1);
 
     send_cmd(h, CMD_BORDER_WAVEFORM);
     send_byte(h, 0x05);
@@ -277,7 +330,9 @@ static void reset_controller_bw_partial(eink_handle_t *h)
     send_cmd(h, CMD_DATA_ENTRY_MODE);
     send_byte(h, 0x03);
 
-    set_ram_window(h, 0, EINK_ROW_BYTES - 1, 0, EINK_HEIGHT - 1);
+    uint8_t x_offset = ram_x_offset(h);
+    set_ram_window(h, x_offset, x_offset + EINK_ROW_BYTES - 1,
+                   0, EINK_HEIGHT - 1);
 
     /* Border waveform: transition LUT for partial. */
     send_cmd(h, CMD_BORDER_WAVEFORM);
@@ -285,11 +340,15 @@ static void reset_controller_bw_partial(eink_handle_t *h)
 
     send_cmd(h, CMD_DISP_UPDATE_CTRL1);
     send_byte(h, 0x00);
-    send_byte(h, 0x00);
-    ESP_LOGD(TAG, "BW_PARTIAL reset: 0x21 = 0x00, 0x00, border 0x80");
+    send_byte(h, 0x80);
+    ESP_LOGD(TAG, "BW_PARTIAL reset: 0x21 = 0x00, 0x80, border 0x80");
 
     send_cmd(h, CMD_TEMP_SENSOR_CTRL);
     send_byte(h, 0x80);
+
+    load_bw_v2_partial_lut(h);
+    ESP_LOGI(TAG, "BW_PARTIAL loaded LUT (%u bytes), trigger=0xCC",
+             (unsigned)sizeof(bw_v2_partial_lut));
 
     h->asleep = false;
 }
@@ -332,8 +391,10 @@ static void reset_controller_fast_bw(eink_handle_t *h)
     send_cmd(h, CMD_DATA_ENTRY_MODE);
     send_byte(h, 0x03);
 
-    set_ram_window(h, 0, EINK_ROW_BYTES - 1, 0, EINK_HEIGHT - 1);
-    set_ram_counter(h, 0, 0);
+    uint8_t x_offset = ram_x_offset(h);
+    set_ram_window(h, x_offset, x_offset + EINK_ROW_BYTES - 1,
+                   0, EINK_HEIGHT - 1);
+    set_ram_counter(h, x_offset, 0);
     wait_busy(h);
 
     h->asleep = false;
@@ -410,8 +471,9 @@ esp_err_t eink_init(eink_handle_t *h, eink_panel_variant_t variant)
     h->asleep = true;
 
     ESP_LOGI(TAG,
-             "SSD1680 init (variant=%s, MOSI=%d SCK=%d CS=%d DC=%d RST=%d BUSY=%d)",
+             "SSD1680 init (variant=%s, RAMX=%u..%u, MOSI=%d SCK=%d CS=%d DC=%d RST=%d BUSY=%d)",
              variant == EINK_PANEL_WEACT_29_BW ? "BW" : "BWR",
+             ram_x_offset(h), ram_x_offset(h) + EINK_ROW_BYTES - 1,
              EINK_PIN_MOSI, EINK_PIN_SCK, EINK_PIN_CS,
              EINK_PIN_DC, EINK_PIN_RST, EINK_PIN_BUSY);
 
@@ -433,8 +495,12 @@ void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
         ESP_LOGI(TAG, "SSD1680 init for SAFE_BW (mode-dispatched, variant=%s)",
                  h->variant == EINK_PANEL_WEACT_29_BW ? "BW" : "BWR");
 
-        write_full_plane(h, CMD_WRITE_BW_RAM, bw_framebuf);
-        /* Intentionally NO 0x26 transfer on SAFE_BW. */
+        if (h->variant == EINK_PANEL_WEACT_29_BW) {
+            write_bw_panel_base_planes(h, bw_framebuf);
+        } else {
+            write_full_plane(h, CMD_WRITE_BW_RAM, bw_framebuf);
+            write_full_plane(h, CMD_WRITE_RED_RAM, zero_framebuf);
+        }
 
         send_cmd(h, CMD_DISP_UPDATE_CTRL2);
         send_byte(h, 0xF7);
@@ -471,8 +537,7 @@ void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode)
         reset_controller_bw_full(h);
         ESP_LOGI(TAG, "SSD1680 init for BW_FULL");
 
-        write_full_plane(h, CMD_WRITE_BW_RAM, bw_framebuf);
-        /* No 0x26 transfer — BW panel OTP GC waveform reads only 0x24. */
+        write_bw_panel_base_planes(h, bw_framebuf);
 
         send_cmd(h, CMD_DISP_UPDATE_CTRL2);
         send_byte(h, 0xF7);
@@ -546,7 +611,7 @@ bool eink_refresh_bw_partial(eink_handle_t *h,
 
     ESP_LOGI(TAG, "Activating BW partial update");
     send_cmd(h, CMD_DISP_UPDATE_CTRL2);
-    send_byte(h, 0x1C);
+    send_byte(h, h->variant == EINK_PANEL_WEACT_29_BW ? 0xCC : 0x1C);
     send_cmd(h, CMD_MASTER_ACTIVATE);
     if (!wait_busy_timeout(h, pdMS_TO_TICKS(30000))) {
         ESP_LOGW(TAG, "BW partial timed out waiting for BUSY release");

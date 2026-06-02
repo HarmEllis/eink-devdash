@@ -32,23 +32,10 @@ typedef enum {
     EINK_REFRESH_FULL_COLOR, /* BWR full color, Mode 1 LUT */
     EINK_REFRESH_BW_FULL,    /* BW panel, stock OTP GC waveform.
                                 Requires h->variant == EINK_PANEL_WEACT_29_BW. */
-    EINK_REFRESH_SAFE_BW,    /* BW-only refresh whose DISPATCH is
-                                panel-agnostic: no custom LUT load, no
-                                0x26 transfer, mode-selected reset path
-                                regardless of h->variant. Intended for
-                                provisioning / recovery surfaces that
-                                must render correctly even when the saved
-                                variant disagrees with the physically
-                                attached panel.
-                                Readability on a BWR panel with stale
-                                0x26 RAM is "safe by verification", not
-                                "safe by construction" — see Phase 0
-                                Gate 0.B in BOARD_NOTES.md. Callers must
-                                treat the recorded gate result as a hard
-                                precondition before relying on this mode
-                                for first-boot/recovery surfaces; the
-                                Kconfig+BOOT+serial fallback in the plan
-                                covers the Gate-0.B-fails-on-BWR case. */
+    EINK_REFRESH_SAFE_BW,    /* BW-only refresh used by provisioning /
+                                recovery surfaces. No custom LUT load.
+                                BWR writes a no-red 0x26 plane; known-BW
+                                writes mono old/base RAM (0x26) as well. */
 } eink_refresh_mode_t;
 
 typedef struct {
@@ -79,11 +66,11 @@ void eink_set_framebuffer(const uint8_t *bw_buf, const uint8_t *red_buf);
 /* Trigger a display update.
 
    Dispatch rules:
-   - EINK_REFRESH_SAFE_BW    — always reset_controller_safe_bw(h), 0x24 only,
-                                no 0x26 transfer, ignores h->variant.
+   - EINK_REFRESH_SAFE_BW    — always reset_controller_safe_bw(h); writes
+                                0x24 plus a panel-appropriate 0x26 plane.
    - EINK_REFRESH_BW_FAST    — BWR experiment path (current behavior).
    - EINK_REFRESH_BW_FULL    — requires h->variant == EINK_PANEL_WEACT_29_BW;
-                                reset_controller_bw_full(h), 0x24 only.
+                                reset_controller_bw_full(h), 0x24 + 0x26.
    - EINK_REFRESH_FULL_COLOR — requires h->variant == EINK_PANEL_WEACT_29_BWR;
                                 BWR full reset on wake, writes 0x24 + 0x26. */
 void eink_refresh(eink_handle_t *h, eink_refresh_mode_t mode);
