@@ -741,14 +741,41 @@ static uint8_t              s_refresh_min   = CONFIG_DEVDASH_REFRESH_MIN;
 static RTC_DATA_ATTR uint8_t  s_region_partial_count[REGION_COUNT_MAX];
 static RTC_DATA_ATTR bool     s_force_full_refresh          = false;
 static RTC_DATA_ATTR uint16_t s_renders_since_full          = 0;
-/* Bundle C scaffolding: the per-region partial machinery uses these to
-   detect a show_github layout flip between renders. Bundle B does not
-   plan partials yet, so they sit zero-initialised until Bundle C wires
-   them in. */
-__attribute__((unused))
+/* The per-region partial machinery uses these to detect a show_github
+   layout flip between renders: the active region set and indices change
+   with the layout, so a flip forces a full refresh before the new layout
+   is committed. */
 static RTC_DATA_ATTR bool     s_last_dashboard_show_github  = false;
-__attribute__((unused))
 static RTC_DATA_ATTR bool     s_last_dashboard_layout_valid = false;
+
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+
+/* Per-region partial table. Each region is declared in logical (296x128
+   landscape) coordinates — natural to read against the dashboard layout —
+   and converted to a physical, byte-aligned framebuffer rect by
+   physical_rect_from_logical() (which uses the exact lpix() transform).
+   Each region's ly start/end are multiples of 8 so the derived physical-X
+   byte ranges are disjoint between regions sharing a physical-Y band. */
+typedef struct {
+    int lx, ly, lw, lh;
+} region_logical_t;
+
+/* Layout A — show_github == true (6 regions). */
+static const region_logical_t s_regions_with_github[] = {
+    {   0,  0, 296, 16 },  /* header_clock: branding / sync / updated / status */
+    {   0, 16, 110, 24 },  /* gh_issues */
+    {   0, 40, 110, 24 },  /* gh_prs    */
+    {   0, 64, 110, 24 },  /* gh_deps   */
+    {   0, 88, 110, 24 },  /* gh_auth   */
+    { 110, 16, 186, 96 },  /* providers: CLAUDE / CODEX compact columns */
+};
+
+/* Layout B — show_github == false (3 regions). */
+static const region_logical_t s_regions_no_github[] = {
+    { 0,  0, 296, 16 },   /* header_clock */
+    { 4, 16, 288, 48 },   /* provider_top: CLAUDE wide row */
+    { 4, 64, 288, 64 },   /* provider_bot: CODEX wide row  */
+};
 
 static eink_panel_variant_t effective_panel_variant(void)
 {
@@ -769,7 +796,6 @@ static uint16_t render_count_cap(uint8_t refresh_min)
 #define HEADER_STATUS_Y 2
 #define HEADER_STATUS_W 74
 #define HEADER_STATUS_H 13
-#define DISPLAY_ENABLE_BW_EXPERIMENT 0
 
 typedef enum {
     DISPLAY_FRAME_UNKNOWN = 0,
@@ -1277,37 +1303,6 @@ static void display_full_refresh_safe(const char *reason)
     commit_full_refresh_shared(/*need_red=*/false, /*wrote_safe_mode=*/true);
 }
 
-#if DISPLAY_ENABLE_BW_EXPERIMENT
-static bool dashboard_data_stable_equal(const dashboard_data_t *a,
-                                        const dashboard_data_t *b)
-{
-    return a->schema_version == b->schema_version &&
-           a->github_present == b->github_present &&
-           a->github.issues == b->github.issues &&
-           a->github.prs == b->github.prs &&
-           a->github.dependabot == b->github.dependabot &&
-           a->github.auth_error == b->github.auth_error &&
-           a->claude.five_hour.used == b->claude.five_hour.used &&
-           a->claude.five_hour.limit == b->claude.five_hour.limit &&
-           a->claude.weekly.used == b->claude.weekly.used &&
-           a->claude.weekly.limit == b->claude.weekly.limit &&
-           a->claude.auth_error == b->claude.auth_error &&
-           a->codex.short_pct == b->codex.short_pct &&
-           a->codex.long_pct == b->codex.long_pct &&
-           a->codex.reached == b->codex.reached &&
-           a->stale == b->stale &&
-           a->offline == b->offline;
-}
-#endif
-
-#if DISPLAY_ENABLE_BW_EXPERIMENT
-static bool dashboard_data_volatile_only_changed(const dashboard_data_t *data)
-{
-    return s_last_data_valid &&
-           dashboard_data_stable_equal(&s_last_data, data);
-}
-#endif
-
 static bool find_bw_diff_rect(const uint8_t *previous,
                               const uint8_t *next,
                               eink_rect_t *rect)
@@ -1339,12 +1334,147 @@ static bool find_bw_diff_rect(const uint8_t *previous,
     rect->y = (uint16_t)min_y;
     rect->w = (uint16_t)((max_byte_x - min_byte_x + 1) * 8);
     rect->h = (uint16_t)(max_y - min_y + 1);
-    /* Hardware-validation guard: several SSD/Waveshare partial paths are
-     * reliable only when the horizontal window spans the full row. Keep Y
-     * clipping, but avoid narrow X windows until the controller sequence is
-     * proven on this panel. */
-    rect->x = 0;
-    rect->w = EINK_WIDTH;
+    /* Narrow-X partial windows are validated on the WeAct 2.9 BW module
+     * (BOARD_NOTES Gate 0.A — BW V2 partial LUT 0x32 + update trigger 0xCC).
+     * The byte-aligned bounding box above is returned as-is; the former
+     * full-row clamp is gone. This rect is still used only to answer
+     * "did anything change?" — the per-region planner below owns the
+     * actual partial windows. */
+    return true;
+}
+
+/* Convert a logical (296x128 landscape) rect to a physical, byte-aligned
+   framebuffer rect using the exact lpix() transform (px = ly,
+   py = (EINK_HEIGHT-1) - lx). Logical X (lx/lw) maps to physical Y; logical
+   Y (ly/lh) maps to physical X. Physical X is snapped down/up to 8-px byte
+   bounds so the driver's alignment check passes and whole bytes are diffed. */
+static eink_rect_t physical_rect_from_logical(int lx, int ly, int lw, int lh)
+{
+    int px_lo = ly;
+    int px_hi = ly + lh - 1;
+    int py_lo = EINK_HEIGHT - lx - lw;
+    int py_hi = (EINK_HEIGHT - 1) - lx;
+
+    px_lo &= ~7;            /* snap down to byte boundary */
+    px_hi |= 7;             /* snap up   to byte boundary */
+
+    if (px_lo < 0) px_lo = 0;
+    if (px_hi > EINK_WIDTH - 1)  px_hi = EINK_WIDTH - 1;
+    if (py_lo < 0) py_lo = 0;
+    if (py_hi > EINK_HEIGHT - 1) py_hi = EINK_HEIGHT - 1;
+
+    eink_rect_t r = {
+        .x = (uint16_t)px_lo,
+        .y = (uint16_t)py_lo,
+        .w = (uint16_t)(px_hi - px_lo + 1),
+        .h = (uint16_t)(py_hi - py_lo + 1),
+    };
+    return r;
+}
+
+/* True if any byte differs between a and b inside the physical rect r. */
+static bool region_bytes_differ(const uint8_t *a, const uint8_t *b,
+                                eink_rect_t r)
+{
+    const int row_bytes = EINK_WIDTH / 8;
+    int x_byte  = r.x / 8;
+    int x_bytes = r.w / 8;
+    for (int row = r.y; row < r.y + r.h; row++) {
+        int off = row * row_bytes + x_byte;
+        if (memcmp(a + off, b + off, (size_t)x_bytes) != 0) return true;
+    }
+    return false;
+}
+
+/* True if any changed byte lies OUTSIDE every region rect (remainder check):
+   the per-region plan is only valid when all changes are inside the declared
+   regions; dividers / wide-layout / future widgets outside them force a full. */
+static bool remainder_bytes_differ(const uint8_t *a, const uint8_t *b,
+                                   const eink_rect_t *rects, int n)
+{
+    const int row_bytes = EINK_WIDTH / 8;
+    for (int row = 0; row < EINK_HEIGHT; row++) {
+        for (int bx = 0; bx < row_bytes; bx++) {
+            int idx = row * row_bytes + bx;
+            if (a[idx] == b[idx]) continue;
+            bool covered = false;
+            for (int i = 0; i < n && !covered; i++) {
+                const eink_rect_t *r = &rects[i];
+                int bx0 = r->x / 8;
+                int bx1 = (r->x + r->w) / 8;   /* exclusive */
+                if (row >= r->y && row < r->y + r->h &&
+                    bx >= bx0 && bx < bx1) covered = true;
+            }
+            if (!covered) return true;
+        }
+    }
+    return false;
+}
+
+/* Plan and execute a per-region BW partial refresh. Returns true only when
+   every changed region updated successfully AND shared state was committed;
+   false means the caller must fall back to a full BW refresh (which also
+   re-syncs the panel with bw_buf). No shared state is mutated unless the whole
+   plan succeeds — the commit-after-success invariant: a late failure must never
+   leave the panel showing old regions while s_last_bw_buf already reflects the
+   new frame. new_render_count is committed into s_renders_since_full on success.
+   The full-refresh fallback path (display_full_refresh) is treated as
+   infallible: eink_refresh() is void, so there is no failure signal to act on. */
+static bool render_bw_regions(bool show_github, uint16_t new_render_count)
+{
+    const region_logical_t *regions = show_github ? s_regions_with_github
+                                                   : s_regions_no_github;
+    int n = show_github ? (int)ARRAY_SIZE(s_regions_with_github)
+                        : (int)ARRAY_SIZE(s_regions_no_github);
+
+    eink_rect_t rects[REGION_COUNT_MAX];
+    for (int i = 0; i < n; i++) {
+        rects[i] = physical_rect_from_logical(regions[i].lx, regions[i].ly,
+                                              regions[i].lw, regions[i].lh);
+    }
+
+    /* Any change outside the active region union -> caller does a full. */
+    if (remainder_bytes_differ(s_last_bw_buf, bw_buf, rects, n)) {
+        ESP_LOGI(TAG, "BW partial declined: change outside region union");
+        return false;
+    }
+
+    /* Stage per-region counts without mutating any state yet. */
+    uint8_t staged_count[REGION_COUNT_MAX];
+    bool    changed[REGION_COUNT_MAX];
+    int     changed_n = 0;
+    for (int i = 0; i < n; i++) {
+        changed[i]      = region_bytes_differ(s_last_bw_buf, bw_buf, rects[i]);
+        staged_count[i] = s_region_partial_count[i];
+        if (changed[i]) {
+            staged_count[i] = (uint8_t)(s_region_partial_count[i] + 1);
+            if (staged_count[i] > MAX_BW_PARTIALS_PER_REGION) {
+                ESP_LOGI(TAG, "BW partial declined: region %d hit %d-partial cap",
+                         i, MAX_BW_PARTIALS_PER_REGION);
+                return false;
+            }
+            changed_n++;
+        }
+    }
+    if (changed_n == 0) return false;   /* defensive: nothing to refresh */
+
+    /* Execute. Any single failure aborts the plan; caller fulls + re-syncs. */
+    for (int i = 0; i < n; i++) {
+        if (!changed[i]) continue;
+        if (!eink_refresh_bw_partial(&s_eink, s_last_bw_buf, bw_buf, rects[i])) {
+            ESP_LOGW(TAG, "BW region %d partial failed; full re-sync", i);
+            return false;
+        }
+    }
+
+    /* Commit shared state only now that every partial succeeded. */
+    memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
+    s_last_bw_valid = true;
+    for (int i = 0; i < n; i++) s_region_partial_count[i] = staged_count[i];
+    s_renders_since_full          = new_render_count;
+    s_last_dashboard_show_github  = show_github;
+    s_last_dashboard_layout_valid = true;
+    ESP_LOGI(TAG, "BW per-region partial: %d/%d regions updated", changed_n, n);
     return true;
 }
 
@@ -1514,8 +1644,16 @@ void display_render(const dashboard_data_t *data)
     uint16_t staged_count = (uint16_t)(s_renders_since_full + 1u);
     bool cap_reached = staged_count >= cap;
 
+    bool is_bw       = (effective_panel_variant() == EINK_PANEL_WEACT_29_BW);
+    bool show_github = data->github_present;
+    /* A show_github layout flip changes the active region set and indices and
+       is NOT caught by the frame-type checks (both frames are CONTENT), so
+       force a full BW refresh when the BW dashboard layout flips. */
+    bool layout_flip = is_bw && s_last_dashboard_layout_valid &&
+                       (s_last_dashboard_show_github != show_github);
+
     bool force_full = !s_first_refresh_done || s_force_full_refresh ||
-                      variant_changed || cap_reached;
+                      variant_changed || cap_reached || layout_flip;
 
     ESP_LOGI(TAG,
              "Dashboard render decision: variant=%s need_red=%d last_red=%d "
@@ -1537,43 +1675,40 @@ void display_render(const dashboard_data_t *data)
         eink_sleep(&s_eink);
         s_renders_since_full = staged_count;
     } else if (!force_full) {
-#if DISPLAY_ENABLE_BW_EXPERIMENT
-        bool volatile_only = dashboard_data_volatile_only_changed(data);
-        if (!need_red && !s_last_red_state && s_last_content_valid &&
-            previous_frame_is_content && has_bw_diff &&
-            s_bw_fast_cycle_count < MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
-            did_partial = eink_refresh_bw_partial(&s_eink, s_last_bw_buf,
-                                                   bw_buf, diff_rect);
-            if (did_partial) {
-                eink_sleep(&s_eink);
-                s_bw_fast_cycle_count++;
-                ESP_LOGI(TAG, "Dashboard BW partial refresh (%s, cycle=%u)",
-                         volatile_only ? "volatile-only" : "content",
-                         s_bw_fast_cycle_count);
-                remember_current_bw_frame();
-                s_renders_since_full = staged_count;
-            } else {
-                ESP_LOGW(TAG, "Dashboard BW partial failed; falling back");
-            }
+        /* BW per-region partial path (validated Gate 0.A). Eligible only when
+           the previously displayed frame was dashboard content (same layout
+           family) and no red is involved; render_bw_regions enforces the
+           remainder check and the per-region 5-partial cap, and commits shared
+           state only on full success. Any decline/failure -> full BW refresh. */
+        if (is_bw && !need_red && !s_last_red_state &&
+            s_last_bw_valid && s_last_content_valid &&
+            previous_frame_is_content) {
+            did_partial = render_bw_regions(show_github, staged_count);
+            if (did_partial) eink_sleep(&s_eink);
         }
-#endif
         if (!did_partial) {
             s_bw_fast_cycle_count = 0;
             display_full_refresh(need_red, "dashboard");
             eink_sleep(&s_eink);
             ESP_LOGI(TAG, "Dashboard refresh (mode=full, variant=%s)",
-                     effective_panel_variant() == EINK_PANEL_WEACT_29_BW
-                         ? "BW_FULL"
-                         : "FULL_COLOR");
+                     is_bw ? "BW_FULL" : "FULL_COLOR");
         }
     } else {
         s_bw_fast_cycle_count = 0;
         const char *reason = variant_changed ? "variant-change"
-                                             : (cap_reached ? "24h-cap"
-                                                            : "dashboard");
+                           : layout_flip     ? "layout-flip"
+                           : cap_reached     ? "24h-cap"
+                                             : "dashboard";
         display_full_refresh(need_red, reason);
         eink_sleep(&s_eink);
         ESP_LOGI(TAG, "Dashboard refresh forced full (reason=%s)", reason);
+    }
+
+    if (is_bw) {
+        /* Keep the BW layout-flip guard in lockstep with what is now on the
+           panel, on every outcome (unchanged-skip / partial / full). */
+        s_last_dashboard_show_github  = show_github;
+        s_last_dashboard_layout_valid = true;
     }
 
     if (!data->offline && !data->stale) {
@@ -1638,24 +1773,22 @@ static bool display_show_compact_status(const char *status)
         return true;
     }
 
-#if DISPLAY_ENABLE_BW_EXPERIMENT
+    bool is_bw = (effective_panel_variant() == EINK_PANEL_WEACT_29_BW);
     bool did_partial = false;
-    if (s_bw_fast_cycle_count < MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
-        did_partial = eink_refresh_bw_partial(&s_eink, s_last_bw_buf,
-                                              bw_buf, diff_rect);
-        if (did_partial) {
-            s_bw_fast_cycle_count++;
-            remember_current_bw_frame();
-        }
+    if (is_bw && s_last_dashboard_layout_valid) {
+        /* The status overlay only touches the header region; reuse the
+           per-region planner with the last dashboard layout. Do not tick the
+           24 h counter (status is not a dashboard render) — commit the current
+           s_renders_since_full unchanged. */
+        did_partial = render_bw_regions(s_last_dashboard_show_github,
+                                        s_renders_since_full);
+        if (did_partial) eink_sleep(&s_eink);
     }
     if (!did_partial) {
-#endif
         display_full_refresh(/*need_red=*/false, "status");
         s_bw_fast_cycle_count = 0;
-#if DISPLAY_ENABLE_BW_EXPERIMENT
+        eink_sleep(&s_eink);
     }
-#endif
-    eink_sleep(&s_eink);
     ESP_LOGI(TAG, "Status refresh done");
     return true;
 }
