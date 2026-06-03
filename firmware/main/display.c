@@ -1764,10 +1764,9 @@ static bool display_show_compact_status(const char *status)
 {
     /* Hard precondition: compact status layers on top of an already-
        displayed dashboard frame, so the saved variant must match the
-       physically attached panel. The provisioning / recovery path
-       (s_variant_known == false) falls back to the full-screen status
-       through display_show_refreshing() / display_show_connecting() with
-       the safe helper. */
+       physically attached panel. When ineligible (e.g. variant not yet
+       known) this returns false and the caller draws the full-screen
+       status poster through the variant-aware display_full_refresh() path. */
     if (!s_variant_known) {
         ESP_LOGW(TAG, "Compact status skipped: variant not yet known");
         return false;
