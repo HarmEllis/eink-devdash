@@ -271,12 +271,12 @@ branch applies: the panel-agnostic `SAFE_BW` bootstrap is **not** the recovery
 path. Phase 1 (feature branch `feat/weact-bw-29-and-region-partials`) instead:
 
 - Resolves the panel variant at every boot so it is **known before the first
-  draw**: a real saved v3 config wins; otherwise the build-stamped SKU default
+  draw**: a real saved v3/v4 config wins; otherwise the build-stamped SKU default
   `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` (Kconfig `int`, `range -1 1`,
   `default -1` so a SKU build fails closed if unset; the repo dev/CI build sets
   `0` = BWR in `sdkconfig.defaults`). `storage_default_panel_variant()` also
-  seeds the storage defaults and the v2→v3 migration, so an upgraded BW-SKU
-  device resolves to BW, not a hardcoded BWR.
+  seeds the storage defaults and the v2→v4 / v3→v4 migration, so an upgraded
+  BW-SKU device resolves to BW, not a hardcoded BWR.
 - Renders provisioning / recovery surfaces (QR, connecting, wait, setup-failed,
   setup-timeout offline) through the **variant-aware** `display_full_refresh()`:
   `FULL_COLOR` on BWR (drives the red plane → clears prior red, fixing the red
@@ -300,9 +300,23 @@ SKU build matrix (also in `README.md`):
 | repo dev / CI  | `0` (BWR, via `sdkconfig.defaults`)    | BOOT long-press portal selector       |
 
 Gate 0.A (per-region BW partials) and the Gate 0.B fallback above are
-implemented on the feature branch; on-hardware flash verification of the
-per-region partials and the BWR recovery red-clear is the remaining pre-merge
-step before the work lands on `main`.
+implemented on the feature branch and **hardware-confirmed on the WeAct 2.9"
+BW and BWR panels**:
 
-Phase 1 implementation steps are not merged to `main` until both Gate 0.A
-and Gate 0.B results are recorded above.
+- **Per-region BW partials — PASS:** with the source→output partial shift
+  (`0x21`), the full-panel grey / border-haze fix (`0x3C`), and the corrected
+  153-byte partial LUT (the three driver fixes in commit `005fed6`), partial
+  windows update in the correct place with no panel-wide greying. The
+  `max_partials` cap counts 0→cap, then forces a `BW_FULL` and resets the
+  counter.
+- **BWR recovery red-clear — PASS:** a BWR panel left in a red-preconditioned
+  state — including when it was driven by a wrong (BW) saved config so non-black
+  areas show red — is recovered through the captive portal: selecting BWR under
+  "Display" makes the variant-aware `FULL_COLOR` refresh drive the red plane and
+  clear the residual red, after which the dashboard renders normally. The QR /
+  recovery surfaces stay scannable even in the red state. This is the working
+  replacement for the abandoned panel-agnostic `SAFE_BW` path that FAILED the
+  red-preconditioned sub-case (a) above.
+
+With both gates recorded as hardware PASS, the Phase 1 work
+(`feat/weact-bw-29-and-region-partials`) is cleared to merge to `main`.

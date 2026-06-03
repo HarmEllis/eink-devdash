@@ -660,7 +660,7 @@ Namespace `devdash`.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `cfg_v2` | blob | Schema v3: WiFi profiles, API endpoints, refresh interval, `panel_variant` (BWR / BW). v2 blobs are migrated to v3 in place on first load. |
+| `cfg_v2` | blob | Schema v4: WiFi profiles, API endpoints, refresh interval, `panel_variant` (BWR / BW), `max_partials` (BW partial-refresh cap). Legacy v2 and v3 blobs are migrated to v4 in place on first load. |
 | `ap_pwd` | string | Persisted SoftAP password |
 
 Refresh-cycle bookkeeping (`bw_fast_cycle_count`, `last_red_state`) lives
