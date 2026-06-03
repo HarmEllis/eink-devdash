@@ -14,6 +14,7 @@
 #include "display.h"
 #include "boot_button.h"
 #include "ota_client.h"
+#include "timekeep.h"
 #include <string.h>
 
 static const char *TAG = "main";
@@ -21,12 +22,19 @@ static const char *BUILD_MARKER =
     "diag-api-display-2026-05-21T21:25+02:00";
 #define BOOT_WAKE_GPIO GPIO_NUM_0
 
-static void enter_deep_sleep(uint8_t minutes)
+/* RTC-memory flag: true once the sleeping footer has been painted for the
+ * current quiet-hours window. Survives the chunked deep-sleep re-evaluations
+ * (so we don't repaint the e-paper every chunk) and zero-inits on cold boot.
+ * Reset to false on a normal dashboard render so the next window repaints. */
+static RTC_DATA_ATTR bool s_quiet_footer_shown = false;
+
+static void enter_deep_sleep_seconds(uint32_t seconds)
 {
-    if (minutes < 3)  minutes = 3;
-    if (minutes > 60) minutes = 60;
-    uint64_t us = (uint64_t)minutes * 60ULL * 1000000ULL;
-    ESP_LOGI(TAG, "Deep sleep %u min", minutes);
+    /* Floor at 60 s so a window boundary that is < 1 min away cannot spin the
+     * chip in a tight wake loop. */
+    if (seconds < 60) seconds = 60;
+    uint64_t us = (uint64_t)seconds * 1000000ULL;
+    ESP_LOGI(TAG, "Deep sleep %u s", (unsigned)seconds);
 
     ESP_ERROR_CHECK(rtc_gpio_init(BOOT_WAKE_GPIO));
     ESP_ERROR_CHECK(rtc_gpio_set_direction(BOOT_WAKE_GPIO,
@@ -42,6 +50,13 @@ static void enter_deep_sleep(uint8_t minutes)
                                         ESP_PD_OPTION_ON));
     ESP_ERROR_CHECK(esp_sleep_enable_ext0_wakeup(BOOT_WAKE_GPIO, 0));
     esp_deep_sleep_start();
+}
+
+static void enter_deep_sleep(uint8_t minutes)
+{
+    if (minutes < 3)  minutes = 3;
+    if (minutes > 60) minutes = 60;
+    enter_deep_sleep_seconds((uint32_t)minutes * 60u);
 }
 
 void app_main(void)
@@ -184,6 +199,45 @@ void app_main(void)
         esp_restart();
     }
 
+    /* Quiet hours: on a plain timer refresh (NOT cold boot, NOT a short-press
+     * EXT0 force-refresh, NOT provisioning) skip the whole WiFi + API + e-paper
+     * cycle when the network we are parked on is inside its configured sleep
+     * window. The window is evaluated against the RTC clock, which we set from
+     * the API after each fetch and which survives timer wakes but not cold
+     * boot — so an unset clock simply falls through to a normal refresh that
+     * re-acquires the time. We re-evaluate on every wake (chunked sleep) so the
+     * device leaves the window within at most one chunk. */
+    if (wake == ESP_SLEEP_WAKEUP_TIMER) {
+        int qidx = cfg.last_success_network_idx;
+        int now_min = 0;
+        if (qidx >= 0 && qidx < cfg.network_count &&
+            cfg.networks[qidx].enabled && cfg.networks[qidx].ssid[0] != '\0' &&
+            cfg.quiet_enabled[qidx] &&
+            timekeep_now_minute_of_day(&now_min) &&
+            timekeep_minute_in_window(now_min, cfg.quiet_start_min[qidx],
+                                      cfg.quiet_end_min[qidx])) {
+            int end_min = cfg.quiet_end_min[qidx];
+            int until = timekeep_minutes_until(now_min, end_min);
+            if (!s_quiet_footer_shown) {
+                char wake_hhmm[9];
+                snprintf(wake_hhmm, sizeof(wake_hhmm), "%02d:%02d",
+                         end_min / 60, end_min % 60);
+                display_show_sleeping(wake_hhmm);
+                s_quiet_footer_shown = true;
+            }
+            /* Cap each nap at 60 min so RTC drift cannot overshoot the window
+             * end by more than a chunk; the floor lives in
+             * enter_deep_sleep_seconds. */
+            uint32_t chunk_min = (until > 60) ? 60u : (uint32_t)until;
+            ESP_LOGI(TAG, "Quiet hours net=%d now=%02d:%02d wake=%02d:%02d sleep=%umin",
+                     qidx, now_min / 60, now_min % 60, end_min / 60, end_min % 60,
+                     (unsigned)chunk_min);
+            wifi_net_stop();
+            enter_deep_sleep_seconds(chunk_min * 60u);
+            return;
+        }
+    }
+
     int network_idx = -1;
     int api_idx = -1;
     wifi_unreachable_diag_t wifi_diag = {0};
@@ -256,6 +310,15 @@ void app_main(void)
         return;
 #endif
     }
+
+    /* Set the RTC wall clock from the API's local timestamp so the next timer
+     * wake can evaluate the quiet-hours window without turning on WiFi. */
+    if (data.updated_at_iso[0]) {
+        timekeep_set_from_iso(data.updated_at_iso);
+    }
+    /* A normal refresh repaints the dashboard, so the sleeping footer (if any)
+     * is gone — let the next quiet-window entry repaint it. */
+    s_quiet_footer_shown = false;
 
     display_set_connection_slots(&cfg, network_idx, api_idx);
 

@@ -9,6 +9,7 @@ All notable changes to this project are documented in this file.
 - Support for the WeAct Studio 2.9" Black/White (BW) panel alongside the existing Black/White/Red (BWR) panel. The panel type is selected per device in the provisioning portal under "Display" and remembered across reboots and updates. On a BW panel, red content is drawn as black.
 - Faster, lower-flicker dashboard updates on the BW panel: only the parts of the screen that actually changed are repainted between full refreshes, instead of redrawing the whole panel every cycle.
 - "Max partial refreshes" setting in the provisioning portal (1–100, default 5): how many partial updates the BW panel does before forcing a full refresh. Lower values clear ghosting sooner; higher values refresh the whole panel less often, at the cost of more ghosting between updates.
+- Per-network "quiet hours" in the provisioning portal: a local-time window (e.g. 23:00–06:00) during which the device skips its update cycle and just sleeps, saving battery and avoiding overnight panel wear when nobody is watching. The device shows the dashboard with a "SLEEPING / WAKES HH:MM" footer during the window and resumes automatically afterwards. Local time is taken from the dashboard API (the new `updatedAtLocalIso` field), so no clock or timezone needs to be set on the device. See `docs/decisions/0006-quiet-hours.md` for the design.
 
 ### Changed
 

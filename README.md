@@ -174,6 +174,7 @@ Environment variables read by the API container. Set them in `.env` next to
 | `CODEX_HOME` | no | `/tmp/devdash-codex-runtime` | Writable Codex runtime home inside the container. Set by `docker-compose.yml`. Lives under `/tmp` so it stays writable for any UID. |
 | `CODEX_SOURCE_HOME` | no | `/home/node/.codex-source` | Read-only host Codex home mount used as the source for auth/config sync. Set by `docker-compose.yml`. |
 | `CODEX_SESSIONS_DIR` | no | `/home/node/.codex-source/sessions` | Codex session JSONL directory used by the fallback reader. Set by `docker-compose.yml`. |
+| `DASHBOARD_TIME_ZONE` | no | `Europe/Amsterdam` | IANA timezone used for the dashboard's local timestamp (`updatedAtLocal` / `updatedAtLocalIso`). The device's per-network quiet hours are evaluated against this local time. Falls back to `TZ`, then `Europe/Amsterdam`. |
 | `MDNS_ENABLED` | no | `true` | Set to `false` to disable mDNS advertising. |
 | `MDNS_NAME` | no | `devdash-api` | Hostname under `.local`. |
 | `OTA_ENABLED` | no | `true` | Set to `false` to make `/ota/manifest` report `{otaEnabled:false}` regardless of `APP_VERSION`. Pins all devices on the network to their installed firmware. |
@@ -348,6 +349,26 @@ scope for this firmware revision.
 | API URL | `http://192.168.1.50:3000` or `http://devdash-api.local:3000` |
 | Device token | Must match `DEVICE_TOKEN` in the API server's `.env` |
 | Refresh interval | 3–60 minutes, default 5 |
+| Quiet hours | Per network: enable + start/end time. See below. |
+
+### Quiet hours
+
+Each WiFi network card has an optional **Quiet hours** window (e.g. 23:00–06:00).
+While the device is inside the window — on the network it last connected
+through — it skips the WiFi + API + refresh cycle entirely and just deep-sleeps,
+re-checking roughly hourly until the window ends. This saves battery and avoids
+overnight panel wear when nobody is watching. Windows may wrap midnight; a
+window whose start and end are equal is treated as disabled.
+
+During the window the screen keeps the last dashboard with a black footer bar
+(`SLEEPING · WAKES HH:MM`) and a moon next to the last-sync time. The device
+resumes normal refreshes automatically when the window ends; a short BOOT press
+forces an immediate refresh at any time.
+
+Local time comes from the dashboard API (the `updatedAtLocalIso` field, governed
+by `DASHBOARD_TIME_ZONE`), so there is no clock or timezone to set on the device.
+After a power loss the device does one normal refresh to re-acquire the time
+before quiet hours take effect again.
 
 ### BOOT button
 
