@@ -749,7 +749,6 @@ static uint8_t s_max_partials_per_region = DASH_MAX_PARTIALS_DEFAULT;
 #define DISPLAY_META_NAMESPACE       "disp_meta"
 #define DISPLAY_META_KEY             "state"
 #define DISPLAY_META_KEY_LAST_VAR    "last_var"
-#define DISPLAY_META_KEY_LAST_FULL   "last_full_s"
 #define DISPLAY_META_MAGIC           0xD15DA5E1u
 
 /* Panel variant state. effective_panel_variant() returns BW until
@@ -920,26 +919,26 @@ static void disp_meta_set_last_var(uint8_t v)
     if (err != ESP_OK) ESP_LOGW(TAG, "last_var save: %s", esp_err_to_name(err));
 }
 
+/* Last full-refresh wall-clock time lives in RTC slow memory, not NVS. It only
+   needs to survive deep-sleep timer wakes — a cold boot / power loss forces a
+   full refresh anyway via s_first_refresh_done — so it never has to touch flash.
+   Before quiet hours, no trusted clock existed (wall_time_trusted() was always
+   false), so disp_meta_set_last_full() never ran; now that timekeep sets the RTC
+   clock it fires on every full refresh, which would churn the NVS disp_meta
+   namespace if this were still flash-backed. 0 = unset. */
+static RTC_DATA_ATTR uint32_t s_last_full_wall_s = 0;
+
 __attribute__((unused))
 static bool disp_meta_get_last_full(uint32_t *out)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READONLY, &h);
-    if (err != ESP_OK) { log_meta_open_err("last_full_s", err); return false; }
-    err = nvs_get_u32(h, DISPLAY_META_KEY_LAST_FULL, out);
-    nvs_close(h);
-    return err == ESP_OK;
+    if (s_last_full_wall_s == 0) return false;
+    if (out) *out = s_last_full_wall_s;
+    return true;
 }
 
 static void disp_meta_set_last_full(uint32_t v)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READWRITE, &h);
-    if (err != ESP_OK) { log_meta_open_err("last_full_s", err); return; }
-    err = nvs_set_u32(h, DISPLAY_META_KEY_LAST_FULL, v);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    if (err != ESP_OK) ESP_LOGW(TAG, "last_full_s save: %s", esp_err_to_name(err));
+    s_last_full_wall_s = v;
 }
 
 void display_force_full_refresh_next(void)
