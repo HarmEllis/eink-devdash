@@ -10,6 +10,20 @@ config DEVDASH_DEMO_MODE
         without needing network connectivity or configuration. Production
         builds must keep this disabled.
 
+config DEVDASH_DEMO_PANEL_VARIANT
+    int "Demo mode panel variant (0=BWR, 1=BW)"
+    range 0 1
+    default 0
+    depends on DEVDASH_DEMO_MODE
+    help
+        Picks the e-paper panel variant the demo build runs against.
+        Demo builds return before NVS / storage_load_v2() and so cannot
+        consult cfg.panel_variant. This Kconfig drives the explicit
+        display_set_panel_variant() call inside the demo block.
+        0 = WeAct 2.9" BWR (default, preserves the current "BWR with red"
+        demo appearance). 1 = WeAct 2.9" BW (collapses red operations
+        to black via the lpix red-fold).
+
 config DEVDASH_REFRESH_MIN
     int "Refresh interval (minutes)"
     range 3 60
@@ -17,6 +31,28 @@ config DEVDASH_REFRESH_MIN
     help
         Minutes between dashboard refreshes (deep-sleep duration). The display
         cannot reliably refresh faster than every ~3 minutes.
+
+config DEVDASH_DEFAULT_PANEL_VARIANT
+    int "Default panel variant SKU (-1=unset, 0=BWR, 1=BW)"
+    range -1 1
+    default -1
+    help
+        Build-stamped panel SKU. Used as the panel variant when NVS has no
+        real saved config yet (first boot / erased) and as the storage
+        defaults / v2->v3 migration seed. A genuine saved v3 config (chosen
+        via the provisioning portal) always wins over this value.
+
+        This is the Gate 0.B fallback (see BOARD_NOTES): the panel-agnostic
+        SAFE_BW bootstrap is not reliable on a red-preconditioned BWR panel,
+        so the variant must be known at boot. Factory / SKU builds MUST set
+        this to 0 (WeAct 2.9" BWR) or 1 (WeAct 2.9" BW). The firmware fails
+        the build closed (#error) if it is left at -1; the repo dev / CI build
+        sets 0 in sdkconfig.defaults.
+
+        Wrong-SKU recovery: hold the BOOT button long enough to open the
+        captive provisioning portal, then choose the correct panel variant
+        under Display and save. The portal selector persists the choice in
+        NVS and wins over the build-stamped default on subsequent boots.
 
 config DEVDASH_PROV_TIMEOUT_S
     int "Provisioning timeout (seconds, 0 = no timeout)"

@@ -3,17 +3,25 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "esp_err.h"
+#include "eink_weact29.h"
 
 #define NVS_NAMESPACE "devdash"
-#define NVS_SCHEMA_VERSION 2
+#define NVS_SCHEMA_VERSION 4
 
-#define DASH_CFG_V2_VERSION 2
+#define DASH_CFG_V2_VERSION 4
 #define MAX_WIFI_NETWORKS 5
 #define MAX_APIS_PER_NETWORK 5
 #define DASH_SSID_MAX 32
 #define DASH_WIFI_PASSWORD_MAX 64
 #define DASH_API_URL_MAX 192
 #define DASH_DEVICE_TOKEN_MAX 64
+
+/* BW per-region partial-refresh cap (max_partials): how many partial refreshes
+   a BW region may take before it is forced to do a full refresh. Portal-editable;
+   inert on BWR (which always full-refreshes). */
+#define DASH_MAX_PARTIALS_MIN     1
+#define DASH_MAX_PARTIALS_MAX     100
+#define DASH_MAX_PARTIALS_DEFAULT 5
 
 /*
  * Hard ceiling for the cfg_v2 NVS blob. NVS supports blobs up to ~97% of
@@ -50,16 +58,38 @@ typedef struct {
     uint32_t write_counter;
     uint32_t crc32;
     dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
+    /* Added in v3. Storage layout is layered so v2 blobs migrate cleanly:
+       fields above are byte-identical with the v2 struct; panel_variant
+       only exists in v3. Stored as raw uint8_t and cast to
+       eink_panel_variant_t on read after cfg_v2_is_valid() accepts the
+       value. */
+    uint8_t panel_variant;
+    /* Added in v4. Like panel_variant, this is appended as a trailing field; it
+       lands in the existing 4-byte-alignment tail padding after panel_variant,
+       so sizeof(v4) == sizeof(v3) and the load path must distinguish v3 from v4
+       by the `version` field, NOT by blob length. BW per-region partial cap,
+       clamped to [DASH_MAX_PARTIALS_MIN, DASH_MAX_PARTIALS_MAX]. */
+    uint8_t max_partials;
 } dash_config_v2_t;
 
 void storage_init(void);
-void storage_load_v2(dash_config_v2_t *cfg);
+/* Returns true when a v2, v3, or v4 blob was successfully loaded from NVS,
+   false when the caller is looking at storage_cfg_v2_defaults() (either
+   no blob exists, or the stored blob failed length/CRC/value validation).
+   Existing callers may safely ignore the return value; passing it on is
+   how callers distinguish a real persisted config from defaults. */
+bool storage_load_v2(dash_config_v2_t *cfg);
 esp_err_t storage_save_v2(dash_config_v2_t *cfg);
 esp_err_t storage_seed_current_sta(dash_config_v2_t *cfg);
 void storage_erase(void);
 
 void storage_cfg_v2_defaults(dash_config_v2_t *cfg);
 void storage_cfg_v2_normalize(dash_config_v2_t *cfg);
+
+/* Build-stamped SKU default panel variant (CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT).
+   Seeds the defaults / migration when no real saved variant exists; a genuine
+   saved v3 panel_variant always wins. See Gate 0.B in BOARD_NOTES. */
+eink_panel_variant_t storage_default_panel_variant(void);
 bool storage_validate_api_url(const char *url);
 uint32_t storage_next_profile_id(const dash_config_v2_t *cfg);
 void storage_mask_token(const char *token, char *out, size_t out_sz);

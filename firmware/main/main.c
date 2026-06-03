@@ -71,6 +71,13 @@ void app_main(void)
         .offline = false,
     };
     ESP_LOGI(TAG, "DEMO mode: rendering static sample dashboard");
+    /* Demo builds skip NVS, so storage_load_v2() never runs. Wire the
+       display setters by hand so red still renders on a BWR demo unit
+       (default) or collapses to BW on a BW demo unit. */
+    display_set_refresh_min(CONFIG_DEVDASH_REFRESH_MIN);
+    display_set_max_partials(DASH_MAX_PARTIALS_DEFAULT);
+    display_set_panel_variant(
+        (eink_panel_variant_t)CONFIG_DEVDASH_DEMO_PANEL_VARIANT);
     display_render(&demo);
     for (;;) vTaskDelay(portMAX_DELAY);
 #endif
@@ -90,7 +97,32 @@ void app_main(void)
      * (CONFIG_ESP_MAIN_TASK_STACK_SIZE is only 3584 bytes). */
     static dash_config_v2_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    storage_load_v2(&cfg);
+    bool cfg_loaded = storage_load_v2(&cfg);
+    /* Always seed the refresh interval — even on a defaulted cfg — so the
+       display layer's 24h forced-full cap uses the right cadence. */
+    display_set_refresh_min(cfg.refresh_min);
+    /* Seed the BW per-region partial cap from the (possibly defaulted) cfg. */
+    display_set_max_partials(cfg.max_partials);
+    /* Resolve the panel variant for this boot (Gate 0.B fallback): it is always
+       known by the first draw, so recovery / provisioning surfaces render
+       through the correct variant path (FULL_COLOR clears red on BWR) instead
+       of the dormant panel-agnostic SAFE_BW path that failed on a
+       red-preconditioned BWR panel.
+         - a real saved v3 config wins (portal choice / migrated value);
+         - otherwise the build-stamped SKU default
+           (CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT, via storage_default_panel_variant). */
+    eink_panel_variant_t variant;
+    const char *variant_src;
+    if (cfg_loaded) {
+        variant = (eink_panel_variant_t)cfg.panel_variant;
+        variant_src = "cfg";
+    } else {
+        variant = storage_default_panel_variant();
+        variant_src = "default";
+    }
+    display_set_panel_variant(variant);
+    ESP_LOGI(TAG, "Panel variant=%s (source=%s)",
+             variant == EINK_PANEL_WEACT_29_BW ? "BW" : "BWR", variant_src);
 
     esp_sleep_wakeup_cause_t wake = esp_sleep_get_wakeup_cause();
     esp_reset_reason_t reset = esp_reset_reason();
@@ -172,7 +204,7 @@ void app_main(void)
                          wake == ESP_SLEEP_WAKEUP_EXT0);
     bool prefer_last_success_api = wake_refresh;
     if (!wake_refresh) {
-        display_show_connecting(false, &cfg);
+        display_show_connecting(DISPLAY_CTX_NORMAL_BOOT, false, &cfg);
     }
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;

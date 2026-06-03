@@ -131,9 +131,13 @@ prefix. Field names match `design_handoff_eink_v4_provisioning/README.md`:
 | `wN_aK_tok`      | password | New token. Same keep/clear/replace rules as PASS.|
 | `wN_aK_cleartok` | checkbox | Force-erase saved token.                         |
 | `iv`             | number   | Refresh interval, 3..60 (stored in cfg.refresh_min). |
+| `pv`             | number   | Panel variant, 0 = BWR / 1 = BW (stored in cfg.panel_variant). |
+| `mp`             | number   | Max partial refreshes, 1..100 (stored in cfg.max_partials). |
 
-`N ∈ 0..4`, `K ∈ 0..4`. Validation lives in `validate_network` and mirrors
-`storage_validate_api_url`. Body cap is 24 KB — anything larger gets 413.
+`N ∈ 0..4`, `K ∈ 0..4`. Validation is inline in `handler_save()` (out-of-range
+`iv` / `mp` and the per-network/API checks all set a plain-text `reason`), with
+URL checks delegated to `storage_validate_api_url` and final clamping in
+`storage_cfg_v2_normalize`. Body cap is 24 KB — anything larger gets 413.
 `POST /save` returns the V4 saved page and schedules `esp_restart()` 4 s
 later via `esp_timer`, leaving time for the on-page spinner→check
 transition before the AP drops.
@@ -155,3 +159,172 @@ generated once at first boot via `storage_get_or_init_ap_password` and
 persisted under NVS key `ap_pwd` in the `devdash` namespace. Factory
 reset (`storage_erase`) clears the key; the next boot generates a new
 password. ADR-0002 records the policy.
+
+## Phase 0 — WeAct 2.9" BW panel + per-region partial refresh bring-up
+
+The driver paths and refresh modes that support the second panel
+(`EINK_PANEL_WEACT_29_BW`) plus the SAFE_BW recovery surface
+(`EINK_REFRESH_SAFE_BW`) are validated on a throwaway harness branch
+(`phase0/harness-bw-29`) before the Phase 1 feature branch is merged.
+
+### Harness usage
+
+Flash a phase0 harness build by enabling
+`CONFIG_DEVDASH_PHASE0_HARNESS=y` in menuconfig. Pick one panel
+(`CONFIG_DEVDASH_PHASE0_PANEL_BWR` / `_BW`) and one scenario
+(`CONFIG_DEVDASH_PHASE0_TEST_GATE_A`,
+`_GATE_B_CLEARED`, `_GATE_B_RED`, or `_GATE_B_WRONG_VARIANT`).
+The harness boots, runs the scenario once, then idles. Press EN/RST or
+power-cycle to rerun. Re-flash to switch scenarios.
+
+### Gate 0.A — narrow-X partial windows on BW
+
+Pass criteria (all must hold):
+- Pixels inside each narrow-X partial window update cleanly.
+- Pixels outside the window do not change.
+- After 10 consecutive narrow-X partials followed by `EINK_REFRESH_BW_FULL`,
+  no permanent ghost stripes remain.
+
+Branch decision:
+- **PASS** → Phase 1 removes the full-row clamp in `find_bw_diff_rect()`
+  (`rect->x = 0; rect->w = EINK_WIDTH;` in `firmware/main/display.c`) under
+  `effective_panel_variant() == BW` and ships the per-region table as
+  designed (Layout A: 6 regions, Layout B: 3 regions).
+- **FAIL** → Phase 1 keeps the clamp and falls back to two full-row Y-band
+  regions (`band_left`, `band_right`).
+
+Result: _`Narrow-X partial bring-up — 2026-06-02 — PASS on WeAct 2.9 BW`._
+The first run failed before the BW V2 partial LUT fix: the harness used native
+BW geometry (`RAMX=1..16`) and drew the baseline `BW_FULL` stripes
+successfully, but the first narrow-X partial window (`x=64 y=80 w=32 h=80`)
+timed out waiting for BUSY release after activation. See
+`.temp/esp-web-tools-logs(0gatea).txt`.
+After loading the BW V2 partial LUT (`0x32`, 153 bytes) and using update
+trigger `0xCC`, the repeat run completed all 10 narrow-X partial windows
+without BUSY timeout. See `.temp/esp-web-tools-logs(0gatea2).txt` and
+`.temp/eink_bw_0phasea2.1.JPEG` / `.temp/eink_bw_0phasea2.2.JPEG`.
+The photos show expected partial-refresh ghosting from the baseline stripes,
+but no visible random pixels or corruption outside the requested windows. The
+harness intentionally finishes with `fill_white()` plus `EINK_REFRESH_BW_FULL`,
+so a blank panel after completion is the expected final state.
+
+### Gate 0.B — SAFE_BW QR readability across panels and recovery
+
+Pass criteria (all must hold for every scenario below):
+- A QR-like pattern rendered via `EINK_REFRESH_SAFE_BW` is scannable.
+- On BWR, no red residue / pigment / ghost remains anywhere on the panel.
+- The harness logs show `SAFE_BW reset: 0x21 = 0x00, 0x00 (mode-dispatched)`.
+- On a known BW handle, the init log shows `RAMX=1..16`.
+- On a known BW handle, `SAFE_BW` writes both mono RAM planes (`0x24` and
+  `0x26`) so the old/base plane is not left with reset-time garbage.
+- On BWR, `SAFE_BW` writes `CMD_WRITE_RED_RAM` (0x26) with an all-zero no-red
+  plane so red RAM is not left with reset-time or previous-frame contents.
+
+Scenarios:
+- BW panel, `h.variant = BW` (native baseline).
+- BWR panel, `h.variant = BWR`, cleared start (cleared FULL_COLOR then SAFE_BW).
+- BWR panel, `h.variant = BWR`, red-preconditioned start (red-heavy
+  FULL_COLOR poster then SAFE_BW), covering sub-cases
+  (a) immediate, (c) software-reset entry, (d) power-cycle entry.
+  Sub-case (b) — deep-sleep wake — is effectively identical to
+  software-reset entry here because the SSD1680 enters deep sleep between
+  renders.
+- BW panel, `h.variant = BWR` (mismatched-variant simulation — the
+  saved-BWR-config + swapped-in-BW-module recovery case).
+
+Branch decision:
+- **All PASS** → Phase 1 proceeds with the bootstrap / recovery design.
+- **Any FAIL on BWR** → fall back to a real selectable bootstrap path
+  (`CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` + BOOT-button override + serial
+  override). Update this section and `README.md` with the SKU-specific
+  build matrix.
+
+Result: _Partial — `Safe-mode bring-up — 2026-06-02 — PASS on WeAct 2.9 BW native cleared start`._
+The Gate 0.B cleared scenario rendered cleanly on the BW panel after moving
+the BW RAM X window to `RAMX=1..16`; the earlier noisy left byte-column was
+gone in `.temp/eink_bw_0phaseb.JPEG` / user photo, and
+`.temp/esp-web-tools-logs(0gateb3).txt` confirms `variant=BW, RAMX=1..16`.
+`Safe-mode bring-up — 2026-06-02 — READABLE with geometry offset on WeAct 2.9 BW wrong-variant recovery`.
+With `hardware=BW, h.variant=BWR`, the recovery frame rendered without the
+noisy byte-column and remained readable, but it was visibly shifted because
+the deliberate mismatch selected BWR geometry (`RAMX=0..15`) on BW glass
+instead of the native BW `RAMX=1..16`. The log in
+`.temp/esp-web-tools-logs(0gateb-wrong).txt` confirms the mismatch.
+Remaining Gate 0.B scenarios still need per-panel results before marking the
+gate fully passed: BWR red-preconditioned.
+`Safe-mode bring-up — 2026-06-02 — PASS on WeAct 2.9 BWR cleared start`.
+The native BWR cleared scenario rendered cleanly with no red/black noisy
+byte-column. The log in `.temp/esp-web-tools-logs(bwr-0gateb-cleared).txt`
+confirms `configured panel=BWR`, `variant=BWR`, and `RAMX=0..15`; the photo in
+`.temp/eink_bwr_0phaseb3-cleared.JPEG` shows no red residue. Any run that
+uses `RAMX=0..15` is visibly offset from a run that uses `RAMX=1..16`; this is
+visible on the BW panel itself when comparing native BW (`RAMX=1..16`) against
+wrong-variant BW recovery (`RAMX=0..15`). After rotation, the one-byte RAM X
+offset maps to an 8 px landscape-axis shift.
+`Safe-mode bring-up — 2026-06-02 — FAIL on WeAct 2.9 BWR red-preconditioned sub-case (a)`.
+The log in `.temp/esp-web-tools-logs(bwr-0gateb-red-pc).txt` confirms the
+native BWR red-preconditioned run (`configured panel=BWR`, `variant=BWR`,
+`RAMX=0..15`), but `.temp/eink_bwr_0phaseb3-red-pc.JPEG` still shows a solid
+red bar after the SAFE_BW refresh. The checker pattern remains readable, but
+the red residue violates Gate 0.B.
+
+### Gate 0.B branch outcome — selectable bootstrap fallback engaged
+
+Because Gate 0.B **FAILED on BWR red-preconditioned**, the "Any FAIL on BWR"
+branch applies: the panel-agnostic `SAFE_BW` bootstrap is **not** the recovery
+path. Phase 1 (feature branch `feat/weact-bw-29-and-region-partials`) instead:
+
+- Resolves the panel variant at every boot so it is **known before the first
+  draw**: a real saved v3/v4 config wins; otherwise the build-stamped SKU default
+  `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` (Kconfig `int`, `range -1 1`,
+  `default -1` so a SKU build fails closed if unset; the repo dev/CI build sets
+  `0` = BWR in `sdkconfig.defaults`). `storage_default_panel_variant()` also
+  seeds the storage defaults and the v2→v4 / v3→v4 migration, so an upgraded
+  BW-SKU device resolves to BW, not a hardcoded BWR.
+- Renders provisioning / recovery surfaces (QR, connecting, wait, setup-failed,
+  setup-timeout offline) through the **variant-aware** `display_full_refresh()`:
+  `FULL_COLOR` on BWR (drives the red plane → clears prior red, fixing the red
+  bar) and `BW_FULL` on BW. `EINK_REFRESH_SAFE_BW` / `display_full_refresh_safe()`
+  are kept dormant as a build-stamped escape hatch but are no longer wired.
+- Provides wrong-SKU recovery through the captive portal panel selector:
+  long-press BOOT to open the portal, choose the attached panel variant under
+  Display, and save. The saved NVS value wins over the build-stamped SKU default
+  on subsequent boots.
+- Removed the earlier cold-boot-only panel override after hardware testing:
+  the variant-aware portal recovery path clears BWR red residue, and the serial
+  `B` / `R` path is not exercisable with the esp-web-tools flasher because its
+  console attaches after the override window.
+
+Default-panel-per-build (also in `README.md`). The repo, CI, and the published
+release all build a **single binary** defaulting to BWR
+(`CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT=0` in `sdkconfig.defaults`); there is no
+separately published BW SKU. Either default is corrected per-device in the portal
+(the saved NVS value wins), so a `1` build is only useful as a local/factory image
+that ships BW-default hardware without an initial portal step.
+
+| `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` | First-boot default | Build that uses it          | Wrong-default recovery                |
+|----------------------------------------|--------------------|-----------------------------|---------------------------------------|
+| `0`                                    | BWR                | repo / CI / released binary | BOOT long-press portal selector -> BW |
+| `1`                                    | BW                 | local/factory build only    | BOOT long-press portal selector -> BWR |
+
+Gate 0.A (per-region BW partials) and the Gate 0.B fallback above are
+implemented on the feature branch and **hardware-confirmed on the WeAct 2.9"
+BW and BWR panels**:
+
+- **Per-region BW partials — PASS:** with the source→output partial shift
+  (`0x21`), the full-panel grey / border-haze fix (`0x3C`), and the corrected
+  153-byte partial LUT (the three driver fixes in commit `005fed6`), partial
+  windows update in the correct place with no panel-wide greying. The
+  `max_partials` cap counts 0→cap, then forces a `BW_FULL` and resets the
+  counter.
+- **BWR recovery red-clear — PASS:** a BWR panel left in a red-preconditioned
+  state — including when it was driven by a wrong (BW) saved config so non-black
+  areas show red — is recovered through the captive portal: selecting BWR under
+  "Display" makes the variant-aware `FULL_COLOR` refresh drive the red plane and
+  clear the residual red, after which the dashboard renders normally. The QR /
+  recovery surfaces stay scannable even in the red state. This is the working
+  replacement for the abandoned panel-agnostic `SAFE_BW` path that FAILED the
+  red-preconditioned sub-case (a) above.
+
+With both gates recorded as hardware PASS, the Phase 1 work
+(`feat/weact-bw-29-and-region-partials`) is cleared to merge to `main`.

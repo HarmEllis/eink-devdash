@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Support for the WeAct Studio 2.9" Black/White (BW) panel alongside the existing Black/White/Red (BWR) panel. The panel type is selected per device in the provisioning portal under "Display" and remembered across reboots and updates. On a BW panel, red content is drawn as black.
+- Faster, lower-flicker dashboard updates on the BW panel: only the parts of the screen that actually changed are repainted between full refreshes, instead of redrawing the whole panel every cycle.
+- "Max partial refreshes" setting in the provisioning portal (1–100, default 5): how many partial updates the BW panel does before forcing a full refresh. Lower values clear ghosting sooner; higher values refresh the whole panel less often, at the cost of more ghosting between updates.
+
+### Changed
+
+- Existing device settings are migrated automatically when updating from an earlier firmware version: WiFi networks, API endpoints, and the refresh interval are preserved, as is a previously saved panel choice. Configs from the original firmware (which predate panel selection) adopt the build's default panel (BWR), which can be changed in the portal.
+- Provisioning and recovery screens (QR code, connecting, setup-failed, setup-timeout) render correctly on both panel types and clear any leftover red on a BWR panel.
+
 ## [0.2.0] - 2026-05-27
 
 This minor release adds end-to-end OTA update support for the ESP32-S3 firmware, hardens the API container's host-credentials story, and keeps the local flash-server in sync with the published OTA manifest.

@@ -2,7 +2,7 @@
  * V3 Dashboard — landscape layout (logical 296×128 px).
  *
  * Physical buffer: 128 wide × 296 tall (portrait, SSD1680).
- * Coordinate rotation 90° CW: logical (lx, ly) → physical (127−ly, lx).
+ * Coordinate rotation 90° CW: logical (lx, ly) → physical (ly, 295−lx).
  *
  * Color convention in the physical buffer:
  *   bw_buf  bit 1 = white,  bit 0 = black
@@ -26,6 +26,7 @@
 #include "wifi_prov.h"
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 static const char *TAG = "display";
 
@@ -146,8 +147,18 @@ static const uint8_t font5x7[][5] = {
 static uint8_t bw_buf[EINK_BUF_SIZE];
 static uint8_t red_buf[EINK_BUF_SIZE];
 
+/* Forward decl so lpix() (and helpers below it) can read the effective
+   variant — the actual state and definition live further down with the
+   rest of the dashboard refresh state. */
+static eink_panel_variant_t effective_panel_variant(void);
+
 /* ── landscape pixel primitive ──────────────────────────────────────────── */
-/* lx ∈ [0,295], ly ∈ [0,127].  Rotation 90° CW → physical px=127−ly, py=lx */
+/* lx ∈ [0,295], ly ∈ [0,127]. Rotation 90° CW → physical px=ly, py=295-lx
+   (the leading-comment "127-ly" in earlier revisions was stale — the code
+   below is authoritative). On a BW panel every red operation collapses
+   into a BW operation so use_red=1,black=1 → BW black and use_red=1,
+   black=0 → BW white (preserves the existing white-hole semantics
+   inside red regions). */
 static void lpix(int lx, int ly, int black, int use_red)
 {
     int px = ly;
@@ -155,6 +166,13 @@ static void lpix(int lx, int ly, int black, int use_red)
     if ((unsigned)px >= EINK_WIDTH || (unsigned)py >= EINK_HEIGHT) return;
     int i = (py * EINK_WIDTH + px) / 8;
     int b = 7 - ((py * EINK_WIDTH + px) % 8);
+
+    if (effective_panel_variant() == EINK_PANEL_WEACT_29_BW) {
+        if (black) bw_buf[i] &= ~(1 << b);
+        else       bw_buf[i] |=  (1 << b);
+        return;
+    }
+
     if (use_red) {
         if (black) red_buf[i] |=  (1 << b);
         else       red_buf[i] &= ~(1 << b);
@@ -541,6 +559,7 @@ static void icon_globe(int ox, int oy)
 }
 
 /* Big-X (19×19) error glyph, RED. Two diagonals share (9,9). */
+__attribute__((unused))
 static void icon_big_cross_red(int ox, int oy)
 {
     for (int i = 0; i < 19; i++) {
@@ -685,11 +704,10 @@ static eink_handle_t s_eink;
 static bool          s_initialized        = false;
 
 /* Refresh-cycle state lives in RTC slow memory: survives deep-sleep timer
- * wakeups (so the BW_FAST differential refresh stays valid across naps) but
+ * wakeups (so the per-region differential refresh stays valid across naps) but
  * resets on power-on / external reset (where the panel content is undefined
  * anyway and we want a FULL_COLOR refresh). */
 static RTC_DATA_ATTR bool    s_first_refresh_done = false;
-static RTC_DATA_ATTR uint8_t s_bw_fast_cycle_count = 0;
 static RTC_DATA_ATTR bool    s_last_red_state      = false;
 static RTC_DATA_ATTR bool    s_last_content_valid  = false;
 static RTC_DATA_ATTR bool    s_last_bw_valid       = false;
@@ -698,17 +716,89 @@ static RTC_DATA_ATTR dashboard_data_t s_last_data;
 static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
 static int64_t s_last_full_refresh_us = 0;
 
-#define MAX_BW_FAST_REFRESHES_BEFORE_FULL 10
+/* BW per-region partial cap: how many partials a region may take before it is
+   forced to a full refresh. Portal-configurable (cfg.max_partials); main.c sets
+   it via display_set_max_partials() each boot before the first render. Defaults
+   to DASH_MAX_PARTIALS_DEFAULT until set. */
+static uint8_t s_max_partials_per_region = DASH_MAX_PARTIALS_DEFAULT;
 
-#define DISPLAY_META_NAMESPACE "disp_meta"
-#define DISPLAY_META_KEY       "state"
-#define DISPLAY_META_MAGIC     0xD15DA5E1u
+#define DISPLAY_META_NAMESPACE       "disp_meta"
+#define DISPLAY_META_KEY             "state"
+#define DISPLAY_META_KEY_LAST_VAR    "last_var"
+#define DISPLAY_META_KEY_LAST_FULL   "last_full_s"
+#define DISPLAY_META_MAGIC           0xD15DA5E1u
+
+/* Panel variant state. effective_panel_variant() returns BW until
+   display_set_panel_variant() is called; main.c calls it before the first
+   draw with the persisted config or, on an erased-NVS device, the build's
+   default variant (CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT, BWR in the repo
+   build), so the variant is known before any surface is rendered. */
+static eink_panel_variant_t s_panel_variant = EINK_PANEL_WEACT_29_BWR;
+static bool                 s_variant_known = false;
+static uint8_t              s_refresh_min   = CONFIG_DEVDASH_REFRESH_MIN;
+
+/* Per-region partial machinery (BW path). REGION_COUNT_MAX is the
+   maximum of Layout A (6 regions) and Layout B (3 regions); the active
+   layout fills the prefix and the unused tail stays zero-initialised. */
+#define REGION_COUNT_MAX 6
+static RTC_DATA_ATTR uint8_t  s_region_partial_count[REGION_COUNT_MAX];
+static RTC_DATA_ATTR bool     s_force_full_refresh          = false;
+static RTC_DATA_ATTR uint16_t s_renders_since_full          = 0;
+/* The per-region partial machinery uses these to detect a show_github
+   layout flip between renders: the active region set and indices change
+   with the layout, so a flip forces a full refresh before the new layout
+   is committed. */
+static RTC_DATA_ATTR bool     s_last_dashboard_show_github  = false;
+static RTC_DATA_ATTR bool     s_last_dashboard_layout_valid = false;
+
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+
+/* Per-region partial table. Each region is declared in logical (296x128
+   landscape) coordinates — natural to read against the dashboard layout —
+   and converted to a physical, byte-aligned framebuffer rect by
+   physical_rect_from_logical() (which uses the exact lpix() transform).
+   Each region's ly start/end are multiples of 8 so the derived physical-X
+   byte ranges are disjoint between regions sharing a physical-Y band. */
+typedef struct {
+    int lx, ly, lw, lh;
+} region_logical_t;
+
+/* Layout A — show_github == true (6 regions). */
+static const region_logical_t s_regions_with_github[] = {
+    {   0,  0, 296, 16 },  /* header_clock: branding / sync / updated / status */
+    {   0, 16, 110, 24 },  /* gh_issues */
+    {   0, 40, 110, 24 },  /* gh_prs    */
+    {   0, 64, 110, 24 },  /* gh_deps   */
+    {   0, 88, 110, 24 },  /* gh_auth   */
+    { 110, 16, 186, 96 },  /* providers: CLAUDE / CODEX compact columns */
+};
+
+/* Layout B — show_github == false (3 regions). */
+static const region_logical_t s_regions_no_github[] = {
+    { 0,  0, 296, 16 },   /* header_clock */
+    { 4, 16, 288, 48 },   /* provider_top: CLAUDE wide row */
+    { 4, 64, 288, 64 },   /* provider_bot: CODEX wide row  */
+};
+
+static eink_panel_variant_t effective_panel_variant(void)
+{
+    return s_variant_known ? s_panel_variant : EINK_PANEL_WEACT_29_BW;
+}
+
+static uint16_t render_count_cap(uint8_t refresh_min)
+{
+    if (refresh_min < 3)  refresh_min = 3;
+    if (refresh_min > 60) refresh_min = 60;
+    uint16_t raw = (uint16_t)((24u * 60u + refresh_min - 1u) / refresh_min);
+    if (raw < 8)   raw = 8;
+    if (raw > 480) raw = 480;
+    return raw;
+}
 
 #define HEADER_STATUS_X 220
 #define HEADER_STATUS_Y 2
 #define HEADER_STATUS_W 74
 #define HEADER_STATUS_H 13
-#define DISPLAY_ENABLE_BW_EXPERIMENT 0
 
 typedef enum {
     DISPLAY_FRAME_UNKNOWN = 0,
@@ -762,6 +852,101 @@ static void display_mark_frame(display_frame_t frame)
     nvs_close(h);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "display metadata save failed: %s", esp_err_to_name(err));
+    }
+}
+
+/* Demo builds (CONFIG_DEVDASH_DEMO_MODE) return before nvs_flash_init(),
+   so the meta wrappers must tolerate ESP_ERR_NVS_NOT_INITIALIZED quietly
+   instead of warning on every render. */
+static void log_meta_open_err(const char *key, esp_err_t err)
+{
+    if (err == ESP_ERR_NVS_NOT_INITIALIZED) {
+        ESP_LOGD(TAG, "%s: NVS not initialized (demo build?)", key);
+    } else {
+        ESP_LOGW(TAG, "%s open: %s", key, esp_err_to_name(err));
+    }
+}
+
+static bool disp_meta_get_last_var(uint8_t *out)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READONLY, &h);
+    if (err != ESP_OK) { log_meta_open_err("last_var", err); return false; }
+    err = nvs_get_u8(h, DISPLAY_META_KEY_LAST_VAR, out);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+static void disp_meta_set_last_var(uint8_t v)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) { log_meta_open_err("last_var", err); return; }
+    err = nvs_set_u8(h, DISPLAY_META_KEY_LAST_VAR, v);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) ESP_LOGW(TAG, "last_var save: %s", esp_err_to_name(err));
+}
+
+__attribute__((unused))
+static bool disp_meta_get_last_full(uint32_t *out)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READONLY, &h);
+    if (err != ESP_OK) { log_meta_open_err("last_full_s", err); return false; }
+    err = nvs_get_u32(h, DISPLAY_META_KEY_LAST_FULL, out);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+static void disp_meta_set_last_full(uint32_t v)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) { log_meta_open_err("last_full_s", err); return; }
+    err = nvs_set_u32(h, DISPLAY_META_KEY_LAST_FULL, v);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) ESP_LOGW(TAG, "last_full_s save: %s", esp_err_to_name(err));
+}
+
+void display_force_full_refresh_next(void)
+{
+    s_force_full_refresh = true;
+}
+
+void display_set_refresh_min(uint8_t refresh_min)
+{
+    if (refresh_min < 3)  refresh_min = 3;
+    if (refresh_min > 60) refresh_min = 60;
+    s_refresh_min = refresh_min;
+}
+
+void display_set_max_partials(uint8_t max_partials)
+{
+    if (max_partials < DASH_MAX_PARTIALS_MIN) max_partials = DASH_MAX_PARTIALS_MIN;
+    if (max_partials > DASH_MAX_PARTIALS_MAX) max_partials = DASH_MAX_PARTIALS_MAX;
+    s_max_partials_per_region = max_partials;
+}
+
+void display_set_panel_variant(eink_panel_variant_t v)
+{
+    const eink_panel_variant_t old_raw = s_panel_variant;
+    const bool                 was_known = s_variant_known;
+    const eink_panel_variant_t old_eff =
+        was_known ? old_raw : EINK_PANEL_WEACT_29_BW;
+    const eink_panel_variant_t new_eff = v;
+
+    s_panel_variant = v;
+    s_variant_known = true;
+
+    if (s_initialized && new_eff != old_eff) {
+        /* Live-update the driver handle. The SPI bus + GPIOs are already up;
+           the next refresh's reset_controller_* will reload the right
+           waveform for free. */
+        s_eink.variant = new_eff;
+        s_eink.asleep  = true;
+        display_force_full_refresh_next();
     }
 }
 
@@ -1022,7 +1207,7 @@ static void draw_unreachable_poster(display_offline_reason_t reason,
 static void ensure_init(void)
 {
     if (!s_initialized) {
-        ESP_ERROR_CHECK(eink_init(&s_eink));
+        ESP_ERROR_CHECK(eink_init(&s_eink, effective_panel_variant()));
         s_initialized = true;
     }
 }
@@ -1047,50 +1232,89 @@ static void warn_if_full_refresh_is_early(const char *reason)
 #endif
 }
 
-static void display_full_refresh(eink_refresh_mode_t mode, const char *reason)
-{
-    warn_if_full_refresh_is_early(reason);
-    eink_set_framebuffer(bw_buf, red_buf);
-    eink_refresh(&s_eink, mode);
-    s_last_full_refresh_us = esp_timer_get_time();
-}
-
+__attribute__((unused))
 static void remember_current_bw_frame(void)
 {
     memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
     s_last_bw_valid = true;
 }
 
-#if DISPLAY_ENABLE_BW_EXPERIMENT
-static bool dashboard_data_stable_equal(const dashboard_data_t *a,
-                                        const dashboard_data_t *b)
+/* Wall-clock-trusted predicate: anything below 2024-01-01 UTC is treated
+   as "SNTP has not corrected our RTC yet" — the firmware does not run
+   SNTP today so this is dormant, but keeps the 24h forced-full path
+   ready for the day it does. */
+static bool wall_time_trusted(time_t *out_now)
 {
-    return a->schema_version == b->schema_version &&
-           a->github_present == b->github_present &&
-           a->github.issues == b->github.issues &&
-           a->github.prs == b->github.prs &&
-           a->github.dependabot == b->github.dependabot &&
-           a->github.auth_error == b->github.auth_error &&
-           a->claude.five_hour.used == b->claude.five_hour.used &&
-           a->claude.five_hour.limit == b->claude.five_hour.limit &&
-           a->claude.weekly.used == b->claude.weekly.used &&
-           a->claude.weekly.limit == b->claude.weekly.limit &&
-           a->claude.auth_error == b->claude.auth_error &&
-           a->codex.short_pct == b->codex.short_pct &&
-           a->codex.long_pct == b->codex.long_pct &&
-           a->codex.reached == b->codex.reached &&
-           a->stale == b->stale &&
-           a->offline == b->offline;
+    time_t now = time(NULL);
+    if (now < (time_t)1704067200) return false;
+    if (out_now) *out_now = now;
+    return true;
 }
-#endif
 
-#if DISPLAY_ENABLE_BW_EXPERIMENT
-static bool dashboard_data_volatile_only_changed(const dashboard_data_t *data)
+static void commit_full_refresh_shared(bool need_red, bool wrote_safe_mode)
 {
-    return s_last_data_valid &&
-           dashboard_data_stable_equal(&s_last_data, data);
+    /* Shared state after any successful full refresh (variant-aware or
+       safe). Differences between the two profiles are layered on top by
+       each caller below. */
+    memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
+    s_last_bw_valid = true;
+    s_last_red_state =
+        (effective_panel_variant() == EINK_PANEL_WEACT_29_BWR) ? need_red
+                                                               : false;
+    memset(s_region_partial_count, 0, sizeof(s_region_partial_count));
+    s_renders_since_full = 0;
+    s_force_full_refresh = false;
+    s_last_full_refresh_us = esp_timer_get_time();
+    s_first_refresh_done = true;
+    /* Variant-aware path persists last_var so the next render's
+       variant-change detection compares against the last dashboard
+       variant. Safe path skips last_var because a safe refresh does
+       not represent the dashboard's variant. */
+    if (!wrote_safe_mode) {
+        disp_meta_set_last_var((uint8_t)effective_panel_variant());
+    }
+    /* Both paths count toward the 24h ghost-accumulation bound — a clean
+       GC pass clears the panel regardless of which OTP waveform ran. */
+    time_t now = 0;
+    if (wall_time_trusted(&now)) {
+        disp_meta_set_last_full((uint32_t)now);
+    }
 }
-#endif
+
+/* Variant-aware full refresh. Used by post-provisioning surfaces
+   (dashboard, OTA, non-setup-timeout offline, status), all of which run
+   with s_variant_known == true. */
+static void display_full_refresh(bool need_red, const char *reason)
+{
+    warn_if_full_refresh_is_early(reason);
+    eink_refresh_mode_t mode =
+        (effective_panel_variant() == EINK_PANEL_WEACT_29_BW)
+            ? EINK_REFRESH_BW_FULL
+            : EINK_REFRESH_FULL_COLOR;
+    eink_set_framebuffer(bw_buf, red_buf);
+    eink_refresh(&s_eink, mode);
+    commit_full_refresh_shared(need_red, /*wrote_safe_mode=*/false);
+}
+
+/* Panel-agnostic SAFE_BW full refresh. DORMANT since Gate 0.B: SAFE_BW could
+   not clear pre-existing red on a red-preconditioned BWR panel, so recovery /
+   provisioning surfaces now render through the variant-aware display_full_refresh()
+   (FULL_COLOR clears red on BWR; BW_FULL on BW), with the panel variant resolved
+   at boot from the saved config, the CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT SKU
+   default, or the captive portal panel selector persisted in NVS. This helper
+   is retained as a build-stamped escape hatch but is no longer wired to any
+   surface. */
+__attribute__((unused))
+static void display_full_refresh_safe(const char *reason)
+{
+    warn_if_full_refresh_is_early(reason);
+    /* Pass NULL for red_buf: the caller supplies no red plane. The driver's
+       SAFE_BW path seeds 0x26 itself (the BW base plane), so there is no
+       caller red buffer to forward — NULL makes that intent explicit. */
+    eink_set_framebuffer(bw_buf, NULL);
+    eink_refresh(&s_eink, EINK_REFRESH_SAFE_BW);
+    commit_full_refresh_shared(/*need_red=*/false, /*wrote_safe_mode=*/true);
+}
 
 static bool find_bw_diff_rect(const uint8_t *previous,
                               const uint8_t *next,
@@ -1123,12 +1347,160 @@ static bool find_bw_diff_rect(const uint8_t *previous,
     rect->y = (uint16_t)min_y;
     rect->w = (uint16_t)((max_byte_x - min_byte_x + 1) * 8);
     rect->h = (uint16_t)(max_y - min_y + 1);
-    /* Hardware-validation guard: several SSD/Waveshare partial paths are
-     * reliable only when the horizontal window spans the full row. Keep Y
-     * clipping, but avoid narrow X windows until the controller sequence is
-     * proven on this panel. */
-    rect->x = 0;
-    rect->w = EINK_WIDTH;
+    /* Narrow-X partial windows are validated on the WeAct 2.9 BW module
+     * (BOARD_NOTES Gate 0.A — BW V2 partial LUT 0x32 + update trigger 0xCC).
+     * The byte-aligned bounding box above is returned as-is; the former
+     * full-row clamp is gone. This rect is still used only to answer
+     * "did anything change?" — the per-region planner below owns the
+     * actual partial windows. */
+    return true;
+}
+
+/* Convert a logical (296x128 landscape) rect to a physical, byte-aligned
+   framebuffer rect using the exact lpix() transform (px = ly,
+   py = (EINK_HEIGHT-1) - lx). Logical X (lx/lw) maps to physical Y; logical
+   Y (ly/lh) maps to physical X. Physical X is snapped down/up to 8-px byte
+   bounds so the driver's alignment check passes and whole bytes are diffed. */
+static eink_rect_t physical_rect_from_logical(int lx, int ly, int lw, int lh)
+{
+    int px_lo = ly;
+    int px_hi = ly + lh - 1;
+    int py_lo = EINK_HEIGHT - lx - lw;
+    int py_hi = (EINK_HEIGHT - 1) - lx;
+
+    px_lo &= ~7;            /* snap down to byte boundary */
+    px_hi |= 7;             /* snap up   to byte boundary */
+
+    if (px_lo < 0) px_lo = 0;
+    if (px_hi > EINK_WIDTH - 1)  px_hi = EINK_WIDTH - 1;
+    if (py_lo < 0) py_lo = 0;
+    if (py_hi > EINK_HEIGHT - 1) py_hi = EINK_HEIGHT - 1;
+
+    eink_rect_t r = {
+        .x = (uint16_t)px_lo,
+        .y = (uint16_t)py_lo,
+        .w = (uint16_t)(px_hi - px_lo + 1),
+        .h = (uint16_t)(py_hi - py_lo + 1),
+    };
+    return r;
+}
+
+/* True if any byte differs between a and b inside the physical rect r. */
+static bool region_bytes_differ(const uint8_t *a, const uint8_t *b,
+                                eink_rect_t r)
+{
+    const int row_bytes = EINK_WIDTH / 8;
+    int x_byte  = r.x / 8;
+    int x_bytes = r.w / 8;
+    for (int row = r.y; row < r.y + r.h; row++) {
+        int off = row * row_bytes + x_byte;
+        if (memcmp(a + off, b + off, (size_t)x_bytes) != 0) return true;
+    }
+    return false;
+}
+
+/* True if any changed byte lies OUTSIDE every region rect (remainder check):
+   the per-region plan is only valid when all changes are inside the declared
+   regions; dividers / wide-layout / future widgets outside them force a full. */
+static bool remainder_bytes_differ(const uint8_t *a, const uint8_t *b,
+                                   const eink_rect_t *rects, int n)
+{
+    const int row_bytes = EINK_WIDTH / 8;
+    for (int row = 0; row < EINK_HEIGHT; row++) {
+        for (int bx = 0; bx < row_bytes; bx++) {
+            int idx = row * row_bytes + bx;
+            if (a[idx] == b[idx]) continue;
+            bool covered = false;
+            for (int i = 0; i < n && !covered; i++) {
+                const eink_rect_t *r = &rects[i];
+                int bx0 = r->x / 8;
+                int bx1 = (r->x + r->w) / 8;   /* exclusive */
+                if (row >= r->y && row < r->y + r->h &&
+                    bx >= bx0 && bx < bx1) covered = true;
+            }
+            if (!covered) return true;
+        }
+    }
+    return false;
+}
+
+/* Plan and execute a per-region BW partial refresh. Returns true only when
+   every changed region updated successfully AND shared state was committed;
+   false means the caller must fall back to a full BW refresh (which also
+   re-syncs the panel with bw_buf). No shared state is mutated unless the whole
+   plan succeeds — the commit-after-success invariant: a late failure must never
+   leave the panel showing old regions while s_last_bw_buf already reflects the
+   new frame. new_render_count is committed into s_renders_since_full on success.
+   The full-refresh fallback path (display_full_refresh) is treated as
+   infallible: eink_refresh() is void, so there is no failure signal to act on. */
+static bool render_bw_regions(bool show_github, uint16_t new_render_count)
+{
+    const region_logical_t *regions = show_github ? s_regions_with_github
+                                                   : s_regions_no_github;
+    int n = show_github ? (int)ARRAY_SIZE(s_regions_with_github)
+                        : (int)ARRAY_SIZE(s_regions_no_github);
+
+    /* Diagnostic: show the configured cap and each region's accumulated partial
+       count (pre-increment) so the cap behaviour is observable every cycle, not
+       only when a region finally declines. A region forces a full once its count
+       would exceed the cap. */
+    char cnt[64];
+    int coff = 0;
+    for (int i = 0; i < n && coff < (int)sizeof(cnt) - 8; i++) {
+        coff += snprintf(cnt + coff, sizeof(cnt) - coff, "%s%u",
+                         i ? "," : "", (unsigned)s_region_partial_count[i]);
+    }
+    ESP_LOGI(TAG, "BW partial plan: cap=%u region_partials=[%s]",
+             (unsigned)s_max_partials_per_region, cnt);
+
+    eink_rect_t rects[REGION_COUNT_MAX];
+    for (int i = 0; i < n; i++) {
+        rects[i] = physical_rect_from_logical(regions[i].lx, regions[i].ly,
+                                              regions[i].lw, regions[i].lh);
+    }
+
+    /* Any change outside the active region union -> caller does a full. */
+    if (remainder_bytes_differ(s_last_bw_buf, bw_buf, rects, n)) {
+        ESP_LOGI(TAG, "BW partial declined: change outside region union");
+        return false;
+    }
+
+    /* Stage per-region counts without mutating any state yet. */
+    uint8_t staged_count[REGION_COUNT_MAX];
+    bool    changed[REGION_COUNT_MAX];
+    int     changed_n = 0;
+    for (int i = 0; i < n; i++) {
+        changed[i]      = region_bytes_differ(s_last_bw_buf, bw_buf, rects[i]);
+        staged_count[i] = s_region_partial_count[i];
+        if (changed[i]) {
+            staged_count[i] = (uint8_t)(s_region_partial_count[i] + 1);
+            if (staged_count[i] > s_max_partials_per_region) {
+                ESP_LOGI(TAG, "BW partial declined: region %d hit %d-partial cap",
+                         i, s_max_partials_per_region);
+                return false;
+            }
+            changed_n++;
+        }
+    }
+    if (changed_n == 0) return false;   /* defensive: nothing to refresh */
+
+    /* Execute. Any single failure aborts the plan; caller fulls + re-syncs. */
+    for (int i = 0; i < n; i++) {
+        if (!changed[i]) continue;
+        if (!eink_refresh_bw_partial(&s_eink, s_last_bw_buf, bw_buf, rects[i])) {
+            ESP_LOGW(TAG, "BW region %d partial failed; full re-sync", i);
+            return false;
+        }
+    }
+
+    /* Commit shared state only now that every partial succeeded. */
+    memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
+    s_last_bw_valid = true;
+    for (int i = 0; i < n; i++) s_region_partial_count[i] = staged_count[i];
+    s_renders_since_full          = new_render_count;
+    s_last_dashboard_show_github  = show_github;
+    s_last_dashboard_layout_valid = true;
+    ESP_LOGI(TAG, "BW per-region partial: %d/%d regions updated", changed_n, n);
     return true;
 }
 
@@ -1276,7 +1648,6 @@ void display_render(const dashboard_data_t *data)
 {
     ensure_init();
     bool need_red = draw_dashboard_frame(data, NULL);
-    bool displayed_frame_matches_buffer = true;
     eink_rect_t diff_rect = {0};
     bool has_bw_diff = s_last_bw_valid &&
                        find_bw_diff_rect(s_last_bw_buf, bw_buf, &diff_rect);
@@ -1284,53 +1655,86 @@ void display_render(const dashboard_data_t *data)
     bool previous_frame_is_content =
         display_meta_load(&meta) && meta.frame == DISPLAY_FRAME_CONTENT;
 
+    /* Variant-change check: a different variant has just taken effect
+       (saved BWR → BW or vice versa via the portal restart path), so
+       force a full refresh. The driver's variant field is already up to
+       date through display_set_panel_variant() / ensure_init(). */
+    uint8_t last_var = 0xFF;
+    bool variant_changed = disp_meta_get_last_var(&last_var) &&
+                           last_var != (uint8_t)effective_panel_variant();
+
+    /* 24 h cycle-count fallback. Tick once per dashboard wake regardless
+       of outcome (partial, full, or unchanged-skip) so an idle dashboard
+       still gets a periodic full refresh to clear ghost accumulation. */
+    uint16_t cap = render_count_cap(s_refresh_min);
+    uint16_t staged_count = (uint16_t)(s_renders_since_full + 1u);
+    bool cap_reached = staged_count >= cap;
+
+    bool is_bw       = (effective_panel_variant() == EINK_PANEL_WEACT_29_BW);
+    bool show_github = data->github_present;
+    /* A show_github layout flip changes the active region set and indices and
+       is NOT caught by the frame-type checks (both frames are CONTENT), so
+       force a full BW refresh when the BW dashboard layout flips. */
+    bool layout_flip = is_bw && s_last_dashboard_layout_valid &&
+                       (s_last_dashboard_show_github != show_github);
+
+    bool force_full = !s_first_refresh_done || s_force_full_refresh ||
+                      variant_changed || cap_reached || layout_flip;
+
     ESP_LOGI(TAG,
-             "Dashboard render decision: need_red=%d last_red=%d first=%d bw_valid=%d content_valid=%d frame_content=%d bw_diff=%d diff=(%u,%u %ux%u) cycle=%u",
+             "Dashboard render decision: variant=%s need_red=%d last_red=%d "
+             "first=%d bw_valid=%d content_valid=%d frame_content=%d "
+             "bw_diff=%d diff=(%u,%u %ux%u) renders=%u/%u force_full=%d "
+             "variant_changed=%d",
+             effective_panel_variant() == EINK_PANEL_WEACT_29_BW ? "BW" : "BWR",
              need_red, s_last_red_state, s_first_refresh_done, s_last_bw_valid,
              s_last_content_valid, previous_frame_is_content, has_bw_diff,
              diff_rect.x, diff_rect.y, diff_rect.w, diff_rect.h,
-             s_bw_fast_cycle_count);
+             (unsigned)staged_count, (unsigned)cap, force_full,
+             variant_changed);
 
-    if (s_last_bw_valid && !need_red && !s_last_red_state &&
+    bool did_partial = false;
+
+    if (!force_full && s_last_bw_valid && !need_red && !s_last_red_state &&
         !has_bw_diff) {
         ESP_LOGI(TAG, "Dashboard unchanged; skipping refresh");
         eink_sleep(&s_eink);
-    } else {
-        bool did_partial = false;
-#if DISPLAY_ENABLE_BW_EXPERIMENT
-        bool volatile_only = dashboard_data_volatile_only_changed(data);
-        if (!need_red && !s_last_red_state && s_last_content_valid &&
-            previous_frame_is_content && has_bw_diff &&
-            s_bw_fast_cycle_count < MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
-            did_partial = eink_refresh_bw_partial(&s_eink, bw_buf, diff_rect);
-            if (did_partial) {
-                eink_sleep(&s_eink);
-                s_bw_fast_cycle_count++;
-                ESP_LOGI(TAG, "Dashboard BW partial refresh (%s, cycle=%u)",
-                         volatile_only ? "volatile-only" : "content",
-                         s_bw_fast_cycle_count);
-            } else {
-                ESP_LOGW(TAG, "Dashboard BW partial failed; falling back");
-            }
+        s_renders_since_full = staged_count;
+    } else if (!force_full) {
+        /* BW per-region partial path (validated Gate 0.A). Eligible only when
+           the previously displayed frame was dashboard content (same layout
+           family) and no red is involved; render_bw_regions enforces the
+           remainder check and the per-region 5-partial cap, and commits shared
+           state only on full success. Any decline/failure -> full BW refresh. */
+        if (is_bw && !need_red && !s_last_red_state &&
+            s_last_bw_valid && s_last_content_valid &&
+            previous_frame_is_content) {
+            did_partial = render_bw_regions(show_github, staged_count);
+            if (did_partial) eink_sleep(&s_eink);
         }
-#endif
-
         if (!did_partial) {
-            eink_refresh_mode_t mode = EINK_REFRESH_FULL_COLOR;
-            s_bw_fast_cycle_count = 0;
-
-            display_full_refresh(mode, "dashboard");
+            display_full_refresh(need_red, "dashboard");
             eink_sleep(&s_eink);
-            ESP_LOGI(TAG, "Dashboard refresh (mode=%s)",
-                     mode == EINK_REFRESH_BW_FAST ? "BW_FAST" : "FULL_COLOR");
+            ESP_LOGI(TAG, "Dashboard refresh (mode=full, variant=%s)",
+                     is_bw ? "BW_FULL" : "FULL_COLOR");
         }
+    } else {
+        const char *reason = variant_changed ? "variant-change"
+                           : layout_flip     ? "layout-flip"
+                           : cap_reached     ? "24h-cap"
+                                             : "dashboard";
+        display_full_refresh(need_red, reason);
+        eink_sleep(&s_eink);
+        ESP_LOGI(TAG, "Dashboard refresh forced full (reason=%s)", reason);
     }
 
-    if (displayed_frame_matches_buffer) {
-        remember_current_bw_frame();
+    if (is_bw) {
+        /* Keep the BW layout-flip guard in lockstep with what is now on the
+           panel, on every outcome (unchanged-skip / partial / full). */
+        s_last_dashboard_show_github  = show_github;
+        s_last_dashboard_layout_valid = true;
     }
-    s_last_red_state     = need_red;
-    s_first_refresh_done = true;
+
     if (!data->offline && !data->stale) {
         s_last_content_valid = true;
         memcpy(&s_last_data, data, sizeof(s_last_data));
@@ -1358,6 +1762,15 @@ void display_set_connection_slots(const dash_config_v2_t *cfg,
 
 static bool display_show_compact_status(const char *status)
 {
+    /* Hard precondition: compact status layers on top of an already-
+       displayed dashboard frame, so the saved variant must match the
+       physically attached panel. When ineligible (e.g. variant not yet
+       known) this returns false and the caller draws the full-screen
+       status poster through the variant-aware display_full_refresh() path. */
+    if (!s_variant_known) {
+        ESP_LOGW(TAG, "Compact status skipped: variant not yet known");
+        return false;
+    }
     if (!s_last_content_valid || !s_first_refresh_done ||
         !s_last_bw_valid || s_last_red_state) {
         return false;
@@ -1383,27 +1796,22 @@ static bool display_show_compact_status(const char *status)
         return true;
     }
 
-    eink_refresh_mode_t mode = EINK_REFRESH_FULL_COLOR;
-#if DISPLAY_ENABLE_BW_EXPERIMENT
+    bool is_bw = (effective_panel_variant() == EINK_PANEL_WEACT_29_BW);
     bool did_partial = false;
-    if (s_bw_fast_cycle_count < MAX_BW_FAST_REFRESHES_BEFORE_FULL) {
-        did_partial = eink_refresh_bw_partial(&s_eink, bw_buf, diff_rect);
-        if (did_partial) {
-            s_bw_fast_cycle_count++;
-        }
+    if (is_bw && s_last_dashboard_layout_valid) {
+        /* The status overlay only touches the header region; reuse the
+           per-region planner with the last dashboard layout. Do not tick the
+           24 h counter (status is not a dashboard render) — commit the current
+           s_renders_since_full unchanged. */
+        did_partial = render_bw_regions(s_last_dashboard_show_github,
+                                        s_renders_since_full);
+        if (did_partial) eink_sleep(&s_eink);
     }
     if (!did_partial) {
-#endif
-        display_full_refresh(mode, "status");
-        s_bw_fast_cycle_count = 0;
-#if DISPLAY_ENABLE_BW_EXPERIMENT
+        display_full_refresh(/*need_red=*/false, "status");
+        eink_sleep(&s_eink);
     }
-#endif
-    eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    ESP_LOGI(TAG, "Status refresh (mode=%s)",
-             mode == EINK_REFRESH_FULL_COLOR ? "FULL_COLOR" : "BW_EXPERIMENT");
+    ESP_LOGI(TAG, "Status refresh done");
     return true;
 }
 
@@ -1476,7 +1884,8 @@ static void draw_boot_networks(const dash_config_v2_t *cfg)
     }
 }
 
-static void display_show_boot_poster(const dash_config_v2_t *cfg)
+static void display_show_boot_poster(display_context_t ctx,
+                                     const dash_config_v2_t *cfg)
 {
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
@@ -1506,16 +1915,17 @@ static void display_show_boot_poster(const dash_config_v2_t *cfg)
 
     draw_boot_footer();
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "boot");
+    /* Variant-aware in both contexts now (Gate 0.B): the panel variant is
+       known at boot, so recovery uses FULL_COLOR on BWR (clears red) / BW_FULL
+       on BW, not the dormant SAFE_BW path. */
+    (void)ctx;
+    display_full_refresh(/*need_red=*/false, "boot");
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = false;
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
 }
 
-static void display_show_wait_page(const char *header_status,
+static void display_show_wait_page(display_context_t ctx,
+                                   const char *header_status,
                                    const char *title,
                                    const char *sub)
 {
@@ -1539,29 +1949,35 @@ static void display_show_wait_page(const char *header_status,
     static const char *HINT = "Please wait";
     draw_str((296 - str_w(HINT)) / 2, 82, HINT, 0);
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "wait");
+    /* Variant-aware in both contexts now (Gate 0.B); see display_show_boot_poster. */
+    (void)ctx;
+    display_full_refresh(/*need_red=*/false, "wait");
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = false;
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
 }
 
-void display_show_connecting(bool compact, const dash_config_v2_t *cfg)
+void display_show_connecting(display_context_t ctx, bool compact,
+                             const dash_config_v2_t *cfg)
 {
-    if (compact && display_show_compact_status("connecting")) {
+    /* Compact status overlays a saved dashboard frame, so it requires
+       s_variant_known == true. The display_show_compact_status guard
+       already enforces that and bails out otherwise; fall through to
+       the variant-aware full poster below. */
+    if (compact && ctx == DISPLAY_CTX_NORMAL_BOOT &&
+        display_show_compact_status("connecting")) {
         return;
     }
-    display_show_boot_poster(cfg);
+    display_show_boot_poster(ctx, cfg);
 }
 
-void display_show_refreshing(bool compact)
+void display_show_refreshing(display_context_t ctx, bool compact)
 {
-    if (compact && display_show_compact_status("refreshing")) {
+    if (compact && ctx == DISPLAY_CTX_NORMAL_BOOT &&
+        display_show_compact_status("refreshing")) {
         return;
     }
-    display_show_wait_page("REFRESH", "Refreshing", "Fetching dashboard data");
+    display_show_wait_page(ctx, "REFRESH", "Refreshing",
+                           "Fetching dashboard data");
 }
 
 /* QR-render callback. Paints the QR matrix at the painted-area origin given
@@ -1683,12 +2099,8 @@ void display_show_qr(const char *ssid, const char *pop)
         }
     }
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "provisioning");
+    display_full_refresh(/*need_red=*/false, "provisioning");
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = false;   /* S1 prompt paints no red */
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
@@ -1704,25 +2116,27 @@ void display_show_setup_failed(void)
     draw_s1_chrome();
     draw_s1_info_column(NULL, NULL, NULL, false);
 
-    /* BigCross 19×19 centred horizontally in the 89×89 QR slot. The slot
-     * starts at x=12 and is 89 wide; (89-19)/2 = 35 → cross origin x = 47. */
-    icon_big_cross_red(47, 32);
-    /* SETUP / FAILED two-line red, centred under the cross. */
+    /* BigCross 19×19 centred horizontally in the 89×89 QR slot.
+       Recovery surface: rendered through the variant-aware
+       display_full_refresh() (FULL_COLOR on BWR, BW_FULL on BW). Drawn in
+       black-only so the cross / SETUP-FAILED text renders identically on
+       both panels. (Pre-Phase-1 BWR behavior rendered the cross in red;
+       the variant-aware OTA / offline / dashboard alerts elsewhere still
+       use red on BWR via display_full_refresh.) */
+    for (int i = 0; i < 19; i++) {
+        lpix(47 + i,        32 + i,        1, 0);
+        if (i != 9) lpix(47 + i, 32 + 18 - i, 1, 0);
+    }
     static const char *S1 = "SETUP";
     static const char *S2 = "FAILED";
     int qr_centre_x = 12 + 89 / 2;
-    draw_str(qr_centre_x - str_w(S1) / 2, 60, S1, 1);
-    draw_str(qr_centre_x - str_w(S2) / 2, 70, S2, 1);
-    /* Black "check serial" hint below. */
+    draw_str(qr_centre_x - str_w(S1) / 2, 60, S1, 0);
+    draw_str(qr_centre_x - str_w(S2) / 2, 70, S2, 0);
     static const char *S3 = "check serial";
     draw_str(qr_centre_x - str_w(S3) / 2, 84, S3, 0);
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "setup failed");
+    display_full_refresh(/*need_red=*/false, "setup failed");
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = true;    /* big-cross + SETUP/FAILED are red */
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
@@ -1742,22 +2156,32 @@ void display_show_offline(display_offline_reason_t reason,
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
     memset(red_buf, 0x00, sizeof(red_buf));
-    if (reason == DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT) {
-        icon_cross_sync(6, 4);
-        draw_str(19, 5, "OFFLINE", 1);
+
+    bool is_setup_timeout =
+        (reason == DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT);
+
+    if (is_setup_timeout) {
+        /* Provisioning recovery surface — rendered through the variant-aware
+           display_full_refresh() (readable on either physical panel). Draw the
+           alert in BW only (inlined cross with use_red=0) so it renders
+           identically on both panels. icon_cross_sync() hardcodes use_red=1 and
+           is used elsewhere by variant-aware paths where red is desired. */
+        for (int i = 0; i < 8; i++) lpix(6 + i, 4 + i, 1, 0);
+        static const int8_t d2[] = {0,7, 1,6, 2,5, 3,4, 5,3, 6,2, 7,1};
+        for (int i = 0; i < 7; i++)
+            lpix(6 + d2[i*2], 4 + d2[i*2+1], 1, 0);
+        draw_str(19, 5, "OFFLINE", 0);
         hline(2, 15, 292);
         draw_str(6, 30, offline_message_for_reason(reason), 0);
     } else {
         draw_unreachable_poster(reason, cfg, network_idx, wifi_diag, api_diag);
     }
-    /* The offline frame paints red; BW_FAST cannot write the red plane, so
-     * always use FULL_COLOR here. */
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "offline");
+    if (is_setup_timeout) {
+        display_full_refresh(/*need_red=*/false, "offline-setup-timeout");
+    } else {
+        display_full_refresh(/*need_red=*/true, "offline");
+    }
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = true;
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(frame);
 }
 
@@ -1865,11 +2289,7 @@ void display_show_ota_update(const char *from_version,
     draw_str(13, 117, "DO NOT UNPLUG", 1);
     draw_ota_footer_eta();
 
-    display_full_refresh(EINK_REFRESH_FULL_COLOR, "OTA update");
+    display_full_refresh(/*need_red=*/true, "OTA update");
     eink_sleep(&s_eink);
-    remember_current_bw_frame();
-    s_first_refresh_done = true;
-    s_last_red_state     = true;
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_OTA);
 }

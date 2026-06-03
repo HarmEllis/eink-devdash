@@ -1,8 +1,14 @@
 # eink-devdash
 
-A physical developer dashboard on a 2.9" black/red e-ink display, driven by
-an ESP32-S3. Shows GitHub activity, Claude Code rate limits, and Codex usage,
-updated on a configurable interval via deep sleep.
+A physical developer dashboard on a 2.9" e-ink display, driven by an
+ESP32-S3. The reference panel is the WeAct Studio 2.9" SSD1680
+Black/White/Red (BWR) module with red alert highlights; the same
+firmware binary also supports the Black/White (BW) variant of that module.
+The BW panel is recommended for the best day-to-day dashboard experience:
+it keeps the UI monochrome, folds red operations to black, and enables
+validated per-region partial refreshes. Shows GitHub activity, Claude Code
+rate limits, and Codex usage, updated on a configurable interval via deep
+sleep.
 
 [![CI](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml/badge.svg)](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml)
 [![Docker image](https://img.shields.io/badge/ghcr.io-eink--devdash-blue?logo=docker)](https://github.com/HarmEllis/eink-devdash/pkgs/container/eink-devdash)
@@ -38,8 +44,42 @@ errors.
 | Part | Spec |
 |------|------|
 | MCU | ESP32-S3 Super Mini |
-| Display | WeAct 2.9" Black/Red e-ink (128×296 px) |
+| Display | WeAct 2.9" SSD1680 e-ink (128×296 px) — Black/White/Red (BWR) or Black/White (BW) |
 | Driver IC | SSD1680 (SPI) |
+
+Both the BWR and BW variants of the WeAct 2.9" SSD1680 module are supported
+from the same firmware binary and the same SPI wiring. On a BW panel the
+firmware folds red drawing operations to black at the framebuffer level and
+runs a per-region partial-refresh path (validated by Phase 0 Gate 0.A in
+`firmware/BOARD_NOTES.md`); on a BWR panel the existing full-colour refresh is
+unchanged.
+
+**Panel choice:**
+
+| Panel | Recommended when | Advantages | Tradeoffs |
+|-------|------------------|------------|-----------|
+| WeAct 2.9" BW | You want the best dashboard experience and faster routine updates. | Fast per-region partial refreshes, fewer full-screen flashes, same wiring and firmware binary. The default cap of 5 partial refreshes per region has not shown visible ghosting in project hardware testing. | No red ink; alert highlights render as black. Ghosting becomes a tuning concern only if the partial cap is raised beyond the default. |
+| WeAct 2.9" BWR | You specifically want red alert highlights. | Red ink makes alerts visually distinct and remains the reference/original panel path. | Runtime dashboard updates are full-colour refreshes, so normal changes are slower and cause more full-screen flashes. |
+
+The build stamps a default panel via `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` so a
+device knows its panel before the first draw (Phase 0 Gate 0.B showed the old
+panel-agnostic recovery path could not clear pre-existing red on a BWR panel).
+The repo, CI, and the published release all build a **single binary** that
+defaults to BWR (`=0`, set in `sdkconfig.defaults`) — there is no separately
+published BW build. A user changes the variant per-device in the provisioning
+portal under "Display"; the chosen value is persisted in NVS and wins over the
+build default, so a BW panel is fully supported from the same released image.
+
+**Default panel per build:**
+
+| `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` | First-boot default | Build that uses it          | Wrong-default recovery |
+|----------------------------------------|--------------------|-----------------------------|------------------------|
+| `0`                                    | BWR                | repo / CI / released binary | Open the captive portal with a BOOT long-press, choose BW under Display, and save. |
+| `1`                                    | BW                 | local/factory build only    | Open the captive portal with a BOOT long-press, choose BWR under Display, and save. |
+
+The portal panel selector is the recovery path for a mis-flashed SKU. It writes
+the selected variant to NVS, and that saved value wins over the build-stamped
+default on subsequent boots.
 
 ### Wiring
 
@@ -600,17 +640,23 @@ first, wait for CI, and re-tag.
 
 ### Refresh strategy
 
-| Mode | Duration | Trigger |
-|------|----------|---------|
-| BW fast monochrome | ~2–4 s | Dashboard metrics changed while both the previous and current frame are black/white-only |
-| Full 3-color (Mode 1 LUT) | ~15–27 s | Red content changed, previous frame had red, first render, controller wake, or after ten fast monochrome refreshes |
+| Mode | Panel | Duration | Trigger |
+|------|-------|----------|---------|
+| BW per-region partial | BW | ~2–4 s | Dashboard metrics changed, no red involved, and all changes fall inside the active layout's region rects (up to `max_partials` partials per region between full refreshes; default 5, configurable 1–100 in the portal) |
+| BW full (`BW_FULL`) | BW | ~10–15 s | First render, controller wake, layout flip, red→BW fold, region cap hit, or the 24 h ghost-clear cap |
+| Full 3-color (`FULL_COLOR`, Mode 1 LUT) | BWR | ~15–27 s | Any change on a BWR panel (the BWR runtime path is always a full refresh) |
 
-Timestamp and reset-countdown changes by themselves do not repaint the
-panel. Minimum refresh interval: 3 minutes (configurable 3–60 min).
+Clock and reset-countdown text are redrawn only on a scheduled dashboard
+render; they do not wake the device by themselves, but if their text differs at
+render time it counts as a normal framebuffer diff and may refresh the affected
+BW region or the full BWR panel. Minimum refresh interval: 3 minutes
+(configurable 3–60 min).
 
-> The BW partial-refresh path is currently disabled at compile time
-> (`DISPLAY_ENABLE_BW_EXPERIMENT 0`) pending hardware validation — see
-> [`docs/decisions/0003-red-free-bw-partial-refresh.md`](docs/decisions/0003-red-free-bw-partial-refresh.md).
+The BW per-region partial path was validated on hardware in Phase 0 Gate 0.A
+(BW V2 partial waveform LUT `0x32` + update trigger `0xCC`, geometry
+`RAMX=1..16`) — see `firmware/BOARD_NOTES.md`. The diff is computed per region
+(Layout A: 6 regions with GitHub, Layout B: 3 regions without); any change
+outside the active region union forces a full refresh.
 
 ### NVS layout
 
@@ -618,11 +664,12 @@ Namespace `devdash`.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `cfg_v2` | blob | WiFi profiles, API endpoints, refresh interval |
-| `ap_password` | string | Persisted SoftAP password |
+| `cfg_v2` | blob | Schema v4: WiFi profiles, API endpoints, refresh interval, `panel_variant` (BWR / BW), `max_partials` (BW partial-refresh cap). Legacy v2 and v3 blobs are migrated to v4 in place on first load. |
+| `ap_pwd` | string | Persisted SoftAP password |
 
-Refresh-cycle bookkeeping (`bw_fast_cycle_count`, `last_red_state`) lives
-in RTC slow memory and survives deep sleep but resets on power-on.
+Refresh-cycle bookkeeping (last panel content and frame, last red state, and the
+per-region partial counters) lives in RTC slow memory and survives deep sleep but
+resets on power-on / external reset.
 
 ### Data sources
 
