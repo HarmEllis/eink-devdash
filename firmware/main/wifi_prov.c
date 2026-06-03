@@ -50,6 +50,11 @@ typedef struct {
     char     password[DASH_WIFI_PASSWORD_MAX + 1];
     bool     pwd_present;
     bool     overflow;      /* SSID or password got truncated by form_decode */
+    bool     q_on;          /* wN_q_on — quiet hours enabled */
+    bool     q_start_present;
+    bool     q_end_present;
+    int      q_start;       /* wN_q_start — minutes since midnight, or -1 */
+    int      q_end;         /* wN_q_end   — minutes since midnight, or -1 */
     api_form_t apis[MAX_APIS_PER_NETWORK];
 } net_form_t;
 
@@ -188,6 +193,22 @@ static bool form_decode(char *dst, size_t dst_sz, const char *src, size_t src_le
  * malformed keys. */
 static int dec_digit(char c) { return (c >= '0' && c <= '9') ? c - '0' : -1; }
 
+/* Parse a decoded "HH:MM" time-input value into minutes since midnight, or -1
+ * when malformed / out of range. Enforces the exact 5-char "HH:MM" shape so a
+ * crafted POST like "12:xx" or "1x:30" cannot slip past as a valid time
+ * (atoi would silently accept the digit prefix). */
+static int parse_hhmm(const char *s)
+{
+    if (strlen(s) != 5 || s[2] != ':') return -1;
+    int h1 = dec_digit(s[0]), h0 = dec_digit(s[1]);
+    int m1 = dec_digit(s[3]), m0 = dec_digit(s[4]);
+    if (h1 < 0 || h0 < 0 || m1 < 0 || m0 < 0) return -1;
+    int hh = h1 * 10 + h0;
+    int mm = m1 * 10 + m0;
+    if (hh > 23 || mm > 59) return -1;
+    return hh * 60 + mm;
+}
+
 /* Apply one (key, value) pair to the form state. Keys follow the V4 contract:
  *
  *   iv
@@ -255,6 +276,24 @@ static void apply_field(portal_form_t *form,
     }
     if (rlen == 7 && strncmp(rest, "clearpw", 7) == 0) {
         net->clearpw = true;
+        return;
+    }
+    if (rlen == 4 && strncmp(rest, "q_on", 4) == 0) {
+        net->q_on = true;
+        return;
+    }
+    if (rlen == 7 && strncmp(rest, "q_start", 7) == 0) {
+        char b[8] = {0};
+        form_decode(b, sizeof(b), val, vlen);
+        net->q_start = parse_hhmm(b);
+        net->q_start_present = true;
+        return;
+    }
+    if (rlen == 5 && strncmp(rest, "q_end", 5) == 0) {
+        char b[8] = {0};
+        form_decode(b, sizeof(b), val, vlen);
+        net->q_end = parse_hhmm(b);
+        net->q_end_present = true;
         return;
     }
 
@@ -394,6 +433,12 @@ static const char V4_STYLE[] =
 "padding:0 12px;font:inherit;font-size:13px;cursor:pointer;color:#1c1f24}"
 ".check{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:13px;color:#4b5563}"
 ".api-section{margin-top:14px;border-top:1px solid #eef0f3;padding-top:12px}"
+".quiet-section{margin-top:14px;border-top:1px solid #eef0f3;padding-top:12px}"
+".quiet-section .hint{color:#6b7280;font-weight:400}"
+".quiet-times{display:flex;gap:12px}"
+".quiet-times label.field{flex:1;margin:8px 0 0}"
+"input[type=time]{width:100%;padding:9px 10px;border:1px solid #cdd2d9;"
+"border-radius:8px;font-size:15px;background:#fff;color:#1c1f24}"
 ".api-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}"
 ".api-head .title{font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#6b7280}"
 ".api-list{list-style:none;margin:0;padding:0}"
@@ -444,8 +489,8 @@ static const char V4_JS[] =
 "});}"
 "document.addEventListener('change',function(e){"
 "var t=e.target;"
-"if(t.matches('input[name$=\"_on\"][type=checkbox]')){"
-"if(t.name.indexOf('_a')>0)tgl(t,'.api-list>li','disabled');"
+"if(t.matches('.card-on,.api-on')){"
+"if(t.classList.contains('api-on'))tgl(t,'.api-list>li','disabled');"
 "else tgl(t,'.card','disabled');"
 "updateCounts();"
 "}"
@@ -468,8 +513,8 @@ static const char V4_JS[] =
 "if(r&&n)syncRange(r,n);"
 "var mr=document.getElementById('mp-range');var mn=document.getElementById('mp-num');"
 "if(mr&&mn)syncRange(mr,mn);"
-"document.querySelectorAll('input[name$=\"_on\"][type=checkbox]').forEach(function(t){"
-"if(t.name.indexOf('_a')>0)tgl(t,'.api-list>li','disabled');"
+"document.querySelectorAll('.card-on,.api-on').forEach(function(t){"
+"if(t.classList.contains('api-on'))tgl(t,'.api-list>li','disabled');"
 "else tgl(t,'.card','disabled');"
 "});"
 "updateCounts();"
@@ -577,9 +622,11 @@ static void render_api(httpd_req_t *req, int n, int k,
     free(url_esc);
 }
 
-/* Render one WiFi network card and its 5 API slots. */
+/* Render one WiFi network card and its 5 API slots. quiet_* describe the
+   per-network sleep window for this slot (minutes since local midnight). */
 static void render_network(httpd_req_t *req, int n,
-                           const dash_wifi_profile_t *net)
+                           const dash_wifi_profile_t *net,
+                           bool quiet_on, int quiet_start, int quiet_end)
 {
     bool en = net && net->enabled;
     bool saved = net && (net->id || net->ssid[0] || net->password[0]);
@@ -646,6 +693,26 @@ static void render_network(httpd_req_t *req, int n,
         CHUNK(req, buf);
     }
 
+    /* Quiet hours: a fresh slot pre-fills 23:00–06:00 as a sensible default so
+       the time inputs are not 00:00–00:00 when the user first enables it. */
+    int qs = quiet_start, qe = quiet_end;
+    if (!quiet_on && qs == 0 && qe == 0) { qs = 23 * 60; qe = 6 * 60; }
+    snprintf(buf, sizeof(buf),
+        "<div class=\"quiet-section\">"
+        "<label class=\"check\"><input type=\"checkbox\" name=\"w%d_q_on\"%s> "
+        "Quiet hours <span class=\"hint\">- skip updates between these times</span>"
+        "</label>"
+        "<div class=\"quiet-times\">"
+        "<label class=\"field\"><span class=\"lab\">Sleep from</span>"
+        "<input type=\"time\" name=\"w%d_q_start\" value=\"%02d:%02d\"></label>"
+        "<label class=\"field\"><span class=\"lab\">until</span>"
+        "<input type=\"time\" name=\"w%d_q_end\" value=\"%02d:%02d\"></label>"
+        "</div></div>",
+        n, quiet_on ? " checked" : "",
+        n, qs / 60, qs % 60,
+        n, qe / 60, qe % 60);
+    CHUNK(req, buf);
+
     snprintf(buf, sizeof(buf),
         "<div class=\"api-section\"><div class=\"api-head\">"
         "<span class=\"title\">API endpoints</span>"
@@ -708,7 +775,10 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
     for (int n = 0; n < MAX_WIFI_NETWORKS; n++) {
         const dash_wifi_profile_t *net =
             (n < cfg->network_count) ? &cfg->networks[n] : NULL;
-        render_network(req, n, net);
+        bool q_on   = (n < cfg->network_count) && cfg->quiet_enabled[n];
+        int  q_start = (n < cfg->network_count) ? cfg->quiet_start_min[n] : 0;
+        int  q_end   = (n < cfg->network_count) ? cfg->quiet_end_min[n] : 0;
+        render_network(req, n, net, q_on, q_start, q_end);
     }
 
     int iv = cfg->refresh_min ? cfg->refresh_min : 5;
@@ -957,6 +1027,21 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
             if (out_k >= MAX_APIS_PER_NETWORK) break;
         }
         nw->api_count = out_k;
+
+        /* Quiet hours for this slot. Enabled only when the toggle is on and
+           both times parsed to a distinct, valid minute-of-day; otherwise
+           disabled. Parsed times are preserved even when disabled so toggling
+           off and back on keeps the user's window. storage normalize re-clamps
+           and re-checks start == end. */
+        bool q_times_ok = nf->q_start_present && nf->q_end_present &&
+                          nf->q_start >= 0 && nf->q_end >= 0 &&
+                          nf->q_start != nf->q_end;
+        cfg->quiet_enabled[out_n]   = (nf->q_on && q_times_ok) ? 1 : 0;
+        cfg->quiet_start_min[out_n] =
+            (nf->q_start_present && nf->q_start >= 0) ? (uint16_t)nf->q_start : 0;
+        cfg->quiet_end_min[out_n] =
+            (nf->q_end_present && nf->q_end >= 0) ? (uint16_t)nf->q_end : 0;
+
         out_n++;
         if (out_n >= MAX_WIFI_NETWORKS) break;
     }
@@ -966,13 +1051,14 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
 
 static void render_save_error(httpd_req_t *req,
                               const portal_form_t *form,
-                              const char *reason)
+                              const char *reason,
+                              const char *http_status)
 {
     dash_config_v2_t *prev = calloc(1, sizeof(*prev));
     dash_config_v2_t *cfg  = calloc(1, sizeof(*cfg));
     if (!prev || !cfg) {
         free(prev); free(cfg);
-        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_status(req, http_status);
         httpd_resp_set_type(req, "text/plain; charset=utf-8");
         httpd_resp_sendstr(req, reason);
         return;
@@ -980,7 +1066,7 @@ static void render_save_error(httpd_req_t *req,
 
     storage_load_v2(prev);
     apply_form_to_cfg(form, prev, cfg);
-    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_status(req, http_status);
     render_portal_page_from_cfg(req, cfg, reason);
     free(prev);
     free(cfg);
@@ -1021,6 +1107,7 @@ static esp_err_t handler_save(httpd_req_t *req)
     /* portal_form_t is ~7 KB; keep it off the httpd task stack. */
     portal_form_t *form = calloc(1, sizeof(*form));
     if (!form) {
+        free(body);
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_sendstr(req, "Out of memory.");
         return ESP_OK;
@@ -1054,6 +1141,12 @@ static esp_err_t handler_save(httpd_req_t *req)
                    (strlen(nf->password) < 8 ||
                     strlen(nf->password) > DASH_WIFI_PASSWORD_MAX)) {
             reason = "WiFi passwords must be 8-64 characters.";
+        } else if (nf->q_on &&
+                   (!nf->q_start_present || !nf->q_end_present ||
+                    nf->q_start < 0 || nf->q_end < 0)) {
+            reason = "Quiet hours needs a valid start and end time.";
+        } else if (nf->q_on && nf->q_start == nf->q_end) {
+            reason = "Quiet hours start and end cannot be the same.";
         }
         for (int k = 0; k < MAX_APIS_PER_NETWORK && !reason; k++) {
             const api_form_t *af = &nf->apis[k];
@@ -1068,7 +1161,8 @@ static esp_err_t handler_save(httpd_req_t *req)
         }
     }
     if (reason) {
-        render_save_error(req, form, reason);
+        /* Form validation failure is a client error. */
+        render_save_error(req, form, reason, "400 Bad Request");
         free(form);
         return ESP_OK;
     }
@@ -1086,13 +1180,23 @@ static esp_err_t handler_save(httpd_req_t *req)
     storage_load_v2(prev);
     apply_form_to_cfg(form, prev, cfg);
     esp_err_t err = storage_save_v2(cfg);
-    free(form); free(prev); free(cfg);
+    free(prev); free(cfg);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "storage_save_v2 failed: %d", err);
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_sendstr(req, "Save failed.");
+        ESP_LOGE(TAG, "storage_save_v2 failed: 0x%x (%s)",
+                 err, esp_err_to_name(err));
+        /* Surface the exact NVS error as an inline banner on the re-rendered
+         * portal (keeping the user's edits) instead of a bare text page. */
+        char reason[200];
+        snprintf(reason, sizeof(reason),
+                 "Could not save to device storage: %s (0x%x). The flash may be "
+                 "full — try again, or erase the device and re-provision.",
+                 esp_err_to_name(err), err);
+        /* NVS/flash write failure is a device/server error, not client input. */
+        render_save_error(req, form, reason, "500 Internal Server Error");
+        free(form);
         return ESP_OK;
     }
+    free(form);
 
     render_saved_page(req);
     /* DO NOT signal BIT_PROV_DONE here. The provisioning task holds the AP /

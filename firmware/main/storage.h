@@ -6,9 +6,9 @@
 #include "eink_weact29.h"
 
 #define NVS_NAMESPACE "devdash"
-#define NVS_SCHEMA_VERSION 4
+#define NVS_SCHEMA_VERSION 5
 
-#define DASH_CFG_V2_VERSION 4
+#define DASH_CFG_V2_VERSION 5
 #define MAX_WIFI_NETWORKS 5
 #define MAX_APIS_PER_NETWORK 5
 #define DASH_SSID_MAX 32
@@ -22,6 +22,11 @@
 #define DASH_MAX_PARTIALS_MIN     1
 #define DASH_MAX_PARTIALS_MAX     100
 #define DASH_MAX_PARTIALS_DEFAULT 5
+
+/* Per-network "quiet hours" (added in v5). Window endpoints are minutes since
+   local midnight, so the valid range is [0, 1439]. A window with
+   start == end is treated as disabled (see storage_cfg_v2_normalize). */
+#define DASH_QUIET_MIN_OF_DAY_MAX 1439
 
 /*
  * Hard ceiling for the cfg_v2 NVS blob. NVS supports blobs up to ~97% of
@@ -70,6 +75,19 @@ typedef struct {
        by the `version` field, NOT by blob length. BW per-region partial cap,
        clamped to [DASH_MAX_PARTIALS_MIN, DASH_MAX_PARTIALS_MAX]. */
     uint8_t max_partials;
+    /* Added in v5. Per-network "quiet hours": a local-time window during which
+       the device skips the WiFi + API + e-paper refresh cycle and just deep-
+       sleeps. Stored as TRAILING parallel arrays indexed by network slot (NOT
+       inside dash_wifi_profile_t) so the networks[] offset stays byte-identical
+       with v2/v3/v4 — the same migration invariant the static assertions pin
+       down. Unlike panel_variant/max_partials these do NOT fit in tail padding,
+       so sizeof(v5) > sizeof(v4); the load path distinguishes v5 from v3/v4 by
+       blob length. quiet_enabled[i] is 0/1; quiet_start_min[i]/quiet_end_min[i]
+       are minutes since local midnight in [0, DASH_QUIET_MIN_OF_DAY_MAX]. A
+       window with start == end is treated as disabled. */
+    uint8_t  quiet_enabled[MAX_WIFI_NETWORKS];
+    uint16_t quiet_start_min[MAX_WIFI_NETWORKS];
+    uint16_t quiet_end_min[MAX_WIFI_NETWORKS];
 } dash_config_v2_t;
 
 void storage_init(void);

@@ -81,14 +81,16 @@ with the WiFi driver's stored credentials; the `cfg_v2` blob alone is ~7 KB, so
 each rewrite needs the old + new copy to coexist. Writing it on a hot path
 fragments the partition (leading to `ESP_ERR_NVS_NOT_ENOUGH_SPACE` on a later
 save) and wears the flash. NVS is for things that **must** survive a cold boot /
-power loss: WiFi + API config, panel variant, the AP password.
+power loss: WiFi + API config, panel variant, the AP password, and the
+per-network quiet hours.
 
 For state that only needs to survive **deep-sleep timer wakes** — not a power
 loss — use `RTC_DATA_ATTR` (RTC slow memory) instead. It is zero-initialized on
 cold boot / power loss and preserved across deep sleep and `esp_restart`, costs
 nothing to write, and never touches flash. Existing examples: the dashboard
 framebuffer/refresh state (`display.c`), the OTA skip counter (`ota_client.c`),
-and the `last_success` reconnect hints (`storage.c`). Before persisting anything
+the `last_success` reconnect hints (`storage.c`), and the quiet-hours
+sleeping-footer flag (`s_quiet_footer_shown` in `main.c`). Before persisting anything
 per refresh cycle, ask whether losing it on a cold boot actually matters — if
 not, it belongs in RTC memory, not NVS.
 

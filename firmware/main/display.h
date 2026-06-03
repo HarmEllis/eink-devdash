@@ -44,6 +44,12 @@ void display_set_max_partials(uint8_t max_partials);
 void display_force_full_refresh_next(void);
 
 void display_render(const dashboard_data_t *data);
+
+/* Overlay the quiet-hours "sleeping" state on the last shown dashboard: a moon
+ * + last-sync time in the header and a black footer bar
+ * "[moon] SLEEPING [dot] WAKES HH:MM". One full refresh; the next dashboard
+ * render forces a full refresh to clear the footer. */
+void display_show_sleeping(const char *wake_hhmm);
 void display_set_connection_slots(const dash_config_v2_t *cfg,
                                   int network_idx,
                                   int active_api_idx);

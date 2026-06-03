@@ -208,6 +208,21 @@ static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
         copy_updated_at(out->updated_at, sizeof(out->updated_at), ua->valuestring);
     }
 
+    /* Full local wall-clock timestamp for the RTC clock. Stored raw (no HH:MM
+       truncation) so timekeep can parse the date+time. ONLY accept the local
+       ISO field — never fall back to the UTC `updatedAt`: timekeep treats the
+       parsed fields as local wall time and ignores any offset, so a UTC value
+       would set the clock wrong by the timezone offset and shift quiet hours.
+       When the field is absent (e.g. an older API), updated_at_iso stays empty,
+       the RTC is left unset, and quiet hours simply does not activate until the
+       API is updated — a safe degradation rather than a silent time skew. */
+    cJSON *uai = cJSON_GetObjectItemCaseSensitive(root, "updatedAtLocalIso");
+    if (uai && cJSON_IsString(uai)) {
+        strncpy(out->updated_at_iso, uai->valuestring,
+                sizeof(out->updated_at_iso) - 1);
+        out->updated_at_iso[sizeof(out->updated_at_iso) - 1] = '\0';
+    }
+
     out->stale   = json_bool(root, "stale");
     out->offline = false;
 

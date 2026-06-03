@@ -37,6 +37,11 @@ typedef struct {
     claude_data_t claude;
     codex_data_t codex;
     char updated_at[32];
+    /* Full local wall-clock ISO timestamp ("YYYY-MM-DDTHH:MM:SS") from the
+       API's updatedAtLocalIso field. Used to set the RTC clock so the
+       per-network quiet-hours window can be evaluated against local time.
+       Empty when the API did not provide it. */
+    char updated_at_iso[24];
     bool stale;
     bool offline;
 } dashboard_data_t;

@@ -476,6 +476,20 @@ static void icon_sync(int ox, int oy)
     fill_rect(ox+2, oy+6, 1, 3, 1, 0);
 }
 
+/* Moon glyph (8×8 crescent). black=1 draws black pixels (header, on white);
+   black=0 draws white pixels (sleeping footer, on the black bar). */
+static void icon_moon(int ox, int oy, int black)
+{
+    static const uint8_t rows[8] = {
+        0x3C, 0x0E, 0x07, 0x07, 0x07, 0x07, 0x0E, 0x3C,
+    };
+    for (int row = 0; row < 8; row++) {
+        for (int col = 0; col < 8; col++) {
+            if (rows[row] & (1 << col)) lpix(ox + col, oy + row, black, 0);
+        }
+    }
+}
+
 /* Cross-sync glyph: X mark in RED */
 static void icon_cross_sync(int ox, int oy)
 {
@@ -716,6 +730,16 @@ static RTC_DATA_ATTR dashboard_data_t s_last_data;
 static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
 static int64_t s_last_full_refresh_us = 0;
 
+/* Quiet-hours sleeping overlay. s_sleeping_mode gates the sleeping-specific
+   header clock and footer bar inside draw_dashboard_frame; s_wake_hhmm holds the
+   "WAKES HH:MM" string. s_force_full_next_render is RTC-persisted so the first
+   dashboard render AFTER the window forces a full refresh — the footer bar sits
+   below the per-region partial-refresh rectangles, so only a full refresh is
+   guaranteed to clear it. */
+static bool s_sleeping_mode = false;
+static char s_wake_hhmm[6] = {0};
+static RTC_DATA_ATTR bool s_force_full_next_render = false;
+
 /* BW per-region partial cap: how many partials a region may take before it is
    forced to a full refresh. Portal-configurable (cfg.max_partials); main.c sets
    it via display_set_max_partials() each boot before the first render. Defaults
@@ -725,7 +749,6 @@ static uint8_t s_max_partials_per_region = DASH_MAX_PARTIALS_DEFAULT;
 #define DISPLAY_META_NAMESPACE       "disp_meta"
 #define DISPLAY_META_KEY             "state"
 #define DISPLAY_META_KEY_LAST_VAR    "last_var"
-#define DISPLAY_META_KEY_LAST_FULL   "last_full_s"
 #define DISPLAY_META_MAGIC           0xD15DA5E1u
 
 /* Panel variant state. effective_panel_variant() returns BW until
@@ -896,26 +919,26 @@ static void disp_meta_set_last_var(uint8_t v)
     if (err != ESP_OK) ESP_LOGW(TAG, "last_var save: %s", esp_err_to_name(err));
 }
 
+/* Last full-refresh wall-clock time lives in RTC slow memory, not NVS. It only
+   needs to survive deep-sleep timer wakes — a cold boot / power loss forces a
+   full refresh anyway via s_first_refresh_done — so it never has to touch flash.
+   Before quiet hours, no trusted clock existed (wall_time_trusted() was always
+   false), so disp_meta_set_last_full() never ran; now that timekeep sets the RTC
+   clock it fires on every full refresh, which would churn the NVS disp_meta
+   namespace if this were still flash-backed. 0 = unset. */
+static RTC_DATA_ATTR uint32_t s_last_full_wall_s = 0;
+
 __attribute__((unused))
 static bool disp_meta_get_last_full(uint32_t *out)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READONLY, &h);
-    if (err != ESP_OK) { log_meta_open_err("last_full_s", err); return false; }
-    err = nvs_get_u32(h, DISPLAY_META_KEY_LAST_FULL, out);
-    nvs_close(h);
-    return err == ESP_OK;
+    if (s_last_full_wall_s == 0) return false;
+    if (out) *out = s_last_full_wall_s;
+    return true;
 }
 
 static void disp_meta_set_last_full(uint32_t v)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READWRITE, &h);
-    if (err != ESP_OK) { log_meta_open_err("last_full_s", err); return; }
-    err = nvs_set_u32(h, DISPLAY_META_KEY_LAST_FULL, v);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    if (err != ESP_OK) ESP_LOGW(TAG, "last_full_s save: %s", esp_err_to_name(err));
+    s_last_full_wall_s = v;
 }
 
 void display_force_full_refresh_next(void)
@@ -1520,6 +1543,29 @@ static bool dashboard_needs_physical_red(bool alert_requested)
            alert_requested;
 }
 
+/* Black bar across the bottom of the dashboard with white glyphs:
+   [moon] SLEEPING [dot] WAKES HH:MM. Drawn last so it overlays the bottom row
+   of dashboard content — intentional, the device is idle during quiet hours. */
+static void draw_sleeping_footer(void)
+{
+    const int by = 113;                 /* bar top                          */
+    const int bh = 12;                  /* bar height (to y=124, inside 126) */
+    const int ty = by + 3;              /* glyph top                         */
+    fill_rect(2, by, 291, bh, 1, 0);    /* black fill                        */
+
+    int x = 7;
+    icon_moon(x, by + 2, 0);            /* white crescent                    */
+    x += 8 + 5;
+    draw_str_inv_adv(x, ty, "SLEEPING", FONT_W);
+    x += str_w("SLEEPING") + 6;
+    fill_rect(x, ty + 2, 2, 2, 0, 0);   /* white floating dot                */
+    x += 2 + 8;
+    char wake[16];
+    snprintf(wake, sizeof(wake), "WAKES %s",
+             s_wake_hhmm[0] ? s_wake_hhmm : "--:--");
+    draw_str_inv_adv(x, ty, wake, FONT_W);
+}
+
 static bool draw_dashboard_frame(const dashboard_data_t *data,
                                  const char *header_status,
                                  bool *alert_requested_out)
@@ -1553,11 +1599,21 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     } else {
         icon_box_logo(6, 4);
         draw_str(19, 5, "DEVDASH", 0);
-        if (!header_status || !header_status[0]) {
+        if ((!header_status || !header_status[0]) && !s_sleeping_mode) {
             draw_header_connection_slots();
         }
         if (header_status && header_status[0]) {
             draw_str(290 - str_w(header_status), 5, header_status, 0);
+        } else if (s_sleeping_mode) {
+            /* Sleeping: [moon] [HH:MM] of the last sync, no "+Nm" interval —
+             * the device is parked, so the next-refresh hint is meaningless. */
+            const int clock_w = str_w(data->updated_at);
+            const int icon_gap = 4;
+            const int moon_w   = 8;
+            const int x_clock  = 290 - clock_w;
+            const int x_moon   = x_clock - icon_gap - moon_w;
+            icon_moon(x_moon, 4, 1);
+            draw_str(x_clock, 5, data->updated_at, 0);
         } else {
             /* Right-anchored cluster: [sync] [HH:MM] [+Nm], all 5x7 font.
              * Wider intervals shift the clock/sync group left. */
@@ -1658,6 +1714,9 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
            || data->codex.reached
            || data->claude.auth_error;
     if (alert_requested_out) *alert_requested_out = alert_requested;
+
+    if (s_sleeping_mode) draw_sleeping_footer();
+
     return dashboard_needs_physical_red(alert_requested);
 }
 
@@ -1696,8 +1755,16 @@ void display_render(const dashboard_data_t *data)
     bool layout_flip = is_bw && s_last_dashboard_layout_valid &&
                        (s_last_dashboard_show_github != show_github);
 
+    /* A sleeping-footer frame was the last thing pushed to the panel; the
+       footer sits below the per-region partial rects, so only a full refresh
+       reliably clears it. The flag is RTC-persisted across the quiet naps and
+       consumed here on the first dashboard render after the window. */
+    bool clear_sleeping = s_force_full_next_render;
+    s_force_full_next_render = false;
+
     bool force_full = !s_first_refresh_done || s_force_full_refresh ||
-                      variant_changed || cap_reached || layout_flip;
+                      variant_changed || cap_reached || layout_flip ||
+                      clear_sleeping;
 
     ESP_LOGI(TAG,
              "Dashboard render decision: variant=%s alert=%d need_red=%d "
@@ -1763,6 +1830,29 @@ void display_render(const dashboard_data_t *data)
     display_mark_frame((data->offline || data->stale)
                        ? DISPLAY_FRAME_OFFLINE_API
                        : DISPLAY_FRAME_CONTENT);
+}
+
+void display_show_sleeping(const char *wake_hhmm)
+{
+    ensure_init();
+    snprintf(s_wake_hhmm, sizeof(s_wake_hhmm), "%s",
+             (wake_hhmm && wake_hhmm[0]) ? wake_hhmm : "--:--");
+
+    /* Compose the last shown dashboard plus the sleeping header/footer overlay
+       and push it as one full refresh (once per window entry — main.c gates
+       repeats with an RTC flag). Render from s_last_data so the footer sits on
+       top of real content; on a cold session it falls back to a zeroed frame,
+       which main.c avoids by only calling this after a prior successful
+       render. */
+    s_sleeping_mode = true;
+    bool need_red = draw_dashboard_frame(&s_last_data, NULL, NULL);
+    display_full_refresh(need_red, "sleeping");
+    eink_sleep(&s_eink);
+    s_sleeping_mode = false;
+
+    /* Force the next real dashboard render to a full refresh so the footer is
+       cleanly removed (it lies outside the per-region partial rects). */
+    s_force_full_next_render = true;
 }
 
 void display_set_connection_slots(const dash_config_v2_t *cfg,

@@ -7,6 +7,7 @@ idf_component_register(
         "captive_dns.c"
         "api_client.c"
         "storage.c"
+        "timekeep.c"
         "boot_button.c"
         "ota_client.c"
     INCLUDE_DIRS "."

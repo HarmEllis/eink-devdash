@@ -43,6 +43,28 @@ typedef struct {
     dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
 } dash_config_v2_legacy_t;
 
+/* Pre-v5 struct (v3 + v4 era). Used to read and migrate old blobs: v3/v4 both
+   stored at this size (max_partials landed in v3's tail padding, so
+   sizeof(v3) == sizeof(v4)). v5 appends the quiet-hours arrays, which do NOT
+   fit in tail padding, so sizeof(dash_config_v2_t) > sizeof(dash_config_v4_t).
+   The prefix up to and including max_partials is byte-identical with v5 — the
+   asserts below pin that invariant so an L4 blob overlays the v5 struct prefix
+   cleanly while the trailing quiet arrays stay zero-seeded (= disabled). */
+typedef struct {
+    uint16_t version;
+    uint8_t max_wifi_networks;
+    uint8_t max_apis_per_network;
+    uint8_t refresh_min;
+    uint8_t network_count;
+    int8_t last_success_network_idx;
+    int8_t last_success_api_idx;
+    uint32_t write_counter;
+    uint32_t crc32;
+    dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
+    uint8_t panel_variant;
+    uint8_t max_partials;
+} dash_config_v4_t;
+
 _Static_assert(sizeof(dash_api_profile_t) <= 272,
                "dash_api_profile_t grew unexpectedly — recompute blob budget");
 _Static_assert(sizeof(dash_wifi_profile_t) <= 1464,
@@ -56,10 +78,28 @@ _Static_assert(offsetof(dash_config_v2_t, networks) ==
                offsetof(dash_config_v2_legacy_t, networks),
                "v3 networks offset must match v2 — migration invariant");
 _Static_assert(sizeof(dash_config_v2_t) > sizeof(dash_config_v2_legacy_t),
-               "v3/v4 struct must be larger than legacy v2 (added trailing fields)");
-/* NOTE: no "v4 larger than v3" assert — max_partials lands in the existing
-   4-byte tail padding after panel_variant, so sizeof(v4) == sizeof(v3). The
-   load path distinguishes v3 from v4 by the `version` field, not blob length. */
+               "v3/v4/v5 struct must be larger than legacy v2 (added trailing fields)");
+/* NOTE: max_partials landed in v3's 4-byte tail padding after panel_variant, so
+   sizeof(v4) == sizeof(v3); both read as dash_config_v4_t and are discriminated
+   by the `version` field, not blob length. v5 appends the quiet-hours arrays,
+   which do NOT fit in padding, so sizeof(v5) > sizeof(v4): the load path tells
+   v5 from v3/v4 by blob length, then v3 from v4 by `version`. */
+_Static_assert(offsetof(dash_config_v2_t, networks) ==
+               offsetof(dash_config_v4_t, networks),
+               "v5 networks offset must match v4 — migration invariant");
+_Static_assert(offsetof(dash_config_v2_t, crc32) ==
+               offsetof(dash_config_v4_t, crc32),
+               "v5 crc32 offset must match v4 — migration invariant");
+_Static_assert(offsetof(dash_config_v2_t, panel_variant) ==
+               offsetof(dash_config_v4_t, panel_variant),
+               "v5 panel_variant offset must match v4 — migration invariant");
+_Static_assert(offsetof(dash_config_v2_t, max_partials) ==
+               offsetof(dash_config_v4_t, max_partials),
+               "v5 max_partials offset must match v4 — migration invariant");
+_Static_assert(sizeof(dash_config_v2_t) > sizeof(dash_config_v4_t),
+               "v5 struct must be larger than v4 (quiet arrays exceed tail padding)");
+_Static_assert(sizeof(dash_config_v4_t) > sizeof(dash_config_v2_legacy_t),
+               "v4 struct must be larger than legacy v2 (panel_variant/max_partials)");
 /* Caps×counts budget: keeps the comfort margin obvious if caps move. */
 _Static_assert((size_t)DASH_API_URL_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS +
                (size_t)DASH_DEVICE_TOKEN_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS <=
@@ -89,37 +129,41 @@ static void copy_str(char *dst, size_t dst_sz, const char *src)
     dst[dst_sz - 1] = '\0';
 }
 
-static uint32_t cfg_crc(const dash_config_v2_t *cfg)
+/* Piecewise CRC over the first `size` bytes of the struct with the crc32 field
+   treated as zero, matching the original "copy struct, zero crc32 field, CRC the
+   whole thing" semantics — without a 7 KiB stack copy that would overflow the
+   default main task stack. crc_off is identical across v2/v3/v4/v5 (shared
+   prefix, asserted above), so the same routine validates every version by
+   passing its stored blob size. */
+static uint32_t cfg_crc_sized(const dash_config_v2_t *cfg, size_t size)
 {
-    /* Piecewise CRC over the struct with the crc32 field treated as zero,
-     * matching the original "copy struct, zero crc32 field, CRC the whole
-     * thing" semantics — without a 7 KiB stack copy that would overflow the
-     * default main task stack. */
     const uint8_t *bytes = (const uint8_t *)cfg;
     const size_t crc_off = offsetof(dash_config_v2_t, crc32);
     static const uint8_t zero_crc[sizeof(((dash_config_v2_t *)0)->crc32)] = {0};
     uint32_t crc = esp_rom_crc32_le(UINT32_MAX, bytes, crc_off);
     crc = esp_rom_crc32_le(crc, zero_crc, sizeof(zero_crc));
     crc = esp_rom_crc32_le(crc, bytes + crc_off + sizeof(zero_crc),
-                           sizeof(*cfg) - crc_off - sizeof(zero_crc));
+                           size - crc_off - sizeof(zero_crc));
     return crc;
 }
 
+/* Current (v5) CRC over the full struct. */
+static uint32_t cfg_crc(const dash_config_v2_t *cfg)
+{
+    return cfg_crc_sized(cfg, sizeof(dash_config_v2_t));
+}
+
+/* CRC over the pre-v5 (v3/v4) blob size — both stored at sizeof(dash_config_v4_t)
+   because the prefix is byte-identical (asserted above). */
+static uint32_t cfg_crc_v4(const dash_config_v2_t *cfg)
+{
+    return cfg_crc_sized(cfg, sizeof(dash_config_v4_t));
+}
+
+/* CRC over the legacy v2 blob size (no panel_variant / max_partials). */
 static uint32_t cfg_crc_legacy(const dash_config_v2_t *cfg)
 {
-    /* Same algorithm as cfg_crc but over the legacy struct size. Operates
-       on the v3 struct because the prefix is byte-identical (asserted at
-       compile time above); the v3-only panel_variant field is excluded
-       implicitly. */
-    const uint8_t *bytes = (const uint8_t *)cfg;
-    const size_t legacy_size = sizeof(dash_config_v2_legacy_t);
-    const size_t crc_off = offsetof(dash_config_v2_t, crc32);
-    static const uint8_t zero_crc[sizeof(((dash_config_v2_t *)0)->crc32)] = {0};
-    uint32_t crc = esp_rom_crc32_le(UINT32_MAX, bytes, crc_off);
-    crc = esp_rom_crc32_le(crc, zero_crc, sizeof(zero_crc));
-    crc = esp_rom_crc32_le(crc, bytes + crc_off + sizeof(zero_crc),
-                           legacy_size - crc_off - sizeof(zero_crc));
-    return crc;
+    return cfg_crc_sized(cfg, sizeof(dash_config_v2_legacy_t));
 }
 
 static bool panel_variant_is_known(uint8_t v)
@@ -127,7 +171,10 @@ static bool panel_variant_is_known(uint8_t v)
     return v == EINK_PANEL_WEACT_29_BWR || v == EINK_PANEL_WEACT_29_BW;
 }
 
-static bool cfg_v2_is_valid(const dash_config_v2_t *cfg)
+/* Current-version (v5) blob acceptance. Validates the quiet-hours arrays in
+   addition to the v4 fields; the whole-struct cfg_crc covers the trailing
+   arrays. */
+static bool cfg_v5_is_valid(const dash_config_v2_t *cfg)
 {
     if (!cfg) return false;
     if (cfg->version != DASH_CFG_V2_VERSION) return false;
@@ -141,15 +188,40 @@ static bool cfg_v2_is_valid(const dash_config_v2_t *cfg)
     for (uint8_t i = 0; i < cfg->network_count; i++) {
         if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
     }
+    for (uint8_t i = 0; i < MAX_WIFI_NETWORKS; i++) {
+        if (cfg->quiet_enabled[i] > 1) return false;
+        if (cfg->quiet_start_min[i] > DASH_QUIET_MIN_OF_DAY_MAX) return false;
+        if (cfg->quiet_end_min[i] > DASH_QUIET_MIN_OF_DAY_MAX) return false;
+    }
     return cfg->crc32 == cfg_crc(cfg);
 }
 
-/* v3 blob acceptance for in-place v3->v4 migration. sizeof(v3) == sizeof(v4),
-   so a v3 blob arrives at full struct length but carries version==3 with the
+/* v4 blob acceptance for in-place v4->v5 migration. v4 stored at
+   sizeof(dash_config_v4_t) (< sizeof v5), so its CRC covers only that prefix;
+   validate with cfg_crc_v4. The migration zero-seeds the quiet arrays. */
+static bool cfg_v4_is_valid(const dash_config_v2_t *cfg)
+{
+    if (!cfg) return false;
+    if (cfg->version != 4) return false;
+    if (cfg->max_wifi_networks != MAX_WIFI_NETWORKS) return false;
+    if (cfg->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
+    if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
+    if (cfg->refresh_min < 3 || cfg->refresh_min > 60) return false;
+    if (!panel_variant_is_known(cfg->panel_variant)) return false;
+    if (cfg->max_partials < DASH_MAX_PARTIALS_MIN ||
+        cfg->max_partials > DASH_MAX_PARTIALS_MAX) return false;
+    for (uint8_t i = 0; i < cfg->network_count; i++) {
+        if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
+    }
+    return cfg->crc32 == cfg_crc_v4(cfg);
+}
+
+/* v3 blob acceptance for in-place v3->v5 migration. sizeof(v3) == sizeof(v4),
+   so a v3 blob arrives at the v4 length but carries version==3 with the
    max_partials position holding whatever tail-padding byte v3 wrote (the v3 CRC
-   covered it, but v3 never required it to be any particular value). We therefore
-   validate with the whole-struct cfg_crc and do NOT inspect the max_partials
-   byte here — the migration overwrites it with the default regardless. */
+   covered it, but v3 never required it to be any particular value). We validate
+   with cfg_crc_v4 (the v3/v4 size) and do NOT inspect the max_partials byte —
+   the migration overwrites it with the default regardless. */
 static bool cfg_v3_is_valid(const dash_config_v2_t *cfg)
 {
     if (!cfg) return false;
@@ -162,7 +234,7 @@ static bool cfg_v3_is_valid(const dash_config_v2_t *cfg)
     for (uint8_t i = 0; i < cfg->network_count; i++) {
         if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
     }
-    return cfg->crc32 == cfg_crc(cfg);
+    return cfg->crc32 == cfg_crc_v4(cfg);
 }
 
 static bool cfg_v2_legacy_is_valid(const dash_config_v2_t *cfg)
@@ -284,6 +356,28 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
     memset(&cfg->networks[cfg->network_count], 0,
            sizeof(cfg->networks[0]) * (MAX_WIFI_NETWORKS - cfg->network_count));
 
+    /* Quiet-hours arrays are slot-indexed, parallel to networks[]. Clamp times
+       to a valid minute-of-day, coerce enabled to 0/1, treat start==end as
+       disabled, and zero the trailing slots that have no network. */
+    for (uint8_t i = 0; i < MAX_WIFI_NETWORKS; i++) {
+        if (i >= cfg->network_count) {
+            cfg->quiet_enabled[i] = 0;
+            cfg->quiet_start_min[i] = 0;
+            cfg->quiet_end_min[i] = 0;
+            continue;
+        }
+        if (cfg->quiet_start_min[i] > DASH_QUIET_MIN_OF_DAY_MAX) {
+            cfg->quiet_start_min[i] = DASH_QUIET_MIN_OF_DAY_MAX;
+        }
+        if (cfg->quiet_end_min[i] > DASH_QUIET_MIN_OF_DAY_MAX) {
+            cfg->quiet_end_min[i] = DASH_QUIET_MIN_OF_DAY_MAX;
+        }
+        cfg->quiet_enabled[i] = cfg->quiet_enabled[i] ? 1 : 0;
+        if (cfg->quiet_start_min[i] == cfg->quiet_end_min[i]) {
+            cfg->quiet_enabled[i] = 0;
+        }
+    }
+
     if (cfg->last_success_network_idx >= (int8_t)cfg->network_count) {
         cfg->last_success_network_idx = -1;
     }
@@ -349,24 +443,49 @@ bool storage_load_v2(dash_config_v2_t *cfg)
         return false;
     }
 
-    if (blob_len == sizeof(dash_config_v2_t)) {
-        /* sizeof(v3) == sizeof(v4): both arrive here. Discriminate by version. */
+    if (blob_len == sizeof(dash_config_v2_t)) {     /* genuine v5 blob */
         size_t len = sizeof(*cfg);
         err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
         nvs_close(h);
-        if (err == ESP_OK && len == sizeof(*cfg)) {
-            if (cfg_v2_is_valid(cfg)) {            /* genuine v4 blob */
-                storage_cfg_v2_normalize(cfg);
+        if (err == ESP_OK && len == sizeof(*cfg) && cfg_v5_is_valid(cfg)) {
+            storage_cfg_v2_normalize(cfg);
+            return true;
+        }
+        if (err == ESP_OK) ESP_LOGW(TAG, "Ignoring invalid cfg_v2 v5 blob");
+        storage_cfg_v2_defaults(cfg);
+        storage_cfg_v2_normalize(cfg);
+        return false;
+    }
+
+    if (blob_len == sizeof(dash_config_v4_t)) {
+        /* Pre-v5 blob. sizeof(v3) == sizeof(v4): both arrive here, discriminated
+           by version. Zero the v5 struct first so the trailing quiet arrays (and
+           their padding) start clean before we overlay the L4 prefix — the
+           migration leaves quiet hours disabled. */
+        memset(cfg, 0, sizeof(*cfg));
+        size_t len = blob_len;
+        err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
+        nvs_close(h);
+        if (err == ESP_OK && len == blob_len) {
+            if (cfg_v4_is_valid(cfg)) {            /* v4 blob -> migrate to v5 */
+                ESP_LOGW(TAG, "cfg_v2 v4: migrating to v5");
+                cfg->version = DASH_CFG_V2_VERSION;
+                esp_err_t save_err = storage_save_v2(cfg);
+                if (save_err != ESP_OK) {
+                    ESP_LOGW(TAG, "v4→v5 migration save failed (err=0x%x); "
+                                  "using in-memory cfg", save_err);
+                    storage_cfg_v2_normalize(cfg);
+                }
                 return true;
             }
-            if (cfg_v3_is_valid(cfg)) {            /* v3 blob -> migrate in place */
-                ESP_LOGW(TAG, "cfg_v2 v3: migrating to v4");
+            if (cfg_v3_is_valid(cfg)) {            /* v3 blob -> migrate to v5 */
+                ESP_LOGW(TAG, "cfg_v2 v3: migrating to v5");
                 cfg->version = DASH_CFG_V2_VERSION;
                 /* Overwrite the old v3 tail-padding byte with the default. */
                 cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
                 esp_err_t save_err = storage_save_v2(cfg);
                 if (save_err != ESP_OK) {
-                    ESP_LOGW(TAG, "v3→v4 migration save failed (err=0x%x); "
+                    ESP_LOGW(TAG, "v3→v5 migration save failed (err=0x%x); "
                                   "using in-memory cfg", save_err);
                     storage_cfg_v2_normalize(cfg);
                 }
@@ -380,8 +499,8 @@ bool storage_load_v2(dash_config_v2_t *cfg)
     }
 
     if (blob_len == sizeof(dash_config_v2_legacy_t)) {
-        /* Re-zero the v4 struct so the trailing panel_variant + max_partials
-           bytes (and their padding) start clean before we overlay the legacy
+        /* Re-zero the v5 struct so the trailing fields (panel_variant,
+           max_partials, quiet arrays) start clean before we overlay the legacy
            blob's bytes onto the prefix. */
         memset(cfg, 0, sizeof(*cfg));
         size_t len = blob_len;
@@ -393,22 +512,23 @@ bool storage_load_v2(dash_config_v2_t *cfg)
             storage_cfg_v2_normalize(cfg);
             return false;
         }
-        ESP_LOGW(TAG, "cfg_v2_legacy: migrating to v4");
+        ESP_LOGW(TAG, "cfg_v2_legacy: migrating to v5");
         cfg->version = DASH_CFG_V2_VERSION;
-        /* Legacy v2 blobs carry neither trailing field. Seed the SKU default
-           panel variant (so an upgraded BW-SKU device resolves to BW, not a
-           hardcoded BWR) and the default partial cap. */
+        /* Legacy v2 blobs carry none of the trailing fields. Seed the SKU
+           default panel variant (so an upgraded BW-SKU device resolves to BW,
+           not a hardcoded BWR) and the default partial cap; quiet arrays stay
+           zeroed (disabled). */
         cfg->panel_variant = storage_default_panel_variant();
         cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
         cfg->max_wifi_networks = MAX_WIFI_NETWORKS;
         cfg->max_apis_per_network = MAX_APIS_PER_NETWORK;
         /* Persist the migrated config so subsequent boots take the fast
-           sizeof(v4) path. A transient NVS error is non-fatal: log and
+           sizeof(v5) path. A transient NVS error is non-fatal: log and
            continue with the in-memory migrated cfg — the next boot retries
            the migration rather than dropping the user's WiFi/API entries. */
         esp_err_t save_err = storage_save_v2(cfg);
         if (save_err != ESP_OK) {
-            ESP_LOGW(TAG, "v2→v4 migration save failed (err=0x%x); using in-memory cfg",
+            ESP_LOGW(TAG, "v2→v5 migration save failed (err=0x%x); using in-memory cfg",
                      save_err);
             storage_cfg_v2_normalize(cfg);
         }
