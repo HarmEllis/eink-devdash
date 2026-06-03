@@ -36,6 +36,40 @@ function parseRateLimit(headers: Headers, window: '5h' | '7d'): ParsedRateLimit 
   return { rate: { used, limit, resetInSeconds }, present }
 }
 
+function parseRetryAfter(headers: Headers): number {
+  const header = headers.get('retry-after')
+  if (!header) return 0
+
+  const seconds = Number(header)
+  if (Number.isFinite(seconds)) return Math.max(0, Math.ceil(seconds))
+
+  const resetMs = Date.parse(header)
+  return Number.isFinite(resetMs)
+    ? Math.max(0, Math.ceil((resetMs - Date.now()) / 1000))
+    : 0
+}
+
+function rateLimitedWindow(headers: Headers, window: '5h' | '7d', fallbackReset: number): RateLimit {
+  const parsed = parseRateLimit(headers, window)
+  if (parsed.present) {
+    return {
+      ...parsed.rate,
+      resetInSeconds: parsed.rate.resetInSeconds || fallbackReset,
+    }
+  }
+
+  return { used: 100, limit: 100, resetInSeconds: fallbackReset }
+}
+
+function rateLimitedUsage(headers: Headers): ClaudeUsage {
+  const fallbackReset = parseRetryAfter(headers)
+  return {
+    fiveHour: rateLimitedWindow(headers, '5h', fallbackReset),
+    weekly: rateLimitedWindow(headers, '7d', fallbackReset),
+    authError: false,
+  }
+}
+
 const EMPTY: ClaudeUsage = {
   fiveHour: { used: 0, limit: 0, resetInSeconds: 0 },
   weekly: { used: 0, limit: 0, resetInSeconds: 0 },
@@ -69,6 +103,10 @@ async function probeUsage(token: string): Promise<ProbeOutcome> {
     })
 
     if (res.status === 401) return { kind: 'unauthorized' }
+    if (res.status === 429) {
+      console.warn('[claude] usage probe rate limited')
+      return { kind: 'usage', usage: rateLimitedUsage(res.headers) }
+    }
     if (!res.ok) {
       console.warn(`[claude] usage probe HTTP ${res.status}`)
       return { kind: 'empty' }
