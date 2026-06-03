@@ -7,7 +7,7 @@
 /* Provisioning / recovery surfaces and the normal post-provisioning boot
    share a few helpers (show_connecting, show_refreshing, the boot/wait
    full-refreshes). The panel variant is now resolved before the first draw
-   (persisted blob, build-stamped SKU default, or a cold-boot override), so
+   (persisted blob or build-stamped SKU default), so
    every surface renders through the variant-aware full refresh — FULL_COLOR
    on BWR (which clears red residue) and BW_FULL on BW. This tag no longer
    selects SAFE_BW vs variant-aware; it only marks whether a saved dashboard
@@ -21,9 +21,9 @@ typedef enum {
 
 /* Mark which physical panel is attached. main.c calls this once per boot,
    before the first surface is drawn, with the variant resolved from the
-   persisted blob, the build-stamped SKU default, or a cold-boot override.
-   This gates the compact-status overlay (which needs a known variant) and
-   ensures recovery surfaces use the correct variant-aware full refresh. */
+   persisted blob or the build-stamped SKU default. This gates the
+   compact-status overlay (which needs a known variant) and ensures recovery
+   surfaces use the correct variant-aware full refresh. */
 void display_set_panel_variant(eink_panel_variant_t v);
 
 /* Store the configured refresh interval (clamped 3..60) for the

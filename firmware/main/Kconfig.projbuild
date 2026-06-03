@@ -49,9 +49,10 @@ config DEVDASH_DEFAULT_PANEL_VARIANT
         the build closed (#error) if it is left at -1; the repo dev / CI build
         sets 0 in sdkconfig.defaults.
 
-        Wrong-SKU recovery: on a cold boot, send 'B' (BW) or 'R' (BWR) over
-        USB-Serial-JTAG within the first few seconds, or hold the BOOT button
-        through the boot window to force BW for that one boot.
+        Wrong-SKU recovery: hold the BOOT button long enough to open the
+        captive provisioning portal, then choose the correct panel variant
+        under Display and save. The portal selector persists the choice in
+        NVS and wins over the build-stamped default on subsequent boots.
 
 config DEVDASH_PROV_TIMEOUT_S
     int "Provisioning timeout (seconds, 0 = no timeout)"

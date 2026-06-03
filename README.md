@@ -72,13 +72,13 @@ build default.
 
 | SKU build      | `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` | Wrong-SKU recovery                       |
 |----------------|----------------------------------------|------------------------------------------|
-| WeAct 2.9" BWR | `0`                                    | cold-boot: send `B` over USB-Serial-JTAG, or hold BOOT through the boot window → BW |
-| WeAct 2.9" BW  | `1`                                    | cold-boot: send `R` over USB-Serial-JTAG → BWR |
-| repo dev / CI  | `0` (BWR, via `sdkconfig.defaults`)    | as above                                 |
+| WeAct 2.9" BWR | `0`                                    | Open the captive portal with a BOOT long-press, choose BW under Display, and save. |
+| WeAct 2.9" BW  | `1`                                    | Open the captive portal with a BOOT long-press, choose BWR under Display, and save. |
+| repo dev / CI  | `0` (BWR, via `sdkconfig.defaults`)    | Open the captive portal with a BOOT long-press and save the attached panel variant. |
 
-The override applies to that one boot only (no NVS write); use the portal to
-persist a different panel. The override window runs only on a cold boot, so
-battery deep-sleep refresh wakes are never delayed.
+The portal panel selector is the recovery path for a mis-flashed SKU. It writes
+the selected variant to NVS, and that saved value wins over the build-stamped
+default on subsequent boots.
 
 ### Wiring
 

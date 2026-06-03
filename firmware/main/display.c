@@ -1303,8 +1303,9 @@ static void display_full_refresh(bool need_red, const char *reason)
    provisioning surfaces now render through the variant-aware display_full_refresh()
    (FULL_COLOR clears red on BWR; BW_FULL on BW), with the panel variant resolved
    at boot from the saved config, the CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT SKU
-   default, or the cold-boot serial/BOOT override. This helper is retained as a
-   build-stamped escape hatch but is no longer wired to any surface. */
+   default, or the captive portal panel selector persisted in NVS. This helper
+   is retained as a build-stamped escape hatch but is no longer wired to any
+   surface. */
 __attribute__((unused))
 static void display_full_refresh_safe(const char *reason)
 {

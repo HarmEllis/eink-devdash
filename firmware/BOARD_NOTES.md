@@ -282,19 +282,22 @@ path. Phase 1 (feature branch `feat/weact-bw-29-and-region-partials`) instead:
   `FULL_COLOR` on BWR (drives the red plane → clears prior red, fixing the red
   bar) and `BW_FULL` on BW. `EINK_REFRESH_SAFE_BW` / `display_full_refresh_safe()`
   are kept dormant as a build-stamped escape hatch but are no longer wired.
-- Provides wrong-SKU recovery via a **cold-boot-only** override window (never on
-  deep-sleep wakes, so battery timer wakes stay fast and the EXT0 BOOT gestures
-  are unchanged): send `B` (BW) / `R` (BWR) over USB-Serial-JTAG within the first
-  few seconds, or hold BOOT through the window to force BW for that one boot
-  (one-boot only; the portal panel selector persists a choice).
+- Provides wrong-SKU recovery through the captive portal panel selector:
+  long-press BOOT to open the portal, choose the attached panel variant under
+  Display, and save. The saved NVS value wins over the build-stamped SKU default
+  on subsequent boots.
+- Removed the earlier cold-boot-only panel override after hardware testing:
+  the variant-aware portal recovery path clears BWR red residue, and the serial
+  `B` / `R` path is not exercisable with the esp-web-tools flasher because its
+  console attaches after the override window.
 
 SKU build matrix (also in `README.md`):
 
 | SKU build      | `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` | Recovery if mis-flashed         |
 |----------------|----------------------------------------|---------------------------------|
-| WeAct 2.9" BWR | `0`                                    | cold-boot serial `B` / BOOT-hold → BW |
-| WeAct 2.9" BW  | `1`                                    | cold-boot serial `R` → BWR            |
-| repo dev / CI  | `0` (BWR, via `sdkconfig.defaults`)    | as above                              |
+| WeAct 2.9" BWR | `0`                                    | BOOT long-press portal selector -> BW |
+| WeAct 2.9" BW  | `1`                                    | BOOT long-press portal selector -> BWR |
+| repo dev / CI  | `0` (BWR, via `sdkconfig.defaults`)    | BOOT long-press portal selector       |
 
 Gate 0.A (per-region BW partials) and the Gate 0.B fallback above are
 implemented on the feature branch; on-hardware flash verification of the
