@@ -1297,9 +1297,9 @@ __attribute__((unused))
 static void display_full_refresh_safe(const char *reason)
 {
     warn_if_full_refresh_is_early(reason);
-    /* Pass NULL for red_buf so the driver's internal red plane keeps
-       whatever junk it held — SAFE_BW skips 0x26 anyway, and the NULL
-       makes the intent explicit. */
+    /* Pass NULL for red_buf: the caller supplies no red plane. The driver's
+       SAFE_BW path seeds 0x26 itself (the BW base plane), so there is no
+       caller red buffer to forward — NULL makes that intent explicit. */
     eink_set_framebuffer(bw_buf, NULL);
     eink_refresh(&s_eink, EINK_REFRESH_SAFE_BW);
     commit_full_refresh_shared(/*need_red=*/false, /*wrote_safe_mode=*/true);

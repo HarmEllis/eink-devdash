@@ -32,10 +32,11 @@ typedef enum {
     EINK_REFRESH_FULL_COLOR, /* BWR full color, Mode 1 LUT */
     EINK_REFRESH_BW_FULL,    /* BW panel, stock OTP GC waveform.
                                 Requires h->variant == EINK_PANEL_WEACT_29_BW. */
-    EINK_REFRESH_SAFE_BW,    /* BW-only refresh used by provisioning /
-                                recovery surfaces. No custom LUT load.
-                                BWR writes a no-red 0x26 plane; known-BW
-                                writes mono old/base RAM (0x26) as well. */
+    EINK_REFRESH_SAFE_BW,    /* Panel-agnostic BW-only refresh. DORMANT since
+                                Gate 0.B (could not clear pre-existing red on a
+                                BWR panel); no surface drives it. Retained as a
+                                build-stamped escape hatch. No custom LUT load;
+                                seeds a no-red mono 0x26 base plane. */
 } eink_refresh_mode_t;
 
 typedef struct {

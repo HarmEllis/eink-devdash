@@ -29,18 +29,25 @@ static const char *BUILD_MARKER =
    window it watches for:
      - serial 'B'/'b' -> BW or 'R'/'r' -> BWR over USB-Serial-JTAG (returns
        immediately when a character arrives), and
-     - BOOT (GPIO0) held continuously through the whole window -> BW.
+     - BOOT (GPIO0) held continuously for PANEL_OVERRIDE_BOOT_HOLD_MS at any
+       point inside the window -> BW.
    Returns true and sets *out when an override fires. The override applies to
    this boot only (no NVS write); the portal panel selector is the persistence
    path. USB-Serial-JTAG is the secondary console here; if its driver cannot be
-   installed the serial path is skipped and only the BOOT-hold path is active. */
-#define PANEL_OVERRIDE_WINDOW_MS 2500
-#define PANEL_OVERRIDE_STEP_MS   50
+   installed the serial path is skipped and only the BOOT-hold path is active.
+
+   The BOOT path arms when a press is first *observed inside* the window and
+   fires once it has been held continuously for PANEL_OVERRIDE_BOOT_HOLD_MS, so
+   a press the user starts after the app boots is honoured (it does not have to
+   be down at the first sample). Requiring a sustained continuous hold — rather
+   than trusting the very first sample — also avoids mistaking the GPIO0 strap
+   level latched across the reset edge for a deliberate hold. */
+#define PANEL_OVERRIDE_WINDOW_MS    2500
+#define PANEL_OVERRIDE_STEP_MS      50
+#define PANEL_OVERRIDE_BOOT_HOLD_MS 1500
 
 static bool panel_variant_cold_boot_override(eink_panel_variant_t *out)
 {
-    bool boot_held = boot_button_is_pressed();
-
     bool usj = false;
     usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
     if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
@@ -51,6 +58,8 @@ static bool panel_variant_cold_boot_override(eink_panel_variant_t *out)
     }
 
     const int steps = PANEL_OVERRIDE_WINDOW_MS / PANEL_OVERRIDE_STEP_MS;
+    const int hold_steps = PANEL_OVERRIDE_BOOT_HOLD_MS / PANEL_OVERRIDE_STEP_MS;
+    int boot_held_steps = 0;  /* consecutive steps BOOT has been observed down */
     for (int i = 0; i < steps; i++) {
         if (usj) {
             uint8_t ch = 0;
@@ -63,16 +72,20 @@ static bool panel_variant_cold_boot_override(eink_panel_variant_t *out)
                 }
             }
         }
-        if (boot_held && !boot_button_is_pressed()) boot_held = false;
+        if (boot_button_is_pressed()) {
+            if (++boot_held_steps >= hold_steps) {
+                ESP_LOGI(TAG, "Panel override: BOOT held %d ms -> BW",
+                         PANEL_OVERRIDE_BOOT_HOLD_MS);
+                boot_button_wait_release();
+                *out = EINK_PANEL_WEACT_29_BW;
+                return true;
+            }
+        } else {
+            boot_held_steps = 0;  /* release breaks the continuous hold */
+        }
         vTaskDelay(pdMS_TO_TICKS(PANEL_OVERRIDE_STEP_MS));
     }
 
-    if (boot_held) {
-        ESP_LOGI(TAG, "Panel override: BOOT held through window -> BW");
-        boot_button_wait_release();
-        *out = EINK_PANEL_WEACT_29_BW;
-        return true;
-    }
     return false;
 }
 
