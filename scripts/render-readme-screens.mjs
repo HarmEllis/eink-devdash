@@ -527,6 +527,7 @@ function renderDashboard() {
     },
     codex: { shortPct: 37, longPct: 27, reached: false, shortReset: 1823, longReset: 302400 },
     updatedAt: "21:35",
+    refreshMin: 5,
     stale: false,
     offline: false,
   };
@@ -546,7 +547,7 @@ function renderDashboard() {
   iconBoxLogo(f, 6, 4);
   f.drawStr(19, 5, "DEVDASH", 0);
   drawHeaderConnectionSlots(f, 1, 1);
-  const next = "+5m";
+  const next = `+${data.refreshMin ?? 5}m`;
   const xNext = 290 - strW(next);
   const xClock = xNext - 2 - strW(data.updatedAt);
   const xSync = xClock - 4 - 8;
