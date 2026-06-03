@@ -1544,10 +1544,11 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
         if (header_status && header_status[0]) {
             draw_str(290 - str_w(header_status), 5, header_status, 0);
         } else {
-            /* Right-anchored cluster: [sync] [HH:MM] [+5m], all 5×7 font.
-             * Coordinates pinned: sync 228..235, clock 240..269, +5m 272..289. */
-            static const char *NEXT = "+5m";
-            const int next_w  = str_w(NEXT);
+            /* Right-anchored cluster: [sync] [HH:MM] [+Nm], all 5x7 font.
+             * Wider intervals shift the clock/sync group left. */
+            char next[8];
+            snprintf(next, sizeof(next), "+%um", (unsigned)s_refresh_min);
+            const int next_w  = str_w(next);
             const int clock_w = str_w(data->updated_at);
             const int text_gap = 2;
             const int icon_gap = 4;
@@ -1557,7 +1558,7 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
             const int x_sync   = x_clock - icon_gap - sync_w;
             icon_sync(x_sync, 4);
             draw_str(x_clock, 5, data->updated_at, 0);
-            draw_str(x_next,  5, NEXT, 0);
+            draw_str(x_next,  5, next, 0);
         }
     }
 
