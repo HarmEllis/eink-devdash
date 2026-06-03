@@ -359,7 +359,7 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                     ESP_LOGI(TAG, "API profile index=%u succeeded", idx);
                     cfg->last_success_network_idx = network_idx;
                     cfg->last_success_api_idx = idx;
-                    storage_save_v2(cfg);
+                    storage_note_last_success(network_idx, idx);
                     if (api_used_idx) *api_used_idx = idx;
                     return ESP_OK;
                 }
@@ -424,7 +424,7 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                 ESP_LOGI(TAG, "API profile index=%u succeeded", idx);
                 cfg->last_success_network_idx = network_idx;
                 cfg->last_success_api_idx = idx;
-                storage_save_v2(cfg);
+                storage_note_last_success(network_idx, idx);
                 if (api_used_idx) *api_used_idx = idx;
                 return ESP_OK;
             }

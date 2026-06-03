@@ -86,6 +86,24 @@ void storage_erase(void);
 void storage_cfg_v2_defaults(dash_config_v2_t *cfg);
 void storage_cfg_v2_normalize(dash_config_v2_t *cfg);
 
+/* last_success_network_idx/api_idx are a reconnect optimization: they let the
+   next wake try the network/API slot that last worked first, instead of
+   re-scanning from 0. They need NOT survive a cold boot (a fresh device just
+   scans), so they live in RTC memory — NOT the NVS blob. Persisting them in
+   NVS used to rewrite the whole ~7 KB cfg_v2 blob on every successful wake
+   (wifi_roam + api_client), fragmenting the shared 24 KB partition until saves
+   failed with ESP_ERR_NVS_NOT_ENOUGH_SPACE. RTC memory survives deep sleep and
+   esp_restart, costs no flash wear, and resets on cold boot — exactly the
+   lifetime these hints want. See AGENTS.md "NVS writes and RTC memory".
+
+   storage_note_last_success: call after a successful connect/fetch to record
+   the working slot (RTC write only, no flash).
+   storage_apply_last_success: call ONCE right after storage_load_v2 to overlay
+   the RTC hints onto the freshly loaded cfg, pair-clamped to the current
+   network/API layout (both reset to -1 if either is out of range). */
+void storage_note_last_success(int8_t net_idx, int8_t api_idx);
+void storage_apply_last_success(dash_config_v2_t *cfg);
+
 /* Build-stamped SKU default panel variant (CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT).
    Seeds the defaults / migration when no real saved variant exists; a genuine
    saved v3 panel_variant always wins. See Gate 0.B in BOARD_NOTES. */

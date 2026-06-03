@@ -74,6 +74,24 @@ Do **not** add `espressif/json` to `idf_component.yml` — `json` (cJSON) is
 a built-in ESP-IDF component and is pulled in only via `CMakeLists.txt`
 `REQUIRES json`.
 
+## NVS writes and RTC memory
+
+Keep NVS writes rare. The `nvs` partition is only 24 KB (6 pages) and is shared
+with the WiFi driver's stored credentials; the `cfg_v2` blob alone is ~7 KB, so
+each rewrite needs the old + new copy to coexist. Writing it on a hot path
+fragments the partition (leading to `ESP_ERR_NVS_NOT_ENOUGH_SPACE` on a later
+save) and wears the flash. NVS is for things that **must** survive a cold boot /
+power loss: WiFi + API config, panel variant, the AP password.
+
+For state that only needs to survive **deep-sleep timer wakes** — not a power
+loss — use `RTC_DATA_ATTR` (RTC slow memory) instead. It is zero-initialized on
+cold boot / power loss and preserved across deep sleep and `esp_restart`, costs
+nothing to write, and never touches flash. Existing examples: the dashboard
+framebuffer/refresh state (`display.c`), the OTA skip counter (`ota_client.c`),
+and the `last_success` reconnect hints (`storage.c`). Before persisting anything
+per refresh cycle, ask whether losing it on a cold boot actually matters — if
+not, it belongs in RTC memory, not NVS.
+
 ## Release And Tag Prep
 
 When asked to prepare or create a new release tag, complete all of the steps
