@@ -32,6 +32,13 @@ void display_set_panel_variant(eink_panel_variant_t v);
    periodic full BW refresh to clear ghost accumulation. */
 void display_set_refresh_min(uint8_t refresh_min);
 
+/* Store the BW per-region partial cap (clamped to [DASH_MAX_PARTIALS_MIN,
+   DASH_MAX_PARTIALS_MAX]): how many partial refreshes a BW region may take
+   before it is forced to a full refresh. main.c calls this on both branches of
+   storage_load_v2. Inert on BWR (which always full-refreshes). Independent of
+   the 24h render-count cap, which can still force a full refresh on its own. */
+void display_set_max_partials(uint8_t max_partials);
+
 /* Set a one-shot flag so the next render runs a full refresh regardless
    of the partial-region plan. Used by post-restart variant toggles. */
 void display_force_full_refresh_next(void);

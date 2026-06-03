@@ -25,10 +25,10 @@ eink_panel_variant_t storage_default_panel_variant(void)
 }
 
 /* Legacy struct used to read v0.2.0-era cfg_v2 blobs from NVS. Must mirror
-   the pre-v3 dash_config_v2_t layout exactly. The v3 struct adds a single
-   uint8_t panel_variant at the end, so every prefix offset is byte-identical
-   with this legacy struct — that's the migration invariant the static
-   assertions below pin down. */
+   the pre-v3 dash_config_v2_t layout exactly. v3 appended uint8_t panel_variant
+   and v4 appended uint8_t max_partials; both are trailing fields, so every
+   prefix offset is byte-identical with this legacy struct — that's the
+   migration invariant the static assertions below pin down. */
 typedef struct {
     uint16_t version;
     uint8_t max_wifi_networks;
@@ -55,7 +55,10 @@ _Static_assert(offsetof(dash_config_v2_t, networks) ==
                offsetof(dash_config_v2_legacy_t, networks),
                "v3 networks offset must match v2 — migration invariant");
 _Static_assert(sizeof(dash_config_v2_t) > sizeof(dash_config_v2_legacy_t),
-               "v3 struct must be larger than v2 (added panel_variant)");
+               "v3/v4 struct must be larger than legacy v2 (added trailing fields)");
+/* NOTE: no "v4 larger than v3" assert — max_partials lands in the existing
+   4-byte tail padding after panel_variant, so sizeof(v4) == sizeof(v3). The
+   load path distinguishes v3 from v4 by the `version` field, not blob length. */
 /* Caps×counts budget: keeps the comfort margin obvious if caps move. */
 _Static_assert((size_t)DASH_API_URL_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS +
                (size_t)DASH_DEVICE_TOKEN_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS <=
@@ -67,6 +70,13 @@ static uint8_t clamp_refresh(uint8_t value)
 {
     if (value < 3) return 3;
     if (value > 60) return 60;
+    return value;
+}
+
+static uint8_t clamp_max_partials(uint8_t value)
+{
+    if (value < DASH_MAX_PARTIALS_MIN) return DASH_MAX_PARTIALS_MIN;
+    if (value > DASH_MAX_PARTIALS_MAX) return DASH_MAX_PARTIALS_MAX;
     return value;
 }
 
@@ -125,6 +135,29 @@ static bool cfg_v2_is_valid(const dash_config_v2_t *cfg)
     if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
     if (cfg->refresh_min < 3 || cfg->refresh_min > 60) return false;
     if (!panel_variant_is_known(cfg->panel_variant)) return false;
+    if (cfg->max_partials < DASH_MAX_PARTIALS_MIN ||
+        cfg->max_partials > DASH_MAX_PARTIALS_MAX) return false;
+    for (uint8_t i = 0; i < cfg->network_count; i++) {
+        if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
+    }
+    return cfg->crc32 == cfg_crc(cfg);
+}
+
+/* v3 blob acceptance for in-place v3->v4 migration. sizeof(v3) == sizeof(v4),
+   so a v3 blob arrives at full struct length but carries version==3 with the
+   max_partials position holding whatever tail-padding byte v3 wrote (the v3 CRC
+   covered it, but v3 never required it to be any particular value). We therefore
+   validate with the whole-struct cfg_crc and do NOT inspect the max_partials
+   byte here — the migration overwrites it with the default regardless. */
+static bool cfg_v3_is_valid(const dash_config_v2_t *cfg)
+{
+    if (!cfg) return false;
+    if (cfg->version != 3) return false;
+    if (cfg->max_wifi_networks != MAX_WIFI_NETWORKS) return false;
+    if (cfg->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
+    if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
+    if (cfg->refresh_min < 3 || cfg->refresh_min > 60) return false;
+    if (!panel_variant_is_known(cfg->panel_variant)) return false;
     for (uint8_t i = 0; i < cfg->network_count; i++) {
         if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
     }
@@ -155,6 +188,7 @@ void storage_cfg_v2_defaults(dash_config_v2_t *cfg)
     cfg->last_success_network_idx = -1;
     cfg->last_success_api_idx = -1;
     cfg->panel_variant = storage_default_panel_variant();
+    cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
 }
 
 bool storage_validate_api_url(const char *url)
@@ -185,6 +219,7 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
     if (!panel_variant_is_known(cfg->panel_variant)) {
         cfg->panel_variant = storage_default_panel_variant();
     }
+    cfg->max_partials = clamp_max_partials(cfg->max_partials);
     if (cfg->network_count > MAX_WIFI_NETWORKS) cfg->network_count = MAX_WIFI_NETWORKS;
 
     for (uint8_t i = 0; i < cfg->network_count; i++) {
@@ -271,23 +306,39 @@ bool storage_load_v2(dash_config_v2_t *cfg)
     }
 
     if (blob_len == sizeof(dash_config_v2_t)) {
+        /* sizeof(v3) == sizeof(v4): both arrive here. Discriminate by version. */
         size_t len = sizeof(*cfg);
         err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
         nvs_close(h);
-        if (err == ESP_OK && len == sizeof(*cfg) && cfg_v2_is_valid(cfg)) {
-            storage_cfg_v2_normalize(cfg);
-            return true;
+        if (err == ESP_OK && len == sizeof(*cfg)) {
+            if (cfg_v2_is_valid(cfg)) {            /* genuine v4 blob */
+                storage_cfg_v2_normalize(cfg);
+                return true;
+            }
+            if (cfg_v3_is_valid(cfg)) {            /* v3 blob -> migrate in place */
+                ESP_LOGW(TAG, "cfg_v2 v3: migrating to v4");
+                cfg->version = DASH_CFG_V2_VERSION;
+                /* Overwrite the old v3 tail-padding byte with the default. */
+                cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
+                esp_err_t save_err = storage_save_v2(cfg);
+                if (save_err != ESP_OK) {
+                    ESP_LOGW(TAG, "v3→v4 migration save failed (err=0x%x); "
+                                  "using in-memory cfg", save_err);
+                    storage_cfg_v2_normalize(cfg);
+                }
+                return true;
+            }
         }
-        if (err == ESP_OK) ESP_LOGW(TAG, "Ignoring invalid cfg_v2 v3 blob");
+        if (err == ESP_OK) ESP_LOGW(TAG, "Ignoring invalid cfg_v2 v3/v4 blob");
         storage_cfg_v2_defaults(cfg);
         storage_cfg_v2_normalize(cfg);
         return false;
     }
 
     if (blob_len == sizeof(dash_config_v2_legacy_t)) {
-        /* Re-zero the v3 struct so the trailing panel_variant byte (and its
-           padding) start clean before we overlay the legacy blob's bytes
-           onto the prefix. */
+        /* Re-zero the v4 struct so the trailing panel_variant + max_partials
+           bytes (and their padding) start clean before we overlay the legacy
+           blob's bytes onto the prefix. */
         memset(cfg, 0, sizeof(*cfg));
         size_t len = blob_len;
         err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
@@ -298,20 +349,22 @@ bool storage_load_v2(dash_config_v2_t *cfg)
             storage_cfg_v2_normalize(cfg);
             return false;
         }
-        ESP_LOGW(TAG, "cfg_v2_legacy: migrating to v3");
+        ESP_LOGW(TAG, "cfg_v2_legacy: migrating to v4");
         cfg->version = DASH_CFG_V2_VERSION;
-        /* Legacy v2 blobs carry no panel_variant byte. Seed the SKU default so
-           an upgraded BW-SKU device resolves to BW, not a hardcoded BWR. */
+        /* Legacy v2 blobs carry neither trailing field. Seed the SKU default
+           panel variant (so an upgraded BW-SKU device resolves to BW, not a
+           hardcoded BWR) and the default partial cap. */
         cfg->panel_variant = storage_default_panel_variant();
+        cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
         cfg->max_wifi_networks = MAX_WIFI_NETWORKS;
         cfg->max_apis_per_network = MAX_APIS_PER_NETWORK;
         /* Persist the migrated config so subsequent boots take the fast
-           sizeof(v3) path. A transient NVS error is non-fatal: log and
+           sizeof(v4) path. A transient NVS error is non-fatal: log and
            continue with the in-memory migrated cfg — the next boot retries
            the migration rather than dropping the user's WiFi/API entries. */
         esp_err_t save_err = storage_save_v2(cfg);
         if (save_err != ESP_OK) {
-            ESP_LOGW(TAG, "v2→v3 migration save failed (err=0x%x); using in-memory cfg",
+            ESP_LOGW(TAG, "v2→v4 migration save failed (err=0x%x); using in-memory cfg",
                      save_err);
             storage_cfg_v2_normalize(cfg);
         }

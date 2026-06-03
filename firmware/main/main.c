@@ -143,6 +143,7 @@ void app_main(void)
        display setters by hand so red still renders on a BWR demo unit
        (default) or collapses to BW on a BW demo unit. */
     display_set_refresh_min(CONFIG_DEVDASH_REFRESH_MIN);
+    display_set_max_partials(DASH_MAX_PARTIALS_DEFAULT);
     display_set_panel_variant(
         (eink_panel_variant_t)CONFIG_DEVDASH_DEMO_PANEL_VARIANT);
     display_render(&demo);
@@ -168,6 +169,8 @@ void app_main(void)
     /* Always seed the refresh interval — even on a defaulted cfg — so the
        display layer's 24h forced-full cap uses the right cadence. */
     display_set_refresh_min(cfg.refresh_min);
+    /* Seed the BW per-region partial cap from the (possibly defaulted) cfg. */
+    display_set_max_partials(cfg.max_partials);
     /* Resolve the panel variant for this boot (Gate 0.B fallback): it is always
        known by the first draw, so recovery / provisioning surfaces render
        through the correct variant path (FULL_COLOR clears red on BWR) instead

@@ -718,7 +718,12 @@ static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
 static int64_t s_last_full_refresh_us = 0;
 
 #define MAX_BW_FAST_REFRESHES_BEFORE_FULL 10
-#define MAX_BW_PARTIALS_PER_REGION 5
+
+/* BW per-region partial cap: how many partials a region may take before it is
+   forced to a full refresh. Portal-configurable (cfg.max_partials); main.c sets
+   it via display_set_max_partials() each boot before the first render. Defaults
+   to DASH_MAX_PARTIALS_DEFAULT until set. */
+static uint8_t s_max_partials_per_region = DASH_MAX_PARTIALS_DEFAULT;
 
 #define DISPLAY_META_NAMESPACE       "disp_meta"
 #define DISPLAY_META_KEY             "state"
@@ -917,6 +922,13 @@ void display_set_refresh_min(uint8_t refresh_min)
     if (refresh_min < 3)  refresh_min = 3;
     if (refresh_min > 60) refresh_min = 60;
     s_refresh_min = refresh_min;
+}
+
+void display_set_max_partials(uint8_t max_partials)
+{
+    if (max_partials < DASH_MAX_PARTIALS_MIN) max_partials = DASH_MAX_PARTIALS_MIN;
+    if (max_partials > DASH_MAX_PARTIALS_MAX) max_partials = DASH_MAX_PARTIALS_MAX;
+    s_max_partials_per_region = max_partials;
 }
 
 void display_set_panel_variant(eink_panel_variant_t v)
@@ -1429,6 +1441,19 @@ static bool render_bw_regions(bool show_github, uint16_t new_render_count)
     int n = show_github ? (int)ARRAY_SIZE(s_regions_with_github)
                         : (int)ARRAY_SIZE(s_regions_no_github);
 
+    /* Diagnostic: show the configured cap and each region's accumulated partial
+       count (pre-increment) so the cap behaviour is observable every cycle, not
+       only when a region finally declines. A region forces a full once its count
+       would exceed the cap. */
+    char cnt[64];
+    int coff = 0;
+    for (int i = 0; i < n && coff < (int)sizeof(cnt) - 8; i++) {
+        coff += snprintf(cnt + coff, sizeof(cnt) - coff, "%s%u",
+                         i ? "," : "", (unsigned)s_region_partial_count[i]);
+    }
+    ESP_LOGI(TAG, "BW partial plan: cap=%u region_partials=[%s]",
+             (unsigned)s_max_partials_per_region, cnt);
+
     eink_rect_t rects[REGION_COUNT_MAX];
     for (int i = 0; i < n; i++) {
         rects[i] = physical_rect_from_logical(regions[i].lx, regions[i].ly,
@@ -1450,9 +1475,9 @@ static bool render_bw_regions(bool show_github, uint16_t new_render_count)
         staged_count[i] = s_region_partial_count[i];
         if (changed[i]) {
             staged_count[i] = (uint8_t)(s_region_partial_count[i] + 1);
-            if (staged_count[i] > MAX_BW_PARTIALS_PER_REGION) {
+            if (staged_count[i] > s_max_partials_per_region) {
                 ESP_LOGI(TAG, "BW partial declined: region %d hit %d-partial cap",
-                         i, MAX_BW_PARTIALS_PER_REGION);
+                         i, s_max_partials_per_region);
                 return false;
             }
             changed_n++;

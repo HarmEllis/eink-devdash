@@ -6,15 +6,22 @@
 #include "eink_weact29.h"
 
 #define NVS_NAMESPACE "devdash"
-#define NVS_SCHEMA_VERSION 3
+#define NVS_SCHEMA_VERSION 4
 
-#define DASH_CFG_V2_VERSION 3
+#define DASH_CFG_V2_VERSION 4
 #define MAX_WIFI_NETWORKS 5
 #define MAX_APIS_PER_NETWORK 5
 #define DASH_SSID_MAX 32
 #define DASH_WIFI_PASSWORD_MAX 64
 #define DASH_API_URL_MAX 192
 #define DASH_DEVICE_TOKEN_MAX 64
+
+/* BW per-region partial-refresh cap (max_partials): how many partial refreshes
+   a BW region may take before it is forced to do a full refresh. Portal-editable;
+   inert on BWR (which always full-refreshes). */
+#define DASH_MAX_PARTIALS_MIN     1
+#define DASH_MAX_PARTIALS_MAX     100
+#define DASH_MAX_PARTIALS_DEFAULT 5
 
 /*
  * Hard ceiling for the cfg_v2 NVS blob. NVS supports blobs up to ~97% of
@@ -57,10 +64,16 @@ typedef struct {
        eink_panel_variant_t on read after cfg_v2_is_valid() accepts the
        value. */
     uint8_t panel_variant;
+    /* Added in v4. Like panel_variant, this is appended as a trailing field; it
+       lands in the existing 4-byte-alignment tail padding after panel_variant,
+       so sizeof(v4) == sizeof(v3) and the load path must distinguish v3 from v4
+       by the `version` field, NOT by blob length. BW per-region partial cap,
+       clamped to [DASH_MAX_PARTIALS_MIN, DASH_MAX_PARTIALS_MAX]. */
+    uint8_t max_partials;
 } dash_config_v2_t;
 
 void storage_init(void);
-/* Returns true when a v2 or v3 blob was successfully loaded from NVS,
+/* Returns true when a v2, v3, or v4 blob was successfully loaded from NVS,
    false when the caller is looking at storage_cfg_v2_defaults() (either
    no blob exists, or the stored blob failed length/CRC/value validation).
    Existing callers may safely ignore the return value; passing it on is
