@@ -3,11 +3,11 @@
 A physical developer dashboard on a 2.9" e-ink display, driven by an
 ESP32-S3. The reference panel is the WeAct Studio 2.9" SSD1680
 Black/White/Red (BWR) module with red alert highlights; the same
-firmware binary also carries **experimental** support for the
-Black/White (BW) variant of that module (red operations collapse to
-black), selected by the user in the provisioning portal and pending
-Phase 0 hardware validation. Shows GitHub activity, Claude Code rate
-limits, and Codex usage, updated on a configurable interval via deep
+firmware binary also supports the Black/White (BW) variant of that module.
+The BW panel is recommended for the best day-to-day dashboard experience:
+it keeps the UI monochrome, folds red operations to black, and enables
+validated per-region partial refreshes. Shows GitHub activity, Claude Code
+rate limits, and Codex usage, updated on a configurable interval via deep
 sleep.
 
 [![CI](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml/badge.svg)](https://github.com/HarmEllis/eink-devdash/actions/workflows/ci.yml)
@@ -53,6 +53,13 @@ firmware folds red drawing operations to black at the framebuffer level and
 runs a per-region partial-refresh path (validated by Phase 0 Gate 0.A in
 `firmware/BOARD_NOTES.md`); on a BWR panel the existing full-colour refresh is
 unchanged.
+
+**Panel choice:**
+
+| Panel | Recommended when | Advantages | Tradeoffs |
+|-------|------------------|------------|-----------|
+| WeAct 2.9" BW | You want the best dashboard experience and faster routine updates. | Fast per-region partial refreshes, fewer full-screen flashes, same wiring and firmware binary. The default cap of 5 partial refreshes per region has not shown visible ghosting in project hardware testing. | No red ink; alert highlights render as black. Ghosting becomes a tuning concern only if the partial cap is raised beyond the default. |
+| WeAct 2.9" BWR | You specifically want red alert highlights. | Red ink makes alerts visually distinct and remains the reference/original panel path. | Runtime dashboard updates are full-colour refreshes, so normal changes are slower and cause more full-screen flashes. |
 
 The panel SKU is build-stamped via `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` so a
 factory image knows its panel before the first draw (Phase 0 Gate 0.B showed the

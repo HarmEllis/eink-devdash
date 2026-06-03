@@ -762,7 +762,7 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
         "selection.</p>"
         "<label style=\"display:block;margin:4px 0;font-size:13px;color:#1c1f24\">"
         "<input type=\"radio\" name=\"pv\" value=\"%d\"%s> "
-        "WeAct 2.9&quot; Black/White/Red (default)"
+        "WeAct 2.9&quot; Black/White/Red"
         "</label>"
         "<label style=\"display:block;margin:4px 0;font-size:13px;color:#1c1f24\">"
         "<input type=\"radio\" name=\"pv\" value=\"%d\"%s> "
