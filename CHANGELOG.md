@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-03
+
+This minor release adds selectable WeAct 2.9" black/white panel support with faster partial refreshes, per-network quiet hours, and several dashboard and OTA reliability fixes.
+
 ### Added
 
 - Support for the WeAct Studio 2.9" Black/White (BW) panel alongside the existing Black/White/Red (BWR) panel. The panel type is selected per device in the provisioning portal under "Display" and remembered across reboots and updates. On a BW panel, red content is drawn as black.
@@ -15,6 +19,13 @@ All notable changes to this project are documented in this file.
 
 - Existing device settings are migrated automatically when updating from an earlier firmware version: WiFi networks, API endpoints, and the refresh interval are preserved, as is a previously saved panel choice. Configs from the original firmware (which predate panel selection) adopt the build's default panel (BWR), which can be changed in the portal.
 - Provisioning and recovery screens (QR code, connecting, setup-failed, setup-timeout) render correctly on both panel types and clear any leftover red on a BWR panel.
+
+### Fixed
+
+- BW partial refreshes continue to be used for normal alert changes instead of forcing unnecessary full-screen refreshes.
+- Claude rate-limit probes are treated as full usage so the dashboard reports usage state accurately.
+- The dashboard refresh interval header label is rendered correctly.
+- OTA throttle counters, reconnect hints, and display refresh bookkeeping avoid unnecessary NVS writes by keeping deep-sleep-only state in RTC memory.
 
 ## [0.2.0] - 2026-05-27
 
@@ -38,5 +49,6 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.3.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/HarmEllis/eink-devdash/releases/tag/v0.1.0
