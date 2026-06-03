@@ -131,9 +131,13 @@ prefix. Field names match `design_handoff_eink_v4_provisioning/README.md`:
 | `wN_aK_tok`      | password | New token. Same keep/clear/replace rules as PASS.|
 | `wN_aK_cleartok` | checkbox | Force-erase saved token.                         |
 | `iv`             | number   | Refresh interval, 3..60 (stored in cfg.refresh_min). |
+| `pv`             | number   | Panel variant, 0 = BWR / 1 = BW (stored in cfg.panel_variant). |
+| `mp`             | number   | Max partial refreshes, 1..100 (stored in cfg.max_partials). |
 
-`N ∈ 0..4`, `K ∈ 0..4`. Validation lives in `validate_network` and mirrors
-`storage_validate_api_url`. Body cap is 24 KB — anything larger gets 413.
+`N ∈ 0..4`, `K ∈ 0..4`. Validation is inline in `handler_save()` (out-of-range
+`iv` / `mp` and the per-network/API checks all set a plain-text `reason`), with
+URL checks delegated to `storage_validate_api_url` and final clamping in
+`storage_cfg_v2_normalize`. Body cap is 24 KB — anything larger gets 413.
 `POST /save` returns the V4 saved page and schedules `esp_restart()` 4 s
 later via `esp_timer`, leaving time for the on-page spinner→check
 transition before the AP drops.
@@ -195,7 +199,7 @@ BW geometry (`RAMX=1..16`) and drew the baseline `BW_FULL` stripes
 successfully, but the first narrow-X partial window (`x=64 y=80 w=32 h=80`)
 timed out waiting for BUSY release after activation. See
 `.temp/esp-web-tools-logs(0gatea).txt`.
-After loading the BW V2 partial LUT (`0x32`, 151 bytes) and using update
+After loading the BW V2 partial LUT (`0x32`, 153 bytes) and using update
 trigger `0xCC`, the repeat run completed all 10 narrow-X partial windows
 without BUSY timeout. See `.temp/esp-web-tools-logs(0gatea2).txt` and
 `.temp/eink_bw_0phasea2.1.JPEG` / `.temp/eink_bw_0phasea2.2.JPEG`.
@@ -291,13 +295,17 @@ path. Phase 1 (feature branch `feat/weact-bw-29-and-region-partials`) instead:
   `B` / `R` path is not exercisable with the esp-web-tools flasher because its
   console attaches after the override window.
 
-SKU build matrix (also in `README.md`):
+Default-panel-per-build (also in `README.md`). The repo, CI, and the published
+release all build a **single binary** defaulting to BWR
+(`CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT=0` in `sdkconfig.defaults`); there is no
+separately published BW SKU. Either default is corrected per-device in the portal
+(the saved NVS value wins), so a `1` build is only useful as a local/factory image
+that ships BW-default hardware without an initial portal step.
 
-| SKU build      | `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` | Recovery if mis-flashed         |
-|----------------|----------------------------------------|---------------------------------|
-| WeAct 2.9" BWR | `0`                                    | BOOT long-press portal selector -> BW |
-| WeAct 2.9" BW  | `1`                                    | BOOT long-press portal selector -> BWR |
-| repo dev / CI  | `0` (BWR, via `sdkconfig.defaults`)    | BOOT long-press portal selector       |
+| `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` | First-boot default | Build that uses it          | Wrong-default recovery                |
+|----------------------------------------|--------------------|-----------------------------|---------------------------------------|
+| `0`                                    | BWR                | repo / CI / released binary | BOOT long-press portal selector -> BW |
+| `1`                                    | BW                 | local/factory build only    | BOOT long-press portal selector -> BWR |
 
 Gate 0.A (per-region BW partials) and the Gate 0.B fallback above are
 implemented on the feature branch and **hardware-confirmed on the WeAct 2.9"

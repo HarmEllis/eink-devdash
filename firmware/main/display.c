@@ -704,11 +704,10 @@ static eink_handle_t s_eink;
 static bool          s_initialized        = false;
 
 /* Refresh-cycle state lives in RTC slow memory: survives deep-sleep timer
- * wakeups (so the BW_FAST differential refresh stays valid across naps) but
+ * wakeups (so the per-region differential refresh stays valid across naps) but
  * resets on power-on / external reset (where the panel content is undefined
  * anyway and we want a FULL_COLOR refresh). */
 static RTC_DATA_ATTR bool    s_first_refresh_done = false;
-static RTC_DATA_ATTR uint8_t s_bw_fast_cycle_count = 0;
 static RTC_DATA_ATTR bool    s_last_red_state      = false;
 static RTC_DATA_ATTR bool    s_last_content_valid  = false;
 static RTC_DATA_ATTR bool    s_last_bw_valid       = false;
@@ -716,8 +715,6 @@ static RTC_DATA_ATTR bool    s_last_data_valid     = false;
 static RTC_DATA_ATTR dashboard_data_t s_last_data;
 static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
 static int64_t s_last_full_refresh_us = 0;
-
-#define MAX_BW_FAST_REFRESHES_BEFORE_FULL 10
 
 /* BW per-region partial cap: how many partials a region may take before it is
    forced to a full refresh. Portal-configurable (cfg.max_partials); main.c sets
@@ -732,9 +729,10 @@ static uint8_t s_max_partials_per_region = DASH_MAX_PARTIALS_DEFAULT;
 #define DISPLAY_META_MAGIC           0xD15DA5E1u
 
 /* Panel variant state. effective_panel_variant() returns BW until
-   display_set_panel_variant() is called from main.c with a real
-   persisted config, so first-boot / recovery surfaces route through the
-   BW-safe path even on an erased-NVS device. */
+   display_set_panel_variant() is called; main.c calls it before the first
+   draw with the persisted config or, on an erased-NVS device, the build's
+   default variant (CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT, BWR in the repo
+   build), so the variant is known before any surface is rendered. */
 static eink_panel_variant_t s_panel_variant = EINK_PANEL_WEACT_29_BWR;
 static bool                 s_variant_known = false;
 static uint8_t              s_refresh_min   = CONFIG_DEVDASH_REFRESH_MIN;
@@ -1715,14 +1713,12 @@ void display_render(const dashboard_data_t *data)
             if (did_partial) eink_sleep(&s_eink);
         }
         if (!did_partial) {
-            s_bw_fast_cycle_count = 0;
             display_full_refresh(need_red, "dashboard");
             eink_sleep(&s_eink);
             ESP_LOGI(TAG, "Dashboard refresh (mode=full, variant=%s)",
                      is_bw ? "BW_FULL" : "FULL_COLOR");
         }
     } else {
-        s_bw_fast_cycle_count = 0;
         const char *reason = variant_changed ? "variant-change"
                            : layout_flip     ? "layout-flip"
                            : cap_reached     ? "24h-cap"
@@ -1814,7 +1810,6 @@ static bool display_show_compact_status(const char *status)
     }
     if (!did_partial) {
         display_full_refresh(/*need_red=*/false, "status");
-        s_bw_fast_cycle_count = 0;
         eink_sleep(&s_eink);
     }
     ESP_LOGI(TAG, "Status refresh done");
@@ -1927,7 +1922,6 @@ static void display_show_boot_poster(display_context_t ctx,
     (void)ctx;
     display_full_refresh(/*need_red=*/false, "boot");
     eink_sleep(&s_eink);
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
 }
 
@@ -1960,7 +1954,6 @@ static void display_show_wait_page(display_context_t ctx,
     (void)ctx;
     display_full_refresh(/*need_red=*/false, "wait");
     eink_sleep(&s_eink);
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_CONNECTING);
 }
 
@@ -2109,7 +2102,6 @@ void display_show_qr(const char *ssid, const char *pop)
 
     display_full_refresh(/*need_red=*/false, "provisioning");
     eink_sleep(&s_eink);
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
@@ -2126,12 +2118,12 @@ void display_show_setup_failed(void)
     draw_s1_info_column(NULL, NULL, NULL, false);
 
     /* BigCross 19×19 centred horizontally in the 89×89 QR slot.
-       Recovery surface: always rendered through SAFE_BW. Drawn in
-       black-only so the BWR "no 0x26 transfer on SAFE_BW" gate does
-       not strip the cross / SETUP-FAILED text. (Pre-Phase-1 BWR
-       behavior rendered the cross in red; the variant-aware OTA /
-       offline / dashboard alerts elsewhere still do that on BWR via
-       display_full_refresh.) */
+       Recovery surface: rendered through the variant-aware
+       display_full_refresh() (FULL_COLOR on BWR, BW_FULL on BW). Drawn in
+       black-only so the cross / SETUP-FAILED text renders identically on
+       both panels. (Pre-Phase-1 BWR behavior rendered the cross in red;
+       the variant-aware OTA / offline / dashboard alerts elsewhere still
+       use red on BWR via display_full_refresh.) */
     for (int i = 0; i < 19; i++) {
         lpix(47 + i,        32 + i,        1, 0);
         if (i != 9) lpix(47 + i, 32 + 18 - i, 1, 0);
@@ -2146,7 +2138,6 @@ void display_show_setup_failed(void)
 
     display_full_refresh(/*need_red=*/false, "setup failed");
     eink_sleep(&s_eink);
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
@@ -2171,11 +2162,11 @@ void display_show_offline(display_offline_reason_t reason,
         (reason == DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT);
 
     if (is_setup_timeout) {
-        /* Provisioning recovery surface — readable on either physical
-           panel via SAFE_BW. Draw the alert in BW only (inlined cross
-           with use_red=0) so the BWR "no 0x26 transfer" gate does not
-           strip the icon. icon_cross_sync() hardcodes use_red=1 and is
-           used elsewhere by variant-aware paths where red is desired. */
+        /* Provisioning recovery surface — rendered through the variant-aware
+           display_full_refresh() (readable on either physical panel). Draw the
+           alert in BW only (inlined cross with use_red=0) so it renders
+           identically on both panels. icon_cross_sync() hardcodes use_red=1 and
+           is used elsewhere by variant-aware paths where red is desired. */
         for (int i = 0; i < 8; i++) lpix(6 + i, 4 + i, 1, 0);
         static const int8_t d2[] = {0,7, 1,6, 2,5, 3,4, 5,3, 6,2, 7,1};
         for (int i = 0; i < 7; i++)
@@ -2192,7 +2183,6 @@ void display_show_offline(display_offline_reason_t reason,
         display_full_refresh(/*need_red=*/true, "offline");
     }
     eink_sleep(&s_eink);
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(frame);
 }
 
@@ -2302,6 +2292,5 @@ void display_show_ota_update(const char *from_version,
 
     display_full_refresh(/*need_red=*/true, "OTA update");
     eink_sleep(&s_eink);
-    s_bw_fast_cycle_count = 0;
     display_mark_frame(DISPLAY_FRAME_OTA);
 }

@@ -12,7 +12,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- Existing device settings (WiFi networks, API endpoints, refresh interval, panel type) are now preserved and migrated automatically when updating from an earlier firmware version.
+- Existing device settings are migrated automatically when updating from an earlier firmware version: WiFi networks, API endpoints, and the refresh interval are preserved, as is a previously saved panel choice. Configs from the original firmware (which predate panel selection) adopt the build's default panel (BWR), which can be changed in the portal.
 - Provisioning and recovery screens (QR code, connecting, setup-failed, setup-timeout) render correctly on both panel types and clear any leftover red on a BWR panel.
 
 ## [0.2.0] - 2026-05-27

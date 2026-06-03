@@ -1035,6 +1035,10 @@ static esp_err_t handler_save(httpd_req_t *req)
     if (form->iv_present && (form->iv < 3 || form->iv > 60)) {
         reason = "Refresh interval must be between 3 and 60.";
     }
+    if (!reason && form->mp_present &&
+        (form->mp < DASH_MAX_PARTIALS_MIN || form->mp > DASH_MAX_PARTIALS_MAX)) {
+        reason = "Max partial refreshes must be between 1 and 100.";
+    }
     for (int n = 0; n < MAX_WIFI_NETWORKS && !reason; n++) {
         const net_form_t *nf = &form->nets[n];
         if (!nf->enabled) continue;
