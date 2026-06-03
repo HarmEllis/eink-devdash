@@ -35,7 +35,8 @@ static uint8_t zero_framebuf[EINK_BUF_SIZE];
 
 /* Waveshare 2.9" BW V2 / GDEM029T94 partial waveform table from GxEPD2.
    This panel variant has no usable partial update waveform in OTP, so the
-   differential waveform must be loaded before a partial update. */
+   differential waveform must be loaded before a partial update. The SSD1680
+   0x32 register is 153 bytes; keep the final zero bytes explicit. */
 static const uint8_t bw_v2_partial_lut[] = {
     0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x80, 0x80, 0x00, 0x00,
@@ -55,7 +56,8 @@ static const uint8_t bw_v2_partial_lut[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x22,
-    0x22, 0x22, 0x22, 0x22, 0x00, 0x00, 0x00,
+    0x22, 0x22, 0x22, 0x22, 0x00, 0x00, 0x00, 0x00,
+    0x00,
 };
 
 static uint8_t ram_x_offset(const eink_handle_t *h)
@@ -334,14 +336,19 @@ static void reset_controller_bw_partial(eink_handle_t *h)
     set_ram_window(h, x_offset, x_offset + EINK_ROW_BYTES - 1,
                    0, EINK_HEIGHT - 1);
 
-    /* Border waveform: transition LUT for partial. */
+    /* Border waveform: follow-LUT (GS transition) border, matching BW_FULL and
+       the GxEPD2 T94 V2 partial init. 0x80 ties VBD to VCOM, which fires a
+       panel-wide common-plane bias on every windowed partial and greys out the
+       pixels that are not being actively re-driven; 0x05 avoids that. */
     send_cmd(h, CMD_BORDER_WAVEFORM);
-    send_byte(h, 0x80);
+    send_byte(h, 0x05);
 
+    /* Keep the same source output range as BW_FULL. Byte 2 bit 7 would select
+       S8..S167 and shifts the visible partial window by one RAM byte. */
     send_cmd(h, CMD_DISP_UPDATE_CTRL1);
     send_byte(h, 0x00);
-    send_byte(h, 0x80);
-    ESP_LOGD(TAG, "BW_PARTIAL reset: 0x21 = 0x00, 0x80, border 0x80");
+    send_byte(h, 0x00);
+    ESP_LOGD(TAG, "BW_PARTIAL reset: 0x21 = 0x00, 0x00, border 0x05");
 
     send_cmd(h, CMD_TEMP_SENSOR_CTRL);
     send_byte(h, 0x80);
