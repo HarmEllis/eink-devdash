@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_rom_crc.h"
+#include "esp_attr.h"
 #include "sdkconfig.h"
 #include <string.h>
 #include <stdio.h>
@@ -176,6 +177,49 @@ static bool cfg_v2_legacy_is_valid(const dash_config_v2_t *cfg)
         if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
     }
     return cfg->crc32 == cfg_crc_legacy(cfg);
+}
+
+/* Reconnect hints kept in RTC memory instead of the NVS blob — see the
+   storage.h header for the full rationale (NVS churn / fragmentation). These
+   survive deep sleep and esp_restart; on a cold boot they start at -1 ("no
+   hint"), which makes the device fall back to a normal scan. Even if a given
+   chip/reset path were to zero-init these instead of honoring the -1, idx 0 is
+   a valid in-range network, so the worst case is "try network 0 first" — a
+   benign reconnect order, and storage_apply_last_success clamps it anyway. */
+static RTC_DATA_ATTR int8_t s_last_success_net = -1;
+static RTC_DATA_ATTR int8_t s_last_success_api = -1;
+
+void storage_note_last_success(int8_t net_idx, int8_t api_idx)
+{
+    /* RTC write only — no flash, so no need to skip unchanged values. */
+    s_last_success_net = net_idx;
+    s_last_success_api = api_idx;
+}
+
+void storage_apply_last_success(dash_config_v2_t *cfg)
+{
+    if (!cfg) return;
+    cfg->last_success_network_idx = s_last_success_net;
+    cfg->last_success_api_idx = s_last_success_api;
+    /* Pair-clamp against the freshly loaded config: the RTC hints may point at
+       a network/API the user has since deleted or reordered via the portal.
+       An api index is meaningless without a valid network, so reset BOTH to -1
+       if either is out of range. Mirrors the invariant in
+       storage_cfg_v2_normalize, but runs right after load before first use. */
+    if (cfg->last_success_network_idx < 0 ||
+        cfg->last_success_network_idx >= (int8_t)cfg->network_count) {
+        cfg->last_success_network_idx = -1;
+        cfg->last_success_api_idx = -1;
+    } else {
+        uint8_t api_count =
+            cfg->networks[(uint8_t)cfg->last_success_network_idx].api_count;
+        if (cfg->last_success_api_idx >= (int8_t)api_count) {
+            cfg->last_success_api_idx = -1;
+        }
+    }
+    /* Keep RTC consistent with the clamped values so later reads agree. */
+    s_last_success_net = cfg->last_success_network_idx;
+    s_last_success_api = cfg->last_success_api_idx;
 }
 
 void storage_cfg_v2_defaults(dash_config_v2_t *cfg)
@@ -385,6 +429,13 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
      * a 7 KiB stack copy to keep the API const-correct, but that doubled the
      * call's stack footprint and pushed the main task past the WDT. */
     storage_cfg_v2_normalize(cfg);
+
+    /* Portal edits can add/remove/reorder networks, which normalize() may have
+       re-clamped the last_success hints for. Keep the RTC copy in sync so the
+       next wake's storage_apply_last_success sees the corrected slot rather
+       than a stale one pointing at a since-deleted network. */
+    s_last_success_net = cfg->last_success_network_idx;
+    s_last_success_api = cfg->last_success_api_idx;
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);

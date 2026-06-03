@@ -879,6 +879,14 @@ static bool disp_meta_get_last_var(uint8_t *out)
 
 static void disp_meta_set_last_var(uint8_t v)
 {
+    /* No-op guard: this is called on every full refresh (i.e. every wake on
+       BWR, which always full-refreshes), but the panel variant only changes
+       across a deliberate variant toggle. Skip the open/write/commit entirely
+       when the stored value already matches to avoid needless flash wear on
+       the disp_meta namespace. */
+    uint8_t cur = 0;
+    if (disp_meta_get_last_var(&cur) && cur == v) return;
+
     nvs_handle_t h;
     esp_err_t err = nvs_open(DISPLAY_META_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK) { log_meta_open_err("last_var", err); return; }

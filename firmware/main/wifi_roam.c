@@ -308,7 +308,7 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg,
                           &candidates[i], reason, sizeof(reason));
         if (err == ESP_OK) {
             cfg->last_success_network_idx = idx;
-            storage_save_v2(cfg);
+            storage_note_last_success(idx, cfg->last_success_api_idx);
             if (network_idx_out) *network_idx_out = idx;
             return ESP_OK;
         }

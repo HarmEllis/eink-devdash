@@ -98,6 +98,10 @@ void app_main(void)
     static dash_config_v2_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     bool cfg_loaded = storage_load_v2(&cfg);
+    /* Overlay the RTC-backed reconnect hints (last successful network/API).
+       These live in RTC memory, not the NVS blob, to avoid per-wake blob
+       rewrites; apply them onto the freshly loaded cfg before first use. */
+    storage_apply_last_success(&cfg);
     /* Always seed the refresh interval — even on a defaulted cfg — so the
        display layer's 24h forced-full cap uses the right cadence. */
     display_set_refresh_min(cfg.refresh_min);
