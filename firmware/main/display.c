@@ -1506,8 +1506,15 @@ static bool render_bw_regions(bool show_github, uint16_t new_render_count)
 
 /* ── public API ─────────────────────────────────────────────────────────── */
 
+static bool dashboard_needs_physical_red(bool alert_requested)
+{
+    return effective_panel_variant() == EINK_PANEL_WEACT_29_BWR &&
+           alert_requested;
+}
+
 static bool draw_dashboard_frame(const dashboard_data_t *data,
-                                 const char *header_status)
+                                 const char *header_status,
+                                 bool *alert_requested_out)
 {
     memset(bw_buf,  0xFF, sizeof(bw_buf));   /* all white */
     memset(red_buf, 0x00, sizeof(red_buf));  /* no red    */
@@ -1637,18 +1644,20 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
                       false);
     }
 
-    bool need_red = deps_alert || auth_err || offline
+    bool alert_requested = deps_alert || auth_err || offline
            || claude_ses > 80 || claude_wk > 80
            || codex_ses > 80  || codex_wk  > 80
            || data->codex.reached
            || data->claude.auth_error;
-    return need_red;
+    if (alert_requested_out) *alert_requested_out = alert_requested;
+    return dashboard_needs_physical_red(alert_requested);
 }
 
 void display_render(const dashboard_data_t *data)
 {
     ensure_init();
-    bool need_red = draw_dashboard_frame(data, NULL);
+    bool alert_requested = false;
+    bool need_red = draw_dashboard_frame(data, NULL, &alert_requested);
     eink_rect_t diff_rect = {0};
     bool has_bw_diff = s_last_bw_valid &&
                        find_bw_diff_rect(s_last_bw_buf, bw_buf, &diff_rect);
@@ -1683,13 +1692,15 @@ void display_render(const dashboard_data_t *data)
                       variant_changed || cap_reached || layout_flip;
 
     ESP_LOGI(TAG,
-             "Dashboard render decision: variant=%s need_red=%d last_red=%d "
+             "Dashboard render decision: variant=%s alert=%d need_red=%d "
+             "last_red=%d "
              "first=%d bw_valid=%d content_valid=%d frame_content=%d "
              "bw_diff=%d diff=(%u,%u %ux%u) renders=%u/%u force_full=%d "
              "variant_changed=%d",
              effective_panel_variant() == EINK_PANEL_WEACT_29_BW ? "BW" : "BWR",
-             need_red, s_last_red_state, s_first_refresh_done, s_last_bw_valid,
-             s_last_content_valid, previous_frame_is_content, has_bw_diff,
+             alert_requested, need_red, s_last_red_state, s_first_refresh_done,
+             s_last_bw_valid, s_last_content_valid, previous_frame_is_content,
+             has_bw_diff,
              diff_rect.x, diff_rect.y, diff_rect.w, diff_rect.h,
              (unsigned)staged_count, (unsigned)cap, force_full,
              variant_changed);
