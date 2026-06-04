@@ -70,10 +70,16 @@ function rateLimitedUsage(headers: Headers): ClaudeUsage {
   }
 }
 
-const EMPTY: ClaudeUsage = {
+const AUTH_ERROR: ClaudeUsage = {
   fiveHour: { used: 0, limit: 0, resetInSeconds: 0 },
   weekly: { used: 0, limit: 0, resetInSeconds: 0 },
   authError: true,
+}
+
+const UNAVAILABLE: ClaudeUsage = {
+  fiveHour: { used: 0, limit: 0, resetInSeconds: 0 },
+  weekly: { used: 0, limit: 0, resetInSeconds: 0 },
+  authError: false,
 }
 
 type ProbeOutcome =
@@ -132,18 +138,19 @@ async function probeUsage(token: string): Promise<ProbeOutcome> {
 
 export async function getClaudeUsage(): Promise<ClaudeUsage> {
   const token = await credentialStore.getAccessToken()
-  if (!token) return EMPTY
+  if (!token) return AUTH_ERROR
 
   const first = await probeUsage(token)
   if (first.kind === 'usage') return first.usage
-  if (first.kind === 'empty') return EMPTY
+  if (first.kind === 'empty') return UNAVAILABLE
 
   // 401 path: cached/disk token was rejected. Invalidate the cache, force a
   // fresh refresh against disk, and retry once before surfacing authError.
   credentialStore.invalidateCache()
   const refreshed = await credentialStore.getAccessToken({ forceRefresh: true })
-  if (!refreshed || refreshed === token) return EMPTY
+  if (!refreshed || refreshed === token) return AUTH_ERROR
 
   const second = await probeUsage(refreshed)
-  return second.kind === 'usage' ? second.usage : EMPTY
+  if (second.kind === 'usage') return second.usage
+  return second.kind === 'unauthorized' ? AUTH_ERROR : UNAVAILABLE
 }

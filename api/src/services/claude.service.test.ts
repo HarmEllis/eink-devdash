@@ -31,7 +31,7 @@ async function withClaudeHome<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-test('Claude 429 probe is reported as usage, not auth error', async () => {
+test('Claude 429 and transient probe failures are not reported as auth errors', async () => {
   const previousFetch = globalThis.fetch
 
   try {
@@ -70,6 +70,14 @@ test('Claude 429 probe is reported as usage, not auth error', async () => {
       assert.equal(headerUsage.weekly.limit, 100)
       assert.ok(headerUsage.fiveHour.resetInSeconds > 0)
       assert.ok(headerUsage.weekly.resetInSeconds > headerUsage.fiveHour.resetInSeconds)
+
+      globalThis.fetch = async () => new Response(null, { status: 503 })
+
+      const usage = await getClaudeUsage()
+
+      assert.equal(usage.authError, false)
+      assert.deepEqual(usage.fiveHour, { used: 0, limit: 0, resetInSeconds: 0 })
+      assert.deepEqual(usage.weekly, { used: 0, limit: 0, resetInSeconds: 0 })
     })
   } finally {
     globalThis.fetch = previousFetch

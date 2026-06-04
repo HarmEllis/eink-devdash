@@ -401,7 +401,10 @@ async function getLiveChatGptUsage(): Promise<CodexUsage | null> {
     return rateLimits ? usageFromRateLimits(rateLimits) : null
   } catch (err) {
     if (isErrnoException(err) && err.code === 'ENOENT') return null
-    console.warn('[codex] live usage probe failed; falling back to session files', err)
+    console.warn(
+      '[codex] live usage probe failed; falling back to session files:',
+      err instanceof Error ? err.message : err,
+    )
     return null
   }
 }
