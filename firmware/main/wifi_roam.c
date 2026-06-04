@@ -16,6 +16,7 @@ static const char *TAG = "wifi_roam";
 #define DISCONNECT_RETRY_DELAY_MIN_MS 1000
 #define DISCONNECT_RETRY_DELAY_MAX_MS 8000
 #define DISCONNECT_SETTLE_MS 500
+#define DRIVER_FAILURE_RETRY_COUNT 3
 #define MAX_SCAN_APS 32
 
 typedef struct {
@@ -174,11 +175,12 @@ static esp_err_t connect_one(const dash_wifi_profile_t *net, int timeout_ms,
     wcfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     wcfg.sta.pmf_cfg.capable = true;
     wcfg.sta.pmf_cfg.required = false;
-    if (candidate) {
-        memcpy(wcfg.sta.bssid, candidate->bssid, sizeof(wcfg.sta.bssid));
-        wcfg.sta.bssid_set = true;
-        wcfg.sta.channel = candidate->channel;
-    }
+    wcfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wcfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wcfg.sta.failure_retry_cnt = DRIVER_FAILURE_RETRY_COUNT;
+    wcfg.sta.rm_enabled = 1;
+    wcfg.sta.btm_enabled = 1;
+    wcfg.sta.mbo_enabled = 1;
 
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wcfg);
     if (err != ESP_OK) return err;
@@ -191,7 +193,7 @@ static esp_err_t connect_one(const dash_wifi_profile_t *net, int timeout_ms,
     if (err != ESP_OK) return err;
 
     if (candidate) {
-        ESP_LOGI(TAG, "Connecting to configured SSID: %s via "
+        ESP_LOGI(TAG, "Connecting to configured SSID: %s; best scan match "
                  MACSTR " channel %u (RSSI %d)",
                  net->ssid, MAC2STR(candidate->bssid), candidate->channel,
                  candidate->rssi);
@@ -267,6 +269,7 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg,
     if (err == ESP_ERR_WIFI_NOT_STOPPED) err = ESP_OK;
     ESP_ERROR_CHECK(err);
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
     wifi_scan_config_t scan_cfg = {
         .show_hidden = false,
