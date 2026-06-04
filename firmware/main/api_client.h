@@ -7,6 +7,7 @@ typedef struct {
     int issues;
     int prs;
     int dependabot;
+    int notifications;
     bool auth_error;
 } github_data_t;
 

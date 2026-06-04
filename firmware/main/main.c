@@ -68,7 +68,7 @@ void app_main(void)
      * chip. No NVS, no WiFi, no API — purely a visual stand-in to show the
      * device to other people without needing network configuration. */
     static dashboard_data_t demo = {
-        .schema_version = 1,
+        .schema_version = 2,
         .github_present = true,
         .github = { .issues = 7, .prs = 3, .dependabot = 2 },
         .claude = {
