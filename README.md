@@ -147,7 +147,8 @@ Environment variables read by the API container. Set them in `.env` next to
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DEVICE_TOKEN` | yes | — | Shared secret the firmware sends in `Authorization: Bearer …`. Generate 32+ random characters. |
-| `GITHUB_TOKEN` | no | empty | Personal access token with `repo` + `security_events`. When empty the `github` block is omitted from `/dashboard`. |
+| `CODE_HOST_PROVIDER` | no | auto | Runtime code-host provider: `github`, `gitlab`, or `none`. When unset, the API uses `github` only if `GITHUB_TOKEN` is configured; otherwise it uses `none`. GitLab is reserved in config shape only and does not emit a service yet. |
+| `GITHUB_TOKEN` | no | empty | Personal access token with `repo` + `security_events`. Required for the GitHub service counters. |
 | `CODEX_PLAN_TYPE` | no | empty | Set to `plus` or `team` when multiple ChatGPT accounts are visible. |
 | `CODEX_LIVE_USAGE` | no | `true` | Set to `false` to skip the live Codex app-server probe and read only the on-disk session JSONL. |
 | `CODEX_CLI_PATH` | no | empty | Override the Codex CLI binary path. |
@@ -384,7 +385,12 @@ never erased automatically.
 
 Returns current dashboard data. Requires `Authorization: Bearer <token>`.
 
-- The `github` object is omitted when `GITHUB_TOKEN` is unset or empty.
+- The response uses `schemaVersion: 2` with a bounded `services[]` array.
+- Code-host services are mutually exclusive at runtime via `CODE_HOST_PROVIDER`.
+- The GitHub service is omitted when GitHub is not selected or `GITHUB_TOKEN`
+  is unset or empty.
+- Services may include optional `metrics[]` in future releases for API-key
+  usage, request counts, token counts, cost, or quotas.
 - Codex live usage is read through `codex app-server` first; the API
   falls back to the latest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
   `token_count.rate_limits` event when the CLI, auth, or live endpoint
@@ -393,37 +399,49 @@ Returns current dashboard data. Requires `Authorization: Bearer <token>`.
 
 ```json
 {
-  "schemaVersion": 1,
-  "github": {
-    "issues": 3,
-    "prs": 1,
-    "dependabot": 0,
-    "authError": false
-  },
-  "claude": {
-    "fiveHour": { "used": 42, "limit": 50, "resetInSeconds": 1823 },
-    "weekly":   { "used": 210, "limit": 1000, "resetInSeconds": 302400 },
-    "authError": false
-  },
-  "codex": {
-    "source": "chatgpt",
-    "planType": "plus",
-    "short": {
-      "usedPercent": 37,
-      "label": "5h",
-      "resetsAt": 1779232450,
-      "resetInSeconds": 1823
+  "schemaVersion": 2,
+  "services": [
+    {
+      "id": "github",
+      "kind": "code-host",
+      "provider": "github",
+      "label": "GitHub",
+      "status": "ok",
+      "counters": [
+        { "id": "issues", "label": "Issues", "value": 3 },
+        { "id": "pullRequests", "label": "Pulls", "value": 1 },
+        { "id": "securityAlerts", "label": "Security", "value": 0 },
+        { "id": "notifications", "label": "Unread", "value": 2 }
+      ]
     },
-    "long": {
-      "usedPercent": 27,
-      "label": "7d",
-      "resetsAt": 1779641619,
-      "resetInSeconds": 302400
+    {
+      "id": "claude",
+      "kind": "usage",
+      "provider": "claude",
+      "label": "Claude",
+      "status": "ok",
+      "windows": [
+        { "id": "fiveHour", "label": "5h", "used": 42, "limit": 50, "resetInSeconds": 1823 },
+        { "id": "weekly", "label": "7d", "used": 210, "limit": 1000, "resetInSeconds": 302400 }
+      ]
     },
-    "reachedLimit": null
-  },
+    {
+      "id": "codex",
+      "kind": "usage",
+      "provider": "codex",
+      "label": "Codex",
+      "status": "ok",
+      "source": "chatgpt",
+      "planType": "plus",
+      "windows": [
+        { "id": "short", "label": "5h", "usedPercent": 37, "resetsAt": 1779232450, "resetInSeconds": 1823, "reachedLimit": false },
+        { "id": "long", "label": "7d", "usedPercent": 27, "resetsAt": 1779641619, "resetInSeconds": 302400, "reachedLimit": false }
+      ]
+    }
+  ],
   "updatedAt": "2026-05-16T14:32:00Z",
-  "updatedAtLocal": "16:32"
+  "updatedAtLocal": "16:32",
+  "updatedAtLocalIso": "2026-05-16T16:32:00"
 }
 ```
 

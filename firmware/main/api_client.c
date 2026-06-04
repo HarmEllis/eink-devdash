@@ -132,6 +132,20 @@ static double json_double(const cJSON *obj, const char *key)
     return (v && cJSON_IsNumber(v)) ? v->valuedouble : 0.0;
 }
 
+static const char *json_string(const cJSON *obj, const char *key)
+{
+    if (!obj) return NULL;
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
+    return (v && cJSON_IsString(v)) ? v->valuestring : NULL;
+}
+
+static bool json_string_equals(const cJSON *obj, const char *key,
+                               const char *expected)
+{
+    const char *value = json_string(obj, key);
+    return value && strcmp(value, expected) == 0;
+}
+
 static int round_percent(double value)
 {
     if (value < 0.0) return 0;
@@ -154,51 +168,103 @@ static void copy_updated_at(char *dst, size_t dst_sz, const char *src)
     }
 }
 
-static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
+static const cJSON *find_service(const cJSON *root, const char *id)
 {
-    cJSON *root = cJSON_Parse(buf);
-    if (!root) {
-        ESP_LOGE(TAG, "JSON parse failed");
-        out->offline = true;
-        return ESP_FAIL;
+    const cJSON *services = cJSON_GetObjectItemCaseSensitive(root, "services");
+    if (!services || !cJSON_IsArray(services)) return NULL;
+
+    const cJSON *service = NULL;
+    cJSON_ArrayForEach(service, services) {
+        if (cJSON_IsObject(service) && json_string_equals(service, "id", id)) {
+            return service;
+        }
+    }
+    return NULL;
+}
+
+static const cJSON *find_service_item(const cJSON *service,
+                                      const char *array_key,
+                                      const char *id)
+{
+    const cJSON *items = cJSON_GetObjectItemCaseSensitive(service, array_key);
+    if (!items || !cJSON_IsArray(items)) return NULL;
+
+    const cJSON *item = NULL;
+    cJSON_ArrayForEach(item, items) {
+        if (cJSON_IsObject(item) && json_string_equals(item, "id", id)) {
+            return item;
+        }
+    }
+    return NULL;
+}
+
+static int service_counter_value(const cJSON *service, const char *id)
+{
+    const cJSON *counter = find_service_item(service, "counters", id);
+    return json_int(counter, "value");
+}
+
+static const cJSON *service_window(const cJSON *service, const char *id)
+{
+    return find_service_item(service, "windows", id);
+}
+
+static bool service_auth_error(const cJSON *service)
+{
+    return json_string_equals(service, "status", "auth_error");
+}
+
+static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
+{
+    const cJSON *gh = find_service(root, "github");
+    out->github_present = gh && cJSON_IsObject(gh);
+    if (out->github_present) {
+        out->github.issues = service_counter_value(gh, "issues");
+        out->github.prs = service_counter_value(gh, "pullRequests");
+        if (out->github.prs == 0) {
+            out->github.prs = service_counter_value(gh, "mergeRequests");
+        }
+        out->github.dependabot = service_counter_value(gh, "securityAlerts");
+        if (out->github.dependabot == 0) {
+            out->github.dependabot = service_counter_value(gh, "dependabot");
+        }
+        out->github.notifications = service_counter_value(gh, "notifications");
+        out->github.auth_error = service_auth_error(gh);
     }
 
-    out->schema_version = json_int(root, "schemaVersion");
-
-    cJSON *gh = cJSON_GetObjectItemCaseSensitive(root, "github");
-    out->github_present = gh && cJSON_IsObject(gh);
-    out->github.issues     = json_int(gh, "issues");
-    out->github.prs        = json_int(gh, "prs");
-    out->github.dependabot = json_int(gh, "dependabot");
-    out->github.auth_error = json_bool(gh, "authError");
-
-    cJSON *cl = cJSON_GetObjectItemCaseSensitive(root, "claude");
+    const cJSON *cl = find_service(root, "claude");
     if (cl) {
-        cJSON *fh = cJSON_GetObjectItemCaseSensitive(cl, "fiveHour");
+        const cJSON *fh = service_window(cl, "fiveHour");
         out->claude.five_hour.used             = json_int(fh, "used");
         out->claude.five_hour.limit            = json_int(fh, "limit");
         out->claude.five_hour.reset_in_seconds = json_int(fh, "resetInSeconds");
 
-        cJSON *wk = cJSON_GetObjectItemCaseSensitive(cl, "weekly");
+        const cJSON *wk = service_window(cl, "weekly");
         out->claude.weekly.used             = json_int(wk, "used");
         out->claude.weekly.limit            = json_int(wk, "limit");
         out->claude.weekly.reset_in_seconds = json_int(wk, "resetInSeconds");
 
-        out->claude.auth_error = json_bool(cl, "authError");
+        out->claude.auth_error = service_auth_error(cl);
     }
 
-    cJSON *cx = cJSON_GetObjectItemCaseSensitive(root, "codex");
+    const cJSON *cx = find_service(root, "codex");
     if (cx) {
-        cJSON *short_window = cJSON_GetObjectItemCaseSensitive(cx, "short");
-        cJSON *long_window  = cJSON_GetObjectItemCaseSensitive(cx, "long");
-        cJSON *reached      = cJSON_GetObjectItemCaseSensitive(cx, "reachedLimit");
+        const cJSON *short_window = service_window(cx, "short");
+        const cJSON *long_window  = service_window(cx, "long");
 
         out->codex.short_pct = round_percent(json_double(short_window, "usedPercent"));
         out->codex.long_pct  = round_percent(json_double(long_window,  "usedPercent"));
         out->codex.short_reset_in_seconds = json_int(short_window, "resetInSeconds");
         out->codex.long_reset_in_seconds  = json_int(long_window,  "resetInSeconds");
-        out->codex.reached   = reached && cJSON_IsString(reached);
+        out->codex.reached = json_bool(short_window, "reachedLimit") ||
+                             json_bool(long_window, "reachedLimit");
     }
+}
+
+static void parse_dashboard_payload(const cJSON *root, dashboard_data_t *out)
+{
+    out->schema_version = json_int(root, "schemaVersion");
+    parse_dashboard_v2(root, out);
 
     cJSON *ua = cJSON_GetObjectItemCaseSensitive(root, "updatedAtLocal");
     if (!ua) {
@@ -225,6 +291,18 @@ static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
 
     out->stale   = json_bool(root, "stale");
     out->offline = false;
+}
+
+static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
+{
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        ESP_LOGE(TAG, "JSON parse failed");
+        out->offline = true;
+        return ESP_FAIL;
+    }
+
+    parse_dashboard_payload(root, out);
 
     cJSON_Delete(root);
     return ESP_OK;

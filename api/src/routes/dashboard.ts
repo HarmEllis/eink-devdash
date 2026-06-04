@@ -1,7 +1,11 @@
 import type { FastifyInstance } from 'fastify'
-import { getGitHubStats } from '../services/github.service.js'
-import { getClaudeUsage } from '../services/claude.service.js'
-import { getCodexUsage } from '../services/codex.service.js'
+import { createCodeHostAdapters } from '../services/code-host.adapters.js'
+import {
+  DASHBOARD_SCHEMA_VERSION,
+  type DashboardService,
+  type DashboardServiceAdapter,
+} from '../services/dashboard-service.js'
+import { createUsageAdapters } from '../services/usage.adapters.js'
 
 const DASHBOARD_TIME_ZONE = process.env.DASHBOARD_TIME_ZONE
   ?? process.env.TZ
@@ -45,24 +49,38 @@ export function formatLocalIso(
   return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}:${get('second')}`
 }
 
+export type DashboardPayload = {
+  schemaVersion: typeof DASHBOARD_SCHEMA_VERSION
+  services: DashboardService[]
+  updatedAt: string
+  updatedAtLocal: string
+  updatedAtLocalIso: string
+}
+
+export async function buildDashboardPayload(
+  now: Date,
+  adapters: DashboardServiceAdapter[],
+  timeZone: string = DASHBOARD_TIME_ZONE,
+): Promise<DashboardPayload> {
+  const services = (await Promise.all(adapters.map((adapter) => adapter.getService())))
+    .filter((service): service is DashboardService => service !== null)
+
+  return {
+    schemaVersion: DASHBOARD_SCHEMA_VERSION,
+    services,
+    updatedAt: now.toISOString(),
+    updatedAtLocal: formatLocalUpdatedAt(now, timeZone),
+    updatedAtLocalIso: formatLocalIso(now, timeZone),
+  }
+}
+
 export async function dashboardRoute(app: FastifyInstance) {
   app.get('/dashboard', async (_req, reply) => {
     const now = new Date()
-    const [github, claude, codex] = await Promise.all([
-      getGitHubStats(),
-      getClaudeUsage(),
-      getCodexUsage(),
+    const body = await buildDashboardPayload(now, [
+      ...createCodeHostAdapters(),
+      ...createUsageAdapters(),
     ])
-
-    const body = {
-      schemaVersion: 1,
-      ...(github ? { github } : {}),
-      claude,
-      codex,
-      updatedAt: now.toISOString(),
-      updatedAtLocal: formatLocalUpdatedAt(now),
-      updatedAtLocalIso: formatLocalIso(now),
-    }
 
     return reply.send(body)
   })
