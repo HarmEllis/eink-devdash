@@ -148,6 +148,8 @@ Environment variables read by the API container. Set them in `.env` next to
 |----------|----------|---------|-------------|
 | `DEVICE_TOKEN` | yes | — | Shared secret the firmware sends in `Authorization: Bearer …`. Generate 32+ random characters. |
 | `GITHUB_TOKEN` | no | empty | Personal access token with `repo` + `security_events`. When empty the `github` block is omitted from `/dashboard`. |
+| `HTTP_PROXY` / `HTTPS_PROXY` | no | empty | Proxy passed into the API container for live provider probes on corporate networks. Lowercase variants are also passed through. |
+| `NO_PROXY` | no | empty | Hosts that should bypass the proxy, e.g. `localhost,127.0.0.1,.local`. Lowercase `no_proxy` is also passed through. |
 | `CODEX_PLAN_TYPE` | no | empty | Set to `plus` or `team` when multiple ChatGPT accounts are visible. |
 | `CODEX_LIVE_USAGE` | no | `true` | Set to `false` to skip the live Codex app-server probe and read only the on-disk session JSONL. |
 | `CODEX_CLI_PATH` | no | empty | Override the Codex CLI binary path. |
@@ -201,6 +203,12 @@ used by `codex app-server`. Session JSONL fallback reads directly from
 `/home/node/.codex-source/sessions`, so new host sessions are visible
 without copying session history into the container. No keys are baked into
 the image.
+
+On corporate networks, a working host Codex login does not guarantee that the
+API container can reach `chatgpt.com` directly. If live Codex usage logs
+`failed to fetch codex rate limits`, set the host's proxy variables in `.env`
+and recreate the container so the `codex app-server` probe uses the same
+network path.
 
 ### Network security
 

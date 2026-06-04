@@ -11,6 +11,12 @@ services:
     environment:
       - HOME=/home/node
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-}
+      - http_proxy=${http_proxy:-}
+      - https_proxy=${https_proxy:-}
+      - no_proxy=${no_proxy:-}
       - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE:-}
       - CODEX_LIVE_USAGE=${CODEX_LIVE_USAGE:-true}
       - CODEX_CLI_PATH=${CODEX_CLI_PATH:-}
@@ -37,6 +43,12 @@ services:
     environment:
       - HOME=/home/node
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-}
+      - http_proxy=${http_proxy:-}
+      - https_proxy=${https_proxy:-}
+      - no_proxy=${no_proxy:-}
       - CODEX_PLAN_TYPE=${CODEX_PLAN_TYPE:-}
       - CODEX_LIVE_USAGE=${CODEX_LIVE_USAGE:-true}
       - CODEX_CLI_PATH=${CODEX_CLI_PATH:-}
