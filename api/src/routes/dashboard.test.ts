@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { formatLocalIso, formatLocalUpdatedAt } from './dashboard.js'
+import { buildDashboardPayload, formatLocalIso, formatLocalUpdatedAt } from './dashboard.js'
 
 // A fixed instant: 2026-06-03T21:14:09Z. In Europe/Amsterdam (UTC+2 in summer)
 // that is local 23:14:09; in UTC it is 21:14:09.
@@ -33,4 +33,50 @@ test('formatLocalIso is parseable by the same HH:MM contract as updatedAtLocal',
   const iso = formatLocalIso(INSTANT, 'Europe/Amsterdam')
   const hhmm = formatLocalUpdatedAt(INSTANT, 'Europe/Amsterdam')
   assert.equal(iso.slice(11, 16), hhmm)
+})
+
+test('buildDashboardPayload emits schemaVersion 2 with bounded services', async () => {
+  const payload = await buildDashboardPayload(
+    INSTANT,
+    [
+      {
+        id: 'test',
+        async getService() {
+          return {
+            id: 'github',
+            kind: 'code-host',
+            provider: 'github',
+            label: 'GitHub',
+            status: 'ok',
+            counters: [{ id: 'issues', label: 'Issues', value: 3 }],
+          }
+        },
+      },
+      {
+        id: 'empty',
+        async getService() {
+          return null
+        },
+      },
+    ],
+    'Europe/Amsterdam',
+  )
+
+  assert.equal(payload.schemaVersion, 2)
+  assert.deepEqual(payload.services, [
+    {
+      id: 'github',
+      kind: 'code-host',
+      provider: 'github',
+      label: 'GitHub',
+      status: 'ok',
+      counters: [{ id: 'issues', label: 'Issues', value: 3 }],
+    },
+  ])
+  assert.equal(payload.updatedAt, '2026-06-03T21:14:09.000Z')
+  assert.equal(payload.updatedAtLocal, '23:14')
+  assert.equal(payload.updatedAtLocalIso, '2026-06-03T23:14:09')
+  assert.equal('github' in payload, false)
+  assert.equal('claude' in payload, false)
+  assert.equal('codex' in payload, false)
 })
