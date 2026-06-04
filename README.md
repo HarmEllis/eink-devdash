@@ -6,7 +6,7 @@ Black/White/Red (BWR) module with red alert highlights; the same
 firmware binary also supports the Black/White (BW) variant of that module.
 The BW panel is recommended for the best day-to-day dashboard experience:
 it keeps the UI monochrome, folds red operations to black, and enables
-validated per-region partial refreshes. Shows GitHub activity, Claude Code
+fast per-region partial refreshes. Shows GitHub activity, Claude Code
 rate limits, and Codex usage, updated on a configurable interval via deep
 sleep.
 
@@ -50,9 +50,12 @@ errors.
 Both the BWR and BW variants of the WeAct 2.9" SSD1680 module are supported
 from the same firmware binary and the same SPI wiring. On a BW panel the
 firmware folds red drawing operations to black at the framebuffer level and
-runs a per-region partial-refresh path (validated by Phase 0 Gate 0.A in
-`firmware/BOARD_NOTES.md`); on a BWR panel the existing full-colour refresh is
-unchanged.
+runs a per-region partial-refresh path; on a BWR panel the full-colour refresh
+is unchanged.
+
+After flashing, open the captive portal and pick your panel type under
+**Display** so the firmware knows which screen you actually have. The choice is
+saved on the device and persists across reboots, so you only set it once.
 
 **Panel choice:**
 
@@ -60,26 +63,6 @@ unchanged.
 |-------|------------------|------------|-----------|
 | WeAct 2.9" BW | You want the best dashboard experience and faster routine updates. | Fast per-region partial refreshes, fewer full-screen flashes, same wiring and firmware binary. The default cap of 5 partial refreshes per region has not shown visible ghosting in project hardware testing. | No red ink; alert highlights render as black. Ghosting becomes a tuning concern only if the partial cap is raised beyond the default. |
 | WeAct 2.9" BWR | You specifically want red alert highlights. | Red ink makes alerts visually distinct and remains the reference/original panel path. | Runtime dashboard updates are full-colour refreshes, so normal changes are slower and cause more full-screen flashes. |
-
-The build stamps a default panel via `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` so a
-device knows its panel before the first draw (Phase 0 Gate 0.B showed the old
-panel-agnostic recovery path could not clear pre-existing red on a BWR panel).
-The repo, CI, and the published release all build a **single binary** that
-defaults to BWR (`=0`, set in `sdkconfig.defaults`) — there is no separately
-published BW build. A user changes the variant per-device in the provisioning
-portal under "Display"; the chosen value is persisted in NVS and wins over the
-build default, so a BW panel is fully supported from the same released image.
-
-**Default panel per build:**
-
-| `CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT` | First-boot default | Build that uses it          | Wrong-default recovery |
-|----------------------------------------|--------------------|-----------------------------|------------------------|
-| `0`                                    | BWR                | repo / CI / released binary | Open the captive portal with a BOOT long-press, choose BW under Display, and save. |
-| `1`                                    | BW                 | local/factory build only    | Open the captive portal with a BOOT long-press, choose BWR under Display, and save. |
-
-The portal panel selector is the recovery path for a mis-flashed SKU. It writes
-the selected variant to NVS, and that saved value wins over the build-stamped
-default on subsequent boots.
 
 ### Wiring
 
@@ -350,6 +333,7 @@ scope for this firmware revision.
 | Device token | Must match `DEVICE_TOKEN` in the API server's `.env` |
 | Refresh interval | 3–60 minutes, default 5 |
 | Quiet hours | Per network: enable + start/end time. See below. |
+| Display | Pick the panel you have — BWR (Black/White/Red) or BW (Black/White). Saved on the device. |
 
 ### Quiet hours
 
@@ -673,9 +657,9 @@ render time it counts as a normal framebuffer diff and may refresh the affected
 BW region or the full BWR panel. Minimum refresh interval: 3 minutes
 (configurable 3–60 min).
 
-The BW per-region partial path was validated on hardware in Phase 0 Gate 0.A
-(BW V2 partial waveform LUT `0x32` + update trigger `0xCC`, geometry
-`RAMX=1..16`) — see `firmware/BOARD_NOTES.md`. The diff is computed per region
+The BW per-region partial path uses the BW V2 partial waveform LUT `0x32` plus
+update trigger `0xCC` and geometry `RAMX=1..16` — see `firmware/BOARD_NOTES.md`.
+The diff is computed per region
 (Layout A: 6 regions with GitHub, Layout B: 3 regions without); any change
 outside the active region union forces a full refresh.
 
