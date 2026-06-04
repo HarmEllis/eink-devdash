@@ -204,11 +204,12 @@ used by `codex app-server`. Session JSONL fallback reads directly from
 without copying session history into the container. No keys are baked into
 the image.
 
-On corporate networks, a working host Codex login does not guarantee that the
-API container can reach `chatgpt.com` directly. If live Codex usage logs
-`failed to fetch codex rate limits`, set the host's proxy variables in `.env`
-and recreate the container so the `codex app-server` probe uses the same
-network path.
+A working host Codex login does not guarantee that the API container can reach
+`chatgpt.com`. If live Codex usage logs `failed to fetch codex rate limits`,
+first check DNS and outbound connectivity from the container or WSL instance
+itself. After fixing WSL/Docker DNS, recreate the container so it picks up the
+new resolver state. On networks that require an outbound proxy, set the host's
+proxy variables in `.env` before recreating the container.
 
 ### Network security
 
