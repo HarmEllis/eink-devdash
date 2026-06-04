@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-04
+
+This patch release improves WiFi connection reliability on multi-AP networks by letting ESP-IDF roam across matching access points during connection attempts.
+
+### Changed
+
+- WiFi connection attempts now scan all channels, sort matching APs by signal strength, enable 802.11k/v roaming hints, and allow ESP-IDF driver-level retries instead of pinning a configured SSID to one scanned BSSID.
+- Runtime WiFi station configuration is kept in RAM during reconnect attempts to avoid unnecessary hot-path writes to WiFi NVS.
+
 ## [0.3.0] - 2026-06-03
 
 This minor release adds selectable WeAct 2.9" black/white panel support with faster partial refreshes, per-network quiet hours, and several dashboard and OTA reliability fixes.
@@ -49,6 +58,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.3.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/HarmEllis/eink-devdash/releases/tag/v0.1.0
