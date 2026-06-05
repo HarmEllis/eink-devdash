@@ -424,6 +424,30 @@ static void icon_pr(int ox, int oy, int use_red)
     fill_rect(ox+4, oy+4, 1, 2, 1, use_red);
 }
 
+/* Inbox icon: tray with a single unread notch. */
+static void icon_inbox(int ox, int oy, int use_red)
+{
+    fill_rect(ox+1, oy+1, 8, 1, 1, use_red);
+    fill_rect(ox+0, oy+2, 1, 6, 1, use_red);
+    fill_rect(ox+9, oy+2, 1, 6, 1, use_red);
+    fill_rect(ox+1, oy+7, 8, 1, 1, use_red);
+    fill_rect(ox+2, oy+5, 2, 1, 1, use_red);
+    fill_rect(ox+6, oy+5, 2, 1, 1, use_red);
+    fill_rect(ox+4, oy+6, 2, 1, 1, use_red);
+}
+
+/* Compact GitHub mark for the left column title. */
+static void icon_github_mark(int ox, int oy, int use_red)
+{
+    fill_rect(ox+2, oy+1, 6, 1, 1, use_red);
+    fill_rect(ox+1, oy+2, 8, 4, 1, use_red);
+    fill_rect(ox+2, oy+6, 6, 2, 1, use_red);
+    fill_rect(ox+3, oy+8, 1, 2, 1, use_red);
+    fill_rect(ox+6, oy+8, 1, 2, 1, use_red);
+    fill_rect(ox+3, oy+4, 1, 1, 0, 0);
+    fill_rect(ox+6, oy+4, 1, 1, 0, 0);
+}
+
 /* Shield icon — RED alert cuts an "!" hole in white */
 static void icon_shield(int ox, int oy, int use_red)
 {
@@ -582,11 +606,31 @@ static void icon_big_cross_red(int ox, int oy)
     }
 }
 
+static void icon_warning_big(int ox, int oy, int use_red)
+{
+    for (int y = 0; y < 24; y++) {
+        int inset = (23 - y) / 2;
+        int w = 24 - inset * 2;
+        if (w <= 0) continue;
+        if (y == 23 || y > 18) {
+            fill_rect(ox + inset, oy + y, w, 1, 1, use_red);
+        } else {
+            fill_rect(ox + inset, oy + y, 1, 1, 1, use_red);
+            fill_rect(ox + inset + w - 1, oy + y, 1, 1, 1, use_red);
+        }
+    }
+    fill_rect(ox + 11, oy + 8, 2, 8, 1, use_red);
+    fill_rect(ox + 11, oy + 19, 2, 2, 1, use_red);
+}
+
 /* ── segmented bar ──────────────────────────────────────────────────────── */
 /* Filled segments past the 80% threshold render red when pct > 80. Empty
  * segments are hollow 1-px black boxes. */
-static void draw_bar_cfg(int ox, int oy, int width, int height, int seg_w, int pct)
+static void draw_bar_cfg_ex(int ox, int oy, int width, int height, int seg_w,
+                            int pct, bool force_red)
 {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
     int stride = seg_w + 1;
     int cols = (width + 1) / stride;
     int filled = (pct * cols + 50) / 100;
@@ -594,7 +638,7 @@ static void draw_bar_cfg(int ox, int oy, int width, int height, int seg_w, int p
     for (int i = 0; i < cols; i++) {
         int sx = ox + i * stride;
         if (i < filled) {
-            int is_red = (pct > 80) && (i >= thresh);
+            int is_red = force_red || ((pct > 80) && (i >= thresh));
             fill_rect(sx, oy, seg_w, height, 1, is_red);
         } else {
             /* outlined empty box: 1 px black border, white interior */
@@ -604,6 +648,11 @@ static void draw_bar_cfg(int ox, int oy, int width, int height, int seg_w, int p
             vline(sx + seg_w - 1, oy + 1, height - 2);
         }
     }
+}
+
+static void draw_bar_cfg(int ox, int oy, int width, int height, int seg_w, int pct)
+{
+    draw_bar_cfg_ex(ox, oy, width, height, seg_w, pct, false);
 }
 
 /* Format remaining seconds as a compact countdown string ("0h47", "2h14",
@@ -646,6 +695,8 @@ typedef struct {
 static void draw_provider(int ox, int oy, int width, const provider_layout_t *layout,
                           const char *title, int ses, int wk,
                           int ses_reset_s, int wk_reset_s,
+                          int spend,
+                          bool spend_present,
                           bool auth_err)
 {
     char pct_s[8], ses_s[8], wk_s[8];
@@ -698,10 +749,27 @@ static void draw_provider(int ox, int oy, int width, const provider_layout_t *la
         snprintf(pct_s, sizeof(pct_s), "%d%%", wk);
     }
     draw_str(ox + width - str_w(pct_s) - 2, wk_y + 2, pct_s, auth_err || wk > 80);
+
+    if (spend_present) {
+        char spend_s[8];
+        int spend_display = spend > 999 ? 999 : spend;
+        if (spend_display > 0) {
+            snprintf(spend_s, sizeof(spend_s), "+%d", spend_display);
+        } else {
+            snprintf(spend_s, sizeof(spend_s), "0");
+        }
+        int spend_y = wk_y + layout->bar_row_h + 1;
+        draw_str(ox, spend_y + 1, "$", auth_err);
+        int spend_pct = spend > 0 ? (spend > 100 ? 100 : spend) : 0;
+        draw_bar_cfg_ex(bar_x, spend_y + bar_dy, bar_w, layout->bar_h,
+                        layout->seg_w, spend_pct, spend > 0);
+        draw_str(ox + width - str_w(spend_s) - 2, spend_y + 1, spend_s,
+                 auth_err || spend > 0);
+    }
 }
 
 /* ── icon row (left column) ─────────────────────────────────────────────── */
-/* Each row is 16 px tall; icon centered at y+3, label at y+4, value at y+1 */
+/* Each row is 16 px tall; icon centered at y+3, label/value at y+4. */
 static void draw_icon_row(int row_y,
                           void (*icon_fn)(int, int, int), int icon_red,
                           const char *label,
@@ -709,8 +777,25 @@ static void draw_icon_row(int row_y,
 {
     icon_fn(6, row_y + 3, icon_red);
     draw_str(22, row_y + 4, label, 0);
-    /* 2× value, right-aligned inside the 96 px GitHub column. */
-    draw_str2x(102 - str2x_w(value), row_y + 1, value, value_red);
+    draw_str(102 - str_w(value), row_y + 4, value, value_red);
+}
+
+static void format_count_value(char *out, size_t out_sz, int value)
+{
+    if (value > 999) {
+        snprintf(out, out_sz, "999+");
+    } else {
+        snprintf(out, out_sz, "%d", value < 0 ? 0 : value);
+    }
+}
+
+static void draw_github_error_column(const char *label, bool use_red)
+{
+    icon_github_mark(6, 19, use_red);
+    draw_str(20, 22, "GH", use_red);
+
+    icon_warning_big(51, 64, use_red);
+    draw_str(54 - str_w(label) / 2, 94, label, use_red);
 }
 
 /* ── device handle ──────────────────────────────────────────────────────── */
@@ -761,9 +846,9 @@ static bool                 s_variant_known = false;
 static uint8_t              s_refresh_min   = CONFIG_DEVDASH_REFRESH_MIN;
 
 /* Per-region partial machinery (BW path). REGION_COUNT_MAX is the
-   maximum of Layout A (6 regions) and Layout B (3 regions); the active
+   maximum of Layout A (7 regions) and Layout B (3 regions); the active
    layout fills the prefix and the unused tail stays zero-initialised. */
-#define REGION_COUNT_MAX 6
+#define REGION_COUNT_MAX 7
 static RTC_DATA_ATTR uint8_t  s_region_partial_count[REGION_COUNT_MAX];
 static RTC_DATA_ATTR bool     s_force_full_refresh          = false;
 static RTC_DATA_ATTR uint16_t s_renders_since_full          = 0;
@@ -786,21 +871,22 @@ typedef struct {
     int lx, ly, lw, lh;
 } region_logical_t;
 
-/* Layout A — show_github == true (6 regions). */
+/* Layout A — show_github == true (7 regions). */
 static const region_logical_t s_regions_with_github[] = {
     {   0,  0, 296, 16 },  /* header_clock: branding / sync / updated / status */
-    {   0, 16, 110, 24 },  /* gh_issues */
-    {   0, 40, 110, 24 },  /* gh_prs    */
-    {   0, 64, 110, 24 },  /* gh_deps   */
-    {   0, 88, 110, 24 },  /* gh_auth   */
-    { 110, 16, 186, 96 },  /* providers: CLAUDE / CODEX compact columns */
+    {   0, 16, 110, 24 },  /* gh_title */
+    {   0, 40, 110, 24 },  /* gh_issues */
+    {   0, 64, 110, 24 },  /* gh_prs */
+    {   0, 88, 110, 24 },  /* gh_inbox */
+    {   0,112, 110, 16 },  /* gh_deps */
+    { 110, 16, 186,112 },  /* providers: CLAUDE / CODEX compact columns */
 };
 
 /* Layout B — show_github == false (3 regions). */
 static const region_logical_t s_regions_no_github[] = {
     { 0,  0, 296, 16 },   /* header_clock */
-    { 4, 16, 288, 48 },   /* provider_top: CLAUDE wide row */
-    { 4, 64, 288, 64 },   /* provider_bot: CODEX wide row  */
+    { 0, 16, 296, 56 },   /* provider_top: CLAUDE wide row */
+    { 0, 72, 296, 56 },   /* provider_bot: CODEX wide row  */
 };
 
 static eink_panel_variant_t effective_panel_variant(void)
@@ -1585,6 +1671,8 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     bool show_github = data->github_present;
     bool deps_alert = show_github && data->github.dependabot > 0;
     bool auth_err   = show_github && data->github.auth_error;
+    bool github_err = show_github && (data->github.auth_error ||
+                                      data->github.service_error);
 
     /* ── Outer border ── */
     hline(1,   1,   294);   /* top    */
@@ -1637,78 +1725,82 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     hline(2, 15, 292);
 
     static const provider_layout_t compact_provider = {
-        .title_row_h = 14,
-        .row_gap = 2,
-        .bar_row_h = 12,
-        .bar_h = 10,
+        .title_row_h = 10,
+        .row_gap = 0,
+        .bar_row_h = 11,
+        .bar_h = 9,
         .seg_w = 3,
         .row_label_w = 18,
         .pct_w = 28,
     };
-    static const provider_layout_t wide_provider = {
-        .title_row_h = 15,
-        .row_gap = 1,
-        .bar_row_h = 14,
-        .bar_h = 12,
-        .seg_w = 4,
-        .row_label_w = 22,
-        .pct_w = 36,
-    };
-
     if (show_github) {
         /* Column divider at x=106. The narrower GitHub column leaves more
          * room for provider bars and their reset countdowns. */
         vline(106, 16, 110);
 
-        /* ── Left column — icon rows ── */
+        /* ── Left column — GitHub counters ── */
         char v[8];
+        if (github_err) {
+            draw_github_error_column(auth_err ? "AUTH FAIL" : "OFFLINE", true);
+        } else {
+            icon_github_mark(6, 19, 0);
+            draw_str(20, 22, "GH", 0);
 
-        /* Row 1: ISSUES @ y=20 */
-        snprintf(v, sizeof(v), "%d", data->github.issues);
-        draw_icon_row(20, icon_issue, 0, "ISSUES", v, 0);
+            format_count_value(v, sizeof(v), data->github.issues);
+            draw_icon_row(42, icon_issue, 0, "ISS", v, 0);
 
-        /* Row 2: PRs @ y=42 */
-        snprintf(v, sizeof(v), "%d", data->github.prs);
-        draw_icon_row(42, icon_pr, 0, "PRs", v, 0);
+            format_count_value(v, sizeof(v), data->github.prs);
+            draw_icon_row(64, icon_pr, 0, "PR", v, 0);
 
-        /* Row 3: DEPS @ y=64 */
-        if (deps_alert)
-            snprintf(v, sizeof(v), "%d!", data->github.dependabot);
-        else
-            snprintf(v, sizeof(v), "%d", data->github.dependabot);
-        draw_icon_row(64, icon_shield, deps_alert, "DEPS", v, deps_alert);
+            int dep_y = 86;
+            if (data->github.notifications_present) {
+                format_count_value(v, sizeof(v), data->github.notifications);
+                draw_icon_row(86, icon_inbox, 0, "INBOX", v, 0);
+                dep_y = 108;
+            }
 
-        /* Row 4: AUTH @ y=86 */
-        draw_icon_row(86, icon_key, auth_err, "AUTH",
-                      auth_err ? "ERR" : "OK", auth_err);
+            if (deps_alert)
+                snprintf(v, sizeof(v), "%d!", data->github.dependabot);
+            else
+                format_count_value(v, sizeof(v), data->github.dependabot);
+            draw_icon_row(dep_y, icon_shield, deps_alert, "DEP", v, deps_alert);
+        }
 
         /* ── Right column — compact provider bars ── */
-        draw_provider(112, 20, 182, &compact_provider, "CLAUDE",
+        draw_provider(112, 22, 182, &compact_provider, "CLAUDE",
                       claude_ses, claude_wk,
                       data->claude.five_hour.reset_in_seconds,
                       data->claude.weekly.reset_in_seconds,
+                      data->claude.spend,
+                      data->claude.spend_present,
                       data->claude.auth_error);
-        draw_provider(112, 66, 182, &compact_provider, "CODEX",
+        draw_provider(112, 76, 182, &compact_provider, "CODEX",
                       codex_ses, codex_wk,
                       data->codex.short_reset_in_seconds,
                       data->codex.long_reset_in_seconds,
+                      data->codex.spend,
+                      data->codex.spend_present,
                       false);
     } else {
         /* GitHub integration disabled upstream: use the whole canvas for the
-         * provider panels instead of rendering an empty GitHub side. */
-        draw_provider(4, 20, 288, &wide_provider, "CLAUDE",
+         * provider panels without changing their vertical placement. */
+        draw_provider(4, 22, 288, &compact_provider, "CLAUDE",
                       claude_ses, claude_wk,
                       data->claude.five_hour.reset_in_seconds,
                       data->claude.weekly.reset_in_seconds,
+                      data->claude.spend,
+                      data->claude.spend_present,
                       data->claude.auth_error);
-        draw_provider(4, 76, 288, &wide_provider, "CODEX",
+        draw_provider(4, 76, 288, &compact_provider, "CODEX",
                       codex_ses, codex_wk,
                       data->codex.short_reset_in_seconds,
                       data->codex.long_reset_in_seconds,
+                      data->codex.spend,
+                      data->codex.spend_present,
                       false);
     }
 
-    bool alert_requested = deps_alert || auth_err || offline
+    bool alert_requested = deps_alert || auth_err || github_err || offline
            || claude_ses > 80 || claude_wk > 80
            || codex_ses > 80  || codex_wk  > 80
            || data->codex.reached

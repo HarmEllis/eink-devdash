@@ -11,6 +11,7 @@ export type GitLabCodeHostConfig = {
 export type GitHubCodeHostConfig = {
   provider: 'github'
   token?: string
+  notificationsToken?: string
 }
 
 export type DisabledCodeHostConfig = {
@@ -27,7 +28,11 @@ export function codeHostConfigFromEnv(
   provider: CodeHostProvider = resolveCodeHostProvider(env),
 ): CodeHostConfig {
   if (provider === 'github') {
-    return { provider, token: env.GITHUB_TOKEN }
+    return {
+      provider,
+      token: env.GITHUB_TOKEN,
+      notificationsToken: env.GITHUB_NOTIFICATIONS_TOKEN,
+    }
   }
   if (provider === 'gitlab') {
     return {
@@ -43,7 +48,10 @@ export function createCodeHostAdapters(
   config: CodeHostConfig = codeHostConfigFromEnv(),
 ): DashboardServiceAdapter[] {
   if (config.provider === 'github') {
-    return [createGitHubServiceAdapter({ token: config.token })]
+    return [createGitHubServiceAdapter({
+      token: config.token,
+      notificationsToken: config.notificationsToken,
+    })]
   }
   return []
 }

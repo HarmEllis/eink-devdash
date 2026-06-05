@@ -26,6 +26,15 @@ test('resolveCodeHostProvider makes runtime code-host provider mutually exclusiv
 
 test('code-host adapter creation emits at most one runtime provider', () => {
   assert.deepEqual(codeHostConfigFromEnv({
+    CODE_HOST_PROVIDER: 'github',
+    GITHUB_TOKEN: 'ghp_repo',
+    GITHUB_NOTIFICATIONS_TOKEN: 'ghp_notifications',
+  }), {
+    provider: 'github',
+    token: 'ghp_repo',
+    notificationsToken: 'ghp_notifications',
+  })
+  assert.deepEqual(codeHostConfigFromEnv({
     CODE_HOST_PROVIDER: 'gitlab',
     GITLAB_TOKEN: 'glpat_test',
     GITLAB_BASE_URL: 'https://gitlab.example.com',
