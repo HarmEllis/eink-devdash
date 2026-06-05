@@ -81,10 +81,17 @@ export async function buildDashboardPayload(
   }
 }
 
-export async function dashboardRoute(app: FastifyInstance) {
+export type DashboardRouteOptions = {
+  // Inject adapters in tests; production falls back to the real set so the
+  // route stays self-contained when registered with no options.
+  adapters?: DashboardServiceAdapter[]
+}
+
+export async function dashboardRoute(app: FastifyInstance, opts: DashboardRouteOptions = {}) {
+  const adapters = opts.adapters ?? createDashboardAdapters()
   app.get('/dashboard', async (_req, reply) => {
     const now = new Date()
-    const body = await buildDashboardPayload(now, createDashboardAdapters())
+    const body = await buildDashboardPayload(now, adapters)
 
     return reply.send(body)
   })

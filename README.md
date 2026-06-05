@@ -212,99 +212,141 @@ used by `codex app-server`. Session JSONL fallback reads directly from
 without copying session history into the container. No keys are baked into
 the image.
 
-### Optional Cloudflare relay
+### Optional Cloudflare relay (self-host)
 
-The relay is for devices that cannot reach the API over the same trusted LAN.
-It keeps the Docker API private: the API opens an outbound authenticated
-WebSocket to a Cloudflare Worker, and the ESP32 reads the cached dashboard JSON
-from an authenticated HTTPS URL.
-
-Architecture:
+The relay lets the device reach the dashboard from outside your LAN **without**
+exposing the Docker API to the internet. It is **self-host only**: you deploy
+*your own* Cloudflare Worker, holding only *your own* device. There is no shared
+service and no manual "accept device" step, so there is no open-proxy surface to
+abuse — the only tenant of your Worker is you.
 
 ```text
-API container --WSS /connect?uuid=<DEVICE_UUID>--> Cloudflare Worker
-ESP32        --HTTPS /d/<DEVICE_UUID>/dashboard--> same Worker
+API container --WSS  /connect?uuid=<DEVICE_UUID>--> your Cloudflare Worker
+ESP32         --HTTPS /d/<DEVICE_UUID>/dashboard--> same Worker
 ```
 
-Deploy the Worker from `relay/`:
+#### One-command setup
+
+From a clone, with [Node](https://nodejs.org) installed:
 
 ```bash
 cd relay
 npm install
-npm run build
-npm test
-npx wrangler deploy
+npm run setup
 ```
 
-Required Worker secrets:
+`npm run setup` does everything end to end:
+
+1. Ensures `wrangler` is authenticated (runs `wrangler login` once if needed —
+   the only interactive step, Cloudflare's own browser OAuth).
+2. Generates a fresh identity: `DEVICE_UUID`, `DEVICE_TOKEN`,
+   `RELAY_PUBLISH_KEY`, `ADMIN_KEY` (cryptographically random; nothing is typed
+   by hand).
+3. Deploys the Worker and pushes those secrets (via stdin, never on the command
+   line).
+4. Merges the generated values into the root `.env` that Docker and the API
+   read — `DEVICE_TOKEN`, `DEVICE_UUID`, `RELAY_ENABLED=true`, `RELAY_URL`,
+   `RELAY_PUBLISH_KEY`. Existing keys are updated in place; unrelated lines are
+   left untouched.
+5. Prints the firmware provisioning details — the relay dashboard URL, the
+   device token, and **two terminal QR codes** (one per captive-portal field)
+   so neither value has to be transcribed by hand.
+
+Then start the publisher and provision the device:
 
 ```bash
-cd relay
-npx wrangler secret put RELAY_PUBLISH_KEY
-npx wrangler secret put ADMIN_KEY
-npx wrangler secret put DEVICE_TOKENS
+docker compose up -d
 ```
 
-`DEVICE_TOKENS` is a JSON object mapping UUIDs to device bearer tokens, for
-example:
+Provision the ESP32 by scanning the two QR codes into the captive portal's API
+URL and device-token fields. End-to-end this is: **clone → `npm run setup` → one
+browser login → `docker compose up -d` → flash + provision**, with no secrets
+typed by hand (they are generated, pushed, and shown as scannable QR codes). A
+single combined provisioning URL (one scan for both fields) is a planned
+firmware-side enhancement.
 
-```json
-{
-  "11111111-1111-4111-8111-111111111111": "replace-with-device-token"
-}
-```
+> Re-running `npm run setup` mints a **new** identity and overwrites the Worker
+> secrets and the relay keys in `.env`. Re-provision the device afterwards.
 
-`RELAY_PUBLISH_KEY` is a global publisher credential for the Worker: anyone
-holding it can publish a dashboard payload for any UUID. Treat it like an
-operator secret, rotate it if it leaks, and do not reuse it as a device token.
+#### Direct LAN route and relay run side by side
 
-Set these API container variables:
+Enabling the relay never disables the direct `ESP → Docker API` route. The API
+always serves `/dashboard` locally; the relay publisher is a pure opt-in toggle
+(`RELAY_ENABLED`). The firmware uses the same fetch path for both — only the
+provisioned profile differs:
 
-```env
-RELAY_ENABLED=true
-RELAY_URL=https://devdash-relay.example.workers.dev
-RELAY_PUBLISH_KEY=replace-with-publish-secret
-DEVICE_UUID=11111111-1111-4111-8111-111111111111
-RELAY_PUBLISH_INTERVAL_MS=300000
-```
+| | Direct → Docker API | Via relay (proxy) |
+|---|---|---|
+| `api_url` | `http://<host>:3000` (LAN) | `https://<worker>/d/<uuid>` |
+| TLS | http: none; https: cert-bundle validated | always TLS, cert-bundle validated |
+| `device_token` | **required** (`Bearer DEVICE_TOKEN`) | **required** (relay enforces it) |
+| path appended | `…:3000/dashboard` | `…/d/<uuid>/dashboard` |
 
-Provision the ESP32 with an additional API profile whose URL is the relay
-dashboard base:
+The **same** `DEVICE_TOKEN` authenticates both, so a single token provisions
+either route. The firmware supports up to five API profiles per Wi-Fi network,
+tried in order — at home you can provision profile 1 = the LAN URL (fast, no
+Cloudflare) and profile 2 = the relay URL as fallback; away, provision only the
+relay. Profiles with an empty token are skipped, so always set the token.
 
-```text
-https://devdash-relay.example.workers.dev/d/11111111-1111-4111-8111-111111111111
-```
+#### Operating notes
 
-Use the same `DEVICE_TOKEN` configured in the Worker `DEVICE_TOKENS` map. The
-firmware appends `/dashboard`, and the Worker accepts both `/d/<uuid>` and
-`/d/<uuid>/dashboard`.
-
-Relay stats are available to operators:
+Relay stats:
 
 ```bash
 curl -H "Authorization: Bearer <ADMIN_KEY>" \
-  "https://devdash-relay.example.workers.dev/admin/stats?uuid=<DEVICE_UUID>"
+  "https://<worker>.workers.dev/admin/stats?uuid=<DEVICE_UUID>"
 ```
 
-The relay returns the last published dashboard with a computed `stale` flag
-when the API has not published recently. Keep at least one LAN API profile on
-the device when possible so it can fall back to local service.
+The relay returns the last published dashboard with a computed `stale` flag when
+the API has not published recently. Run only one API container with relay
+publishing enabled per `DEVICE_UUID`; two publishers for the same UUID overwrite
+the same cached payload and make stats ambiguous.
 
-Run only one API container with relay publishing enabled for a given
-`DEVICE_UUID`; two publishers for the same UUID will overwrite the same cached
-payload and make connection stats ambiguous.
+#### Manual / advanced deploy
 
-### Network security
+`npm run setup` is the supported path. If you prefer to deploy by hand (or wire
+up a "Deploy to Cloudflare" button later), the Worker reads a single-pair device
+identity from secrets:
 
-The local API is designed for a trusted local network only. Do not expose port
-3000 to the internet, publish it through a router, or put it behind a generic
-public reverse proxy. The firmware uses plain HTTP for LAN profiles, so the
-`Authorization: Bearer ...` token protects against accidental LAN access but
-does not provide confidentiality on untrusted networks.
+```bash
+cd relay
+npx wrangler deploy
+npx wrangler secret put DEVICE_UUID        # the v4 UUID
+npx wrangler secret put DEVICE_TOKEN       # this device's bearer token
+npx wrangler secret put RELAY_PUBLISH_KEY  # publisher credential
+npx wrangler secret put ADMIN_KEY          # /admin/stats credential
+```
 
-For remote access, use either a private network path outside the firmware
-(router/site-to-site VPN or another private gateway) or the optional relay
-above. Relay profiles use HTTPS with the ESP-IDF certificate bundle.
+then set `RELAY_ENABLED=true`, `RELAY_URL`, `RELAY_PUBLISH_KEY`, `DEVICE_UUID`,
+and `DEVICE_TOKEN` in the root `.env`. (For multiple devices on one Worker the
+code also accepts a `DEVICE_TOKENS` JSON map of `uuid → token`; the single-pair
+secrets are the simpler self-host default.)
+
+### Security model
+
+What the transport guarantees today, so you know the trust boundary:
+
+- **Encryption in transit, both legs.** The API publishes over `wss://`
+  (WebSocket over TLS; the `ws` client validates the cert). The ESP32 fetches
+  over HTTPS using the ESP-IDF Mozilla root-CA bundle (`esp_crt_bundle_attach`,
+  no `setInsecure`), so it really verifies the Cloudflare certificate. Both
+  carry their bearer token inside the TLS tunnel.
+- **Not end-to-end.** TLS terminates at Cloudflare's edge; the Worker and its
+  Durable Object see and store the dashboard payload in plaintext. Cloudflare
+  can technically read it. Under self-host this is *your own* account — a
+  single-tenant exposure, not a shared one.
+- **Secrets live on disk.** The generated `.env` holds `DEVICE_TOKEN` and
+  `RELAY_PUBLISH_KEY` in plaintext (standard for Docker env; `.env` is
+  git-ignored). Keep the file readable only by you.
+- **Static bearer tokens, no replay protection.** A leaked token is replayable
+  until rotated. `RELAY_PUBLISH_KEY` can publish/overwrite the payload for any
+  UUID on your Worker; `DEVICE_TOKEN` can read the dashboard. Rotate by
+  re-running setup or `wrangler secret put`.
+- **No app-level rate limiting** beyond Cloudflare's platform defaults.
+- **The direct LAN route is the trusted-network design.** Do not expose port
+  3000 to the internet or put it behind a generic public reverse proxy. A
+  `http://<ip>` LAN profile sends the token in cleartext on the LAN — on hostile
+  networks use the relay (HTTPS) or a private path (VPN/gateway) instead.
 
 ---
 
