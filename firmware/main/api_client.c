@@ -204,6 +204,22 @@ static int service_counter_value(const cJSON *service, const char *id)
     return json_int(counter, "value");
 }
 
+static bool service_counter_present(const cJSON *service, const char *id)
+{
+    return find_service_item(service, "counters", id) != NULL;
+}
+
+static int service_metric_value(const cJSON *service, const char *id)
+{
+    const cJSON *metric = find_service_item(service, "metrics", id);
+    return json_int(metric, "value");
+}
+
+static bool service_metric_present(const cJSON *service, const char *id)
+{
+    return find_service_item(service, "metrics", id) != NULL;
+}
+
 static const cJSON *service_window(const cJSON *service, const char *id)
 {
     return find_service_item(service, "windows", id);
@@ -214,6 +230,12 @@ static bool service_auth_error(const cJSON *service)
     return json_string_equals(service, "status", "auth_error");
 }
 
+static bool service_error(const cJSON *service)
+{
+    return json_string_equals(service, "status", "error") ||
+           json_string_equals(service, "status", "unavailable");
+}
+
 static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
 {
     const cJSON *gh = find_service(root, "github");
@@ -221,15 +243,11 @@ static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
     if (out->github_present) {
         out->github.issues = service_counter_value(gh, "issues");
         out->github.prs = service_counter_value(gh, "pullRequests");
-        if (out->github.prs == 0) {
-            out->github.prs = service_counter_value(gh, "mergeRequests");
-        }
         out->github.dependabot = service_counter_value(gh, "securityAlerts");
-        if (out->github.dependabot == 0) {
-            out->github.dependabot = service_counter_value(gh, "dependabot");
-        }
+        out->github.notifications_present = service_counter_present(gh, "notifications");
         out->github.notifications = service_counter_value(gh, "notifications");
         out->github.auth_error = service_auth_error(gh);
+        out->github.service_error = service_error(gh);
     }
 
     const cJSON *cl = find_service(root, "claude");
@@ -244,6 +262,8 @@ static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
         out->claude.weekly.limit            = json_int(wk, "limit");
         out->claude.weekly.reset_in_seconds = json_int(wk, "resetInSeconds");
 
+        out->claude.spend_present = service_metric_present(cl, "spend");
+        out->claude.spend = service_metric_value(cl, "spend");
         out->claude.auth_error = service_auth_error(cl);
     }
 
@@ -258,6 +278,8 @@ static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
         out->codex.long_reset_in_seconds  = json_int(long_window,  "resetInSeconds");
         out->codex.reached = json_bool(short_window, "reachedLimit") ||
                              json_bool(long_window, "reachedLimit");
+        out->codex.spend_present = service_metric_present(cx, "spend");
+        out->codex.spend = service_metric_value(cx, "spend");
     }
 }
 

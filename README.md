@@ -148,7 +148,8 @@ Environment variables read by the API container. Set them in `.env` next to
 |----------|----------|---------|-------------|
 | `DEVICE_TOKEN` | yes | — | Shared secret the firmware sends in `Authorization: Bearer …`. Generate 32+ random characters. |
 | `CODE_HOST_PROVIDER` | no | auto | Runtime code-host provider: `github`, `gitlab`, or `none`. When unset, the API uses `github` only if `GITHUB_TOKEN` is configured; otherwise it uses `none`. GitLab is reserved in config shape only and does not emit a service yet. |
-| `GITHUB_TOKEN` | no | empty | Personal access token with `repo` + `security_events`. Required for the GitHub service counters. |
+| `GITHUB_TOKEN` | no | empty | GitHub personal access token for repository counters: issues, pull requests, and Dependabot alerts. Fine-grained PATs need `Dependabot alerts` read permission for DEP; classic PATs need `security_events`. Use `repo` only when private repo issues/PRs must be counted. |
+| `GITHUB_NOTIFICATIONS_TOKEN` | no | empty | Classic GitHub personal access token with `notifications` scope for unread notifications. Fine-grained PATs do not support GitHub's notifications API. When empty, the API omits the notifications counter and the firmware hides `INBOX`. |
 | `CODEX_PLAN_TYPE` | no | empty | Set to `plus` or `team` when multiple ChatGPT accounts are visible. |
 | `CODEX_LIVE_USAGE` | no | `true` | Set to `false` to skip the live Codex app-server probe and read only the on-disk session JSONL. |
 | `CODEX_CLI_PATH` | no | empty | Override the Codex CLI binary path. |
@@ -389,6 +390,10 @@ Returns current dashboard data. Requires `Authorization: Bearer <token>`.
 - Code-host services are mutually exclusive at runtime via `CODE_HOST_PROVIDER`.
 - The GitHub service is omitted when GitHub is not selected or `GITHUB_TOKEN`
   is unset or empty.
+- GitHub unread notifications require `GITHUB_NOTIFICATIONS_TOKEN`, a classic
+  PAT with `notifications` scope. Fine-grained PATs cannot read the
+  notifications API. When this token is empty, the API omits the notifications
+  counter and the firmware hides `INBOX`.
 - Services may include optional `metrics[]` in future releases for API-key
   usage, request counts, token counts, cost, or quotas.
 - Codex live usage is read through `codex app-server` first; the API
@@ -698,7 +703,7 @@ resets on power-on / external reset.
 
 | Source | How |
 |--------|-----|
-| GitHub | REST API v3 via PAT (`repo` + `security_events` scopes) |
+| GitHub | REST API v3 via PATs. `GITHUB_TOKEN` reads repository counters and Dependabot alerts; `GITHUB_NOTIFICATIONS_TOKEN` is an optional classic PAT with `notifications` scope for unread notifications. |
 | Claude Code | Reads `~/.claude/.credentials.json` (OAuth token) for rate-limit headers and refreshes the access token in-place when it expires, so the dashboard stays live during long idle periods. No Anthropic API key required. |
 | Codex | Live `codex app-server` `account/rateLimits/read` response, falling back to the latest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count.rate_limits` event |
 

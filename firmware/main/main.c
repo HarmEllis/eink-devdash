@@ -70,18 +70,26 @@ void app_main(void)
     static dashboard_data_t demo = {
         .schema_version = 2,
         .github_present = true,
-        .github = { .issues = 7, .prs = 3, .dependabot = 2 },
+        .github = {
+            .issues = 12,
+            .prs = 4,
+            .dependabot = 0,
+            .notifications = 1,
+            .notifications_present = true,
+        },
         .claude = {
-            .five_hour = { .used = 84, .limit = 200, .reset_in_seconds = 5400 },
-            .weekly    = { .used = 1240, .limit = 5000, .reset_in_seconds = 205200 },
+            .five_hour = { .used = 18, .limit = 200, .reset_in_seconds = 8200 },
+            .weekly    = { .used = 4100, .limit = 10000, .reset_in_seconds = 304800 },
             .auth_error = false,
         },
         .codex = {
-            .short_pct = 37,
-            .long_pct = 27,
+            .short_pct = 32,
+            .long_pct = 38,
             .reached = false,
+            .short_reset_in_seconds = 3600,
+            .long_reset_in_seconds = 313200,
         },
-        .updated_at = "2026-05-18 21:35",
+        .updated_at = "14:38",
         .stale = false,
         .offline = false,
     };

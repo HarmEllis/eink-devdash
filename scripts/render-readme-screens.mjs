@@ -337,6 +337,26 @@ function iconPr(f, ox, oy, useRed) {
   f.fillRect(ox + 4, oy + 4, 1, 2, 1, useRed);
 }
 
+function iconInbox(f, ox, oy, useRed) {
+  f.fillRect(ox + 1, oy + 1, 8, 1, 1, useRed);
+  f.fillRect(ox + 0, oy + 2, 1, 6, 1, useRed);
+  f.fillRect(ox + 9, oy + 2, 1, 6, 1, useRed);
+  f.fillRect(ox + 1, oy + 7, 8, 1, 1, useRed);
+  f.fillRect(ox + 2, oy + 5, 2, 1, 1, useRed);
+  f.fillRect(ox + 6, oy + 5, 2, 1, 1, useRed);
+  f.fillRect(ox + 4, oy + 6, 2, 1, 1, useRed);
+}
+
+function iconGithubMark(f, ox, oy, useRed) {
+  f.fillRect(ox + 2, oy + 1, 6, 1, 1, useRed);
+  f.fillRect(ox + 1, oy + 2, 8, 4, 1, useRed);
+  f.fillRect(ox + 2, oy + 6, 6, 2, 1, useRed);
+  f.fillRect(ox + 3, oy + 8, 1, 2, 1, useRed);
+  f.fillRect(ox + 6, oy + 8, 1, 2, 1, useRed);
+  f.fillRect(ox + 3, oy + 4, 1, 1, 0, 0);
+  f.fillRect(ox + 6, oy + 4, 1, 1, 0, 0);
+}
+
 function iconShield(f, ox, oy, useRed) {
   f.fillRect(ox + 2, oy + 0, 6, 1, 1, useRed);
   f.fillRect(ox + 1, oy + 1, 8, 5, 1, useRed);
@@ -440,7 +460,24 @@ function iconGlobe(f, ox, oy) {
   f.fillRect(ox + 4, oy + 7, 2, 1, 0, 0);
 }
 
-function drawBarCfg(f, ox, oy, width, height, segW, pct) {
+function iconWarningBig(f, ox, oy, useRed) {
+  for (let y = 0; y < 24; y++) {
+    const inset = Math.floor((23 - y) / 2);
+    const w = 24 - inset * 2;
+    if (w <= 0) continue;
+    if (y === 23 || y > 18) {
+      f.fillRect(ox + inset, oy + y, w, 1, 1, useRed);
+    } else {
+      f.fillRect(ox + inset, oy + y, 1, 1, 1, useRed);
+      f.fillRect(ox + inset + w - 1, oy + y, 1, 1, 1, useRed);
+    }
+  }
+  f.fillRect(ox + 11, oy + 8, 2, 8, 1, useRed);
+  f.fillRect(ox + 11, oy + 19, 2, 2, 1, useRed);
+}
+
+function drawBarCfg(f, ox, oy, width, height, segW, pct, forceRed = false) {
+  pct = Math.max(0, Math.min(100, pct));
   const stride = segW + 1;
   const cols = Math.floor((width + 1) / stride);
   const filled = Math.floor((pct * cols + 50) / 100);
@@ -448,7 +485,7 @@ function drawBarCfg(f, ox, oy, width, height, segW, pct) {
   for (let i = 0; i < cols; i++) {
     const sx = ox + i * stride;
     if (i < filled) {
-      const isRed = pct > 80 && i >= thresh;
+      const isRed = forceRed || (pct > 80 && i >= thresh);
       f.fillRect(sx, oy, segW, height, 1, isRed);
     } else {
       f.hline(sx, oy, segW);
@@ -475,7 +512,7 @@ function formatResetCountdown(seconds) {
   return h < 10 ? `${d}d ${h}h` : `${d}d${h}h`;
 }
 
-function drawProvider(f, ox, oy, width, layout, title, ses, wk, sesResetS, wkResetS) {
+function drawProvider(f, ox, oy, width, layout, title, ses, wk, sesResetS, wkResetS, spend = null) {
   f.drawStr(ox, oy, title, 0);
 
   const sesS = formatResetCountdown(sesResetS);
@@ -508,25 +545,46 @@ function drawProvider(f, ox, oy, width, layout, title, ses, wk, sesResetS, wkRes
   drawBarCfg(f, barX, wkY + barDy, barW, layout.barH, layout.segW, wk);
   const wkPct = `${wk}%`;
   f.drawStr(ox + width - strW(wkPct) - 2, wkY + 2, wkPct, wk > 80);
+
+  if (spend !== null) {
+    const spendText = spend > 0 ? `+${spend}` : String(Math.max(0, spend));
+    const spendY = wkY + layout.barRowH + 1;
+    f.drawStr(ox, spendY + 1, "$", 0);
+    const spendPct = spend > 0 ? Math.min(100, spend) : 0;
+    drawBarCfg(f, barX, spendY + barDy, barW, layout.barH, layout.segW, spendPct, spend > 0);
+    f.drawStr(ox + width - strW(spendText) - 2, spendY + 1, spendText, spend > 0);
+  }
 }
 
 function drawIconRow(f, rowY, iconFn, iconRed, label, value, valueRed) {
   iconFn(f, 6, rowY + 3, iconRed);
   f.drawStr(22, rowY + 4, label, 0);
-  f.drawStr2x(102 - str2xW(value), rowY + 1, value, valueRed);
+  f.drawStr(102 - strW(value), rowY + 4, value, valueRed);
 }
 
-function renderDashboard() {
+function formatCountValue(value) {
+  return value > 999 ? "999+" : String(Math.max(0, value));
+}
+
+function drawGithubErrorColumn(f, label, useRed) {
+  iconGithubMark(f, 6, 19, useRed);
+  f.drawStr(20, 22, "GH", useRed);
+  iconWarningBig(f, 51, 64, useRed);
+  f.drawStr(54 - Math.floor(strW(label) / 2), 94, label, useRed);
+}
+
+function renderDashboard({ githubPresent = true, githubError = null } = {}) {
   const f = new Frame();
   const data = {
-    githubPresent: true,
-    github: { issues: 7, prs: 3, dependabot: 2, authError: false },
+    githubPresent,
+    github: { issues: 12, prs: 4, notifications: 1, dependabot: 0, authError: githubError === "auth" },
     claude: {
-      fiveHour: { used: 84, limit: 200, resetInSeconds: 5400 },
-      weekly: { used: 1240, limit: 5000, resetInSeconds: 205200 },
+      fiveHour: { used: 18, limit: 200, resetInSeconds: 8200 },
+      weekly: { used: 4100, limit: 10000, resetInSeconds: 304800 },
+      spend: null,
     },
-    codex: { shortPct: 37, longPct: 27, reached: false, shortReset: 1823, longReset: 302400 },
-    updatedAt: "21:35",
+    codex: { shortPct: 32, longPct: 38, reached: false, shortReset: 3600, longReset: 313200, spend: 0 },
+    updatedAt: "14:38",
     refreshMin: 5,
     stale: false,
     offline: false,
@@ -557,22 +615,37 @@ function renderDashboard() {
   f.hline(2, 15, 292);
 
   const compactProvider = {
-    titleRowH: 14,
-    rowGap: 2,
-    barRowH: 12,
-    barH: 10,
+    titleRowH: 10,
+    rowGap: 0,
+    barRowH: 11,
+    barH: 9,
     segW: 3,
     rowLabelW: 18,
     pctW: 28,
   };
 
-  f.vline(106, 16, 110);
-  drawIconRow(f, 20, iconIssue, 0, "ISSUES", String(data.github.issues), 0);
-  drawIconRow(f, 42, iconPr, 0, "PRs", String(data.github.prs), 0);
-  drawIconRow(f, 64, iconShield, depsAlert, "DEPS", depsAlert ? `${data.github.dependabot}!` : String(data.github.dependabot), depsAlert);
-  drawIconRow(f, 86, iconKey, authErr, "AUTH", authErr ? "ERR" : "OK", authErr);
-  drawProvider(f, 112, 20, 182, compactProvider, "CLAUDE", claudeSes, claudeWk, data.claude.fiveHour.resetInSeconds, data.claude.weekly.resetInSeconds);
-  drawProvider(f, 112, 66, 182, compactProvider, "CODEX", codexSes, codexWk, data.codex.shortReset, data.codex.longReset);
+  if (data.githubPresent) {
+    f.vline(106, 16, 110);
+    if (githubError) {
+      drawGithubErrorColumn(f, githubError === "auth" ? "AUTH FAIL" : "OFFLINE", 1);
+    } else {
+      iconGithubMark(f, 6, 19, 0);
+      f.drawStr(20, 22, "GH", 0);
+      drawIconRow(f, 42, iconIssue, 0, "ISS", formatCountValue(data.github.issues), 0);
+      drawIconRow(f, 64, iconPr, 0, "PR", formatCountValue(data.github.prs), 0);
+      let depY = 86;
+      if (data.github.notifications !== null) {
+        drawIconRow(f, 86, iconInbox, 0, "INBOX", formatCountValue(data.github.notifications), 0);
+        depY = 108;
+      }
+      drawIconRow(f, depY, iconShield, depsAlert, "DEP", depsAlert ? `${data.github.dependabot}!` : formatCountValue(data.github.dependabot), depsAlert);
+    }
+    drawProvider(f, 112, 22, 182, compactProvider, "CLAUDE", claudeSes, claudeWk, data.claude.fiveHour.resetInSeconds, data.claude.weekly.resetInSeconds, data.claude.spend);
+    drawProvider(f, 112, 76, 182, compactProvider, "CODEX", codexSes, codexWk, data.codex.shortReset, data.codex.longReset, data.codex.spend);
+  } else {
+    drawProvider(f, 4, 22, 288, compactProvider, "CLAUDE", claudeSes, claudeWk, data.claude.fiveHour.resetInSeconds, data.claude.weekly.resetInSeconds, data.claude.spend);
+    drawProvider(f, 4, 76, 288, compactProvider, "CODEX", codexSes, codexWk, data.codex.shortReset, data.codex.longReset, data.codex.spend);
+  }
   return f;
 }
 

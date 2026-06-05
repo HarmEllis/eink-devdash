@@ -8,7 +8,9 @@ typedef struct {
     int prs;
     int dependabot;
     int notifications;
+    bool notifications_present;
     bool auth_error;
+    bool service_error;
 } github_data_t;
 
 typedef struct {
@@ -20,6 +22,8 @@ typedef struct {
 typedef struct {
     rate_limit_t five_hour;
     rate_limit_t weekly;
+    int spend;
+    bool spend_present;
     bool auth_error;
 } claude_data_t;
 
@@ -29,6 +33,8 @@ typedef struct {
     bool reached;
     int short_reset_in_seconds;
     int long_reset_in_seconds;
+    int spend;
+    bool spend_present;
 } codex_data_t;
 
 typedef struct {
