@@ -57,6 +57,13 @@ export type DashboardPayload = {
   updatedAtLocalIso: string
 }
 
+export function createDashboardAdapters(): DashboardServiceAdapter[] {
+  return [
+    ...createCodeHostAdapters(),
+    ...createUsageAdapters(),
+  ]
+}
+
 export async function buildDashboardPayload(
   now: Date,
   adapters: DashboardServiceAdapter[],
@@ -77,10 +84,7 @@ export async function buildDashboardPayload(
 export async function dashboardRoute(app: FastifyInstance) {
   app.get('/dashboard', async (_req, reply) => {
     const now = new Date()
-    const body = await buildDashboardPayload(now, [
-      ...createCodeHostAdapters(),
-      ...createUsageAdapters(),
-    ])
+    const body = await buildDashboardPayload(now, createDashboardAdapters())
 
     return reply.send(body)
   })

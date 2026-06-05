@@ -1,7 +1,8 @@
 import Fastify from 'fastify'
 import { Bonjour } from 'bonjour-service'
-import { dashboardRoute } from './routes/dashboard.js'
+import { buildDashboardPayload, createDashboardAdapters, dashboardRoute } from './routes/dashboard.js'
 import { otaRoute } from './routes/ota.js'
+import { createRelayPublisher, type RelayPublisher } from './relay/relay-client.js'
 
 const app = Fastify({ logger: true })
 const PORT = 3000
@@ -13,6 +14,7 @@ const MDNS_NAME = process.env.MDNS_NAME || 'devdash-api'
 
 let bonjour: Bonjour | null = null
 let mdnsService: ReturnType<Bonjour['publish']> | null = null
+let relayPublisher: RelayPublisher | null = null
 
 app.addHook('onRequest', async (req, reply) => {
   if (req.url === '/health') return
@@ -38,6 +40,7 @@ function startMdns() {
 
 async function shutdown(signal: string) {
   app.log.info({ signal }, 'shutting down')
+  relayPublisher?.stop()
   bonjour?.destroy()
   await app.close()
 }
@@ -56,4 +59,9 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 app.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
   if (err) { app.log.error(err); process.exit(1) }
   startMdns()
+  relayPublisher = createRelayPublisher({
+    logger: app.log,
+    getPayload: () => buildDashboardPayload(new Date(), createDashboardAdapters()),
+  })
+  relayPublisher.start()
 })

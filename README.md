@@ -103,7 +103,8 @@ multicast.
 > **Security:** keep this API on your trusted local network only. The
 > firmware talks to it over plain HTTP and sends the bearer token without
 > TLS, so do not expose port 3000 to the internet or route it through a
-> public reverse proxy.
+> public reverse proxy. Use the optional Cloudflare relay below when the
+> device needs an internet-reachable endpoint.
 
 For reliable `.local` discovery on Linux Docker hosts, use host networking:
 
@@ -147,6 +148,7 @@ Environment variables read by the API container. Set them in `.env` next to
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DEVICE_TOKEN` | yes | — | Shared secret the firmware sends in `Authorization: Bearer …`. Generate 32+ random characters. |
+| `DEVICE_UUID` | relay only | empty | Opaque v4 UUID used as the Cloudflare relay routing key. Required when `RELAY_ENABLED=true`. |
 | `CODE_HOST_PROVIDER` | no | auto | Runtime code-host provider: `github`, `gitlab`, or `none`. When unset, the API uses `github` only if `GITHUB_TOKEN` is configured; otherwise it uses `none`. GitLab is reserved in config shape only and does not emit a service yet. |
 | `GITHUB_TOKEN` | no | empty | GitHub personal access token for repository counters: issues, pull requests, and Dependabot alerts. Fine-grained PATs need `Dependabot alerts` read permission for DEP; classic PATs need `security_events`. Use `repo` only when private repo issues/PRs must be counted. |
 | `GITHUB_NOTIFICATIONS_TOKEN` | no | empty | Classic GitHub personal access token with `notifications` scope for unread notifications. Fine-grained PATs do not support GitHub's notifications API. When empty, the API omits the notifications counter and the firmware hides `INBOX`. |
@@ -163,6 +165,12 @@ Environment variables read by the API container. Set them in `.env` next to
 | `MDNS_ENABLED` | no | `true` | Set to `false` to disable mDNS advertising. |
 | `MDNS_NAME` | no | `devdash-api` | Hostname under `.local`. |
 | `OTA_ENABLED` | no | `true` | Set to `false` to make `/ota/manifest` report `{otaEnabled:false}` regardless of `APP_VERSION`. Pins all devices on the network to their installed firmware. |
+| `RELAY_ENABLED` | no | `false` | Enables outbound publishing to the Cloudflare relay. LAN `/dashboard` stays available. |
+| `RELAY_URL` | relay only | empty | Public Worker base URL, for example `https://devdash-relay.example.workers.dev`. The API converts it to `wss://.../connect?uuid=...`. |
+| `RELAY_PUBLISH_KEY` | relay only | empty | Secret used by the API container to authenticate the outbound WebSocket publisher. Set the same value as the Worker secret. |
+| `RELAY_PUBLISH_INTERVAL_MS` | no | `300000` | Publish cadence for the relay WebSocket. Defaults to 5 minutes to match the normal device refresh cadence and avoid unnecessary upstream API probes. |
+| `RELAY_RECONNECT_MIN_MS` | no | `1000` | Initial reconnect backoff after the relay WebSocket disconnects. |
+| `RELAY_RECONNECT_MAX_MS` | no | `60000` | Maximum reconnect backoff after repeated relay disconnects. |
 | `IMAGE_TAG` | no | `latest` | Pin the published image to a specific tag (e.g. `v0.1.0`). |
 
 The container mounts `~/.claude` **read-write** and mounts host `~/.codex`
@@ -204,16 +212,99 @@ used by `codex app-server`. Session JSONL fallback reads directly from
 without copying session history into the container. No keys are baked into
 the image.
 
+### Optional Cloudflare relay
+
+The relay is for devices that cannot reach the API over the same trusted LAN.
+It keeps the Docker API private: the API opens an outbound authenticated
+WebSocket to a Cloudflare Worker, and the ESP32 reads the cached dashboard JSON
+from an authenticated HTTPS URL.
+
+Architecture:
+
+```text
+API container --WSS /connect?uuid=<DEVICE_UUID>--> Cloudflare Worker
+ESP32        --HTTPS /d/<DEVICE_UUID>/dashboard--> same Worker
+```
+
+Deploy the Worker from `relay/`:
+
+```bash
+cd relay
+npm install
+npm run build
+npm test
+npx wrangler deploy
+```
+
+Required Worker secrets:
+
+```bash
+cd relay
+npx wrangler secret put RELAY_PUBLISH_KEY
+npx wrangler secret put ADMIN_KEY
+npx wrangler secret put DEVICE_TOKENS
+```
+
+`DEVICE_TOKENS` is a JSON object mapping UUIDs to device bearer tokens, for
+example:
+
+```json
+{
+  "11111111-1111-4111-8111-111111111111": "replace-with-device-token"
+}
+```
+
+`RELAY_PUBLISH_KEY` is a global publisher credential for the Worker: anyone
+holding it can publish a dashboard payload for any UUID. Treat it like an
+operator secret, rotate it if it leaks, and do not reuse it as a device token.
+
+Set these API container variables:
+
+```env
+RELAY_ENABLED=true
+RELAY_URL=https://devdash-relay.example.workers.dev
+RELAY_PUBLISH_KEY=replace-with-publish-secret
+DEVICE_UUID=11111111-1111-4111-8111-111111111111
+RELAY_PUBLISH_INTERVAL_MS=300000
+```
+
+Provision the ESP32 with an additional API profile whose URL is the relay
+dashboard base:
+
+```text
+https://devdash-relay.example.workers.dev/d/11111111-1111-4111-8111-111111111111
+```
+
+Use the same `DEVICE_TOKEN` configured in the Worker `DEVICE_TOKENS` map. The
+firmware appends `/dashboard`, and the Worker accepts both `/d/<uuid>` and
+`/d/<uuid>/dashboard`.
+
+Relay stats are available to operators:
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_KEY>" \
+  "https://devdash-relay.example.workers.dev/admin/stats?uuid=<DEVICE_UUID>"
+```
+
+The relay returns the last published dashboard with a computed `stale` flag
+when the API has not published recently. Keep at least one LAN API profile on
+the device when possible so it can fall back to local service.
+
+Run only one API container with relay publishing enabled for a given
+`DEVICE_UUID`; two publishers for the same UUID will overwrite the same cached
+payload and make connection stats ambiguous.
+
 ### Network security
 
-The API is designed for a trusted local network only. Do not expose it to
-the internet, publish port 3000 through a router, or put it behind a public
-reverse proxy. The firmware currently uses plain HTTP, so the
+The local API is designed for a trusted local network only. Do not expose port
+3000 to the internet, publish it through a router, or put it behind a generic
+public reverse proxy. The firmware uses plain HTTP for LAN profiles, so the
 `Authorization: Bearer ...` token protects against accidental LAN access but
-does not provide confidentiality on untrusted networks. If the device is not
-on the same trusted LAN as the API, provide that private network path outside
-the firmware, for example with a router/site-to-site VPN or another private
-network gateway. The firmware itself does not run a VPN client.
+does not provide confidentiality on untrusted networks.
+
+For remote access, use either a private network path outside the firmware
+(router/site-to-site VPN or another private gateway) or the optional relay
+above. Relay profiles use HTTPS with the ESP-IDF certificate bundle.
 
 ---
 

@@ -1,4 +1,5 @@
 #include "api_client.h"
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "cJSON.h"
@@ -10,7 +11,9 @@
 #include <stdio.h>
 
 static const char *TAG = "api_client";
-#define RESPONSE_BUF_SIZE 4096
+/* Headroom for schemaVersion 2 services plus future optional metrics. The
+ * parser still rejects truncated responses before JSON parsing. */
+#define RESPONSE_BUF_SIZE 6144
 #define DASHBOARD_HTTP_TIMEOUT_MS 10000
 #define DASHBOARD_HTTP_ATTEMPTS 3
 #define DASHBOARD_HTTP_RETRY_DELAY_MS 750
@@ -353,6 +356,7 @@ static esp_err_t fetch_one(const char *base_url, const char *token,
         .event_handler  = http_event_handler,
         .user_data      = &ctx,
         .timeout_ms     = DASHBOARD_HTTP_TIMEOUT_MS,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&hcfg);
     if (!client) {
