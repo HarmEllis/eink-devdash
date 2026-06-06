@@ -527,10 +527,10 @@ static const char V4_JS[] =
 "card.querySelectorAll('li[data-api]').forEach(function(li){"
 "if(!li.querySelector('.api-on').checked)return;"
 "var u=li.querySelector('input[type=url]');"
-"if(u&&u.value&&!/^http:\\/\\/[^\\s]+$/.test(u.value)){bad.push([card,li,u]);}"
+"if(u&&u.value&&!/^https?:\\/\\/[^\\s]+$/.test(u.value)){bad.push([card,li,u]);}"
 "});});"
 "if(bad.length){e.preventDefault();bad.forEach(function(x){x[0].classList.add('has-error');x[1].classList.add('has-error');x[2].classList.add('invalid');var er=x[1].querySelector('.err');if(er)er.hidden=false;});"
-"document.body.classList.add('has-errors');var s=document.getElementById('errsummary');if(s)s.innerHTML='<strong>Fix '+bad.length+' problem'+(bad.length>1?'s':'')+':</strong> API URL must start with <code>http://</code>.';bad[0][2].focus();}"
+"document.body.classList.add('has-errors');var s=document.getElementById('errsummary');if(s)s.innerHTML='<strong>Fix '+bad.length+' problem'+(bad.length>1?'s':'')+':</strong> API URL must start with <code>http://</code> or <code>https://</code>.';bad[0][2].focus();}"
 "else document.body.classList.remove('has-errors');"
 "});"
 "});"
@@ -594,7 +594,7 @@ static void render_api(httpd_req_t *req, int n, int k,
         "placeholder=\"http://host:3000\" inputmode=\"url\" "
         "autocapitalize=\"off\" autocomplete=\"off\" value=\"%s\">"
         "<div class=\"err\" hidden>Doesn't look like a URL - try "
-        "<code>http://...</code></div>"
+        "<code>http://...</code> or <code>https://...</code></div>"
         "</label>", n, k, url_esc);
     CHUNK(req, buf);
 
@@ -1154,7 +1154,7 @@ static esp_err_t handler_save(httpd_req_t *req)
             if (af->overflow) {
                 reason = "An API URL or token is longer than this device accepts.";
             } else if (!storage_validate_api_url(af->url)) {
-                reason = "Each enabled API needs a valid http:// URL.";
+                reason = "Each enabled API needs a valid http:// or https:// URL.";
             } else if (af->id == 0 && !af->tok_present) {
                 reason = "Each new API entry needs a device token.";
             }

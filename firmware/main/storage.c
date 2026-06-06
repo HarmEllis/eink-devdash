@@ -310,10 +310,16 @@ void storage_cfg_v2_defaults(dash_config_v2_t *cfg)
 bool storage_validate_api_url(const char *url)
 {
     if (!url || url[0] == '\0') return false;
-    if (strncmp(url, "http://", 7) != 0) return false;
+    const char *host;
+    if (strncmp(url, "http://", 7) == 0) {
+        host = url + 7;
+    } else if (strncmp(url, "https://", 8) == 0) {
+        host = url + 8;
+    } else {
+        return false;
+    }
     size_t len = strlen(url);
     if (len >= DASH_API_URL_MAX) return false;
-    const char *host = url + 7;
     if (*host == '\0') return false;
     /* Query strings are intentionally rejected because this is a base URL. */
     for (const char *p = host; *p; p++) {
