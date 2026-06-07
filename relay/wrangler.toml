@@ -1,0 +1,11 @@
+name = "eink-devdash-relay"
+main = "src/index.ts"
+compatibility_date = "2025-10-11"
+
+[[durable_objects.bindings]]
+name = "DASHBOARD_RELAY"
+class_name = "DashboardRelay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = [ "DashboardRelay" ]

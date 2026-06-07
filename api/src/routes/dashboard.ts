@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import type { DashboardCoordinator } from '../dashboard-coordinator.js'
 import { createCodeHostAdapters } from '../services/code-host.adapters.js'
 import {
   DASHBOARD_SCHEMA_VERSION,
@@ -7,16 +8,42 @@ import {
 } from '../services/dashboard-service.js'
 import { createUsageAdapters } from '../services/usage.adapters.js'
 
-const DASHBOARD_TIME_ZONE = process.env.DASHBOARD_TIME_ZONE
-  ?? process.env.TZ
-  ?? 'Europe/Amsterdam'
+const DEFAULT_TIME_ZONE = 'Europe/Amsterdam'
+
+function isValidTimeZone(timeZone: string): boolean {
+  try {
+    // Throws RangeError on an unknown/empty zone.
+    new Intl.DateTimeFormat('en-GB', { timeZone })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/* Pick the first usable IANA zone from the candidates, falling back to the
+ * default. Crucially this rejects the empty string: docker-compose passes
+ * `DASHBOARD_TIME_ZONE=${DASHBOARD_TIME_ZONE:-}`, so an unset variable arrives
+ * as "" (not undefined) and `??` would not skip it — Intl then throws
+ * `RangeError: Invalid time zone specified: ` and the whole /dashboard 500s. */
+export function resolveTimeZone(...candidates: (string | undefined)[]): string {
+  for (const candidate of candidates) {
+    const timeZone = candidate?.trim()
+    if (timeZone && isValidTimeZone(timeZone)) return timeZone
+  }
+  return DEFAULT_TIME_ZONE
+}
+
+const DASHBOARD_TIME_ZONE = resolveTimeZone(
+  process.env.DASHBOARD_TIME_ZONE,
+  process.env.TZ,
+)
 
 export function formatLocalUpdatedAt(
   now: Date,
   timeZone: string = DASHBOARD_TIME_ZONE,
 ): string {
   return new Intl.DateTimeFormat('en-GB', {
-    timeZone,
+    timeZone: resolveTimeZone(timeZone),
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -34,7 +61,7 @@ export function formatLocalIso(
   timeZone: string = DASHBOARD_TIME_ZONE,
 ): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
+    timeZone: resolveTimeZone(timeZone),
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -57,12 +84,20 @@ export type DashboardPayload = {
   updatedAtLocalIso: string
 }
 
+export function createDashboardAdapters(): DashboardServiceAdapter[] {
+  return [
+    ...createCodeHostAdapters(),
+    ...createUsageAdapters(),
+  ]
+}
+
 export async function buildDashboardPayload(
   now: Date,
   adapters: DashboardServiceAdapter[],
   timeZone: string = DASHBOARD_TIME_ZONE,
+  opts: { signal?: AbortSignal } = {},
 ): Promise<DashboardPayload> {
-  const services = (await Promise.all(adapters.map((adapter) => adapter.getService())))
+  const services = (await Promise.all(adapters.map((adapter) => adapter.getService(opts.signal))))
     .filter((service): service is DashboardService => service !== null)
 
   return {
@@ -74,13 +109,19 @@ export async function buildDashboardPayload(
   }
 }
 
-export async function dashboardRoute(app: FastifyInstance) {
+export type DashboardRouteOptions = {
+  // Inject adapters in tests; production falls back to the real set so the
+  // route stays self-contained when registered with no options.
+  adapters?: DashboardServiceAdapter[]
+  coordinator?: DashboardCoordinator
+}
+
+export async function dashboardRoute(app: FastifyInstance, opts: DashboardRouteOptions = {}) {
+  const adapters = opts.coordinator ? null : opts.adapters ?? createDashboardAdapters()
   app.get('/dashboard', async (_req, reply) => {
-    const now = new Date()
-    const body = await buildDashboardPayload(now, [
-      ...createCodeHostAdapters(),
-      ...createUsageAdapters(),
-    ])
+    const body = opts.coordinator
+      ? await opts.coordinator.getDashboard()
+      : await buildDashboardPayload(new Date(), adapters!)
 
     return reply.send(body)
   })

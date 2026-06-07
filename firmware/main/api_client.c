@@ -1,17 +1,24 @@
 #include "api_client.h"
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
+#include "runtime_policy.h"
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
 static const char *TAG = "api_client";
-#define RESPONSE_BUF_SIZE 4096
+/* Headroom for schemaVersion 2 services plus future optional metrics. The
+ * parser still rejects truncated responses before JSON parsing. */
+#define RESPONSE_BUF_SIZE 6144
 #define DASHBOARD_HTTP_TIMEOUT_MS 10000
+#define RELAY_HTTP_TIMEOUT_MS 22000
+#define DASHBOARD_FETCH_CYCLE_BUDGET_MS 60000
 #define DASHBOARD_HTTP_ATTEMPTS 3
 #define DASHBOARD_HTTP_RETRY_DELAY_MS 750
 
@@ -333,7 +340,8 @@ static esp_err_t parse_dashboard_json(const char *buf, dashboard_data_t *out)
 static esp_err_t fetch_one(const char *base_url, const char *token,
                            dashboard_data_t *out,
                            int *status_out,
-                           int *sock_errno_out)
+                           int *sock_errno_out,
+                           int timeout_ms)
 {
     if (status_out) *status_out = 0;
     if (sock_errno_out) *sock_errno_out = 0;
@@ -352,7 +360,8 @@ static esp_err_t fetch_one(const char *base_url, const char *token,
         .url            = url,
         .event_handler  = http_event_handler,
         .user_data      = &ctx,
-        .timeout_ms     = DASHBOARD_HTTP_TIMEOUT_MS,
+        .timeout_ms     = timeout_ms,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&hcfg);
     if (!client) {
@@ -421,6 +430,21 @@ static bool should_retry_same_profile(int status, esp_err_t err)
     return false;
 }
 
+static int fetch_cycle_remaining_ms(int64_t started_us)
+{
+    int64_t elapsed_ms = (esp_timer_get_time() - started_us) / 1000;
+    if (elapsed_ms >= DASHBOARD_FETCH_CYCLE_BUDGET_MS) return 0;
+    return DASHBOARD_FETCH_CYCLE_BUDGET_MS - (int)elapsed_ms;
+}
+
+static int profile_timeout_ms(const char *url, int remaining_ms)
+{
+    int timeout = api_url_is_relay(url)
+        ? RELAY_HTTP_TIMEOUT_MS
+        : DASHBOARD_HTTP_TIMEOUT_MS;
+    return timeout < remaining_ms ? timeout : remaining_ms;
+}
+
 esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                                          int network_idx,
                                          bool prefer_last_success_api,
@@ -443,6 +467,7 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
     }
 
     esp_err_t last_err = ESP_FAIL;
+    int64_t cycle_started_us = esp_timer_get_time();
     int start = -1;
     if (prefer_last_success_api &&
         cfg->last_success_api_idx >= 0 &&
@@ -466,10 +491,13 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
 
                 int status = 0;
                 int sock_errno = 0;
+                int remaining_ms = fetch_cycle_remaining_ms(cycle_started_us);
+                if (remaining_ms <= 0) goto budget_exhausted;
                 ESP_LOGI(TAG, "Trying API profile index=%u round=%u/%u url=%s",
                          idx, attempt, DASHBOARD_HTTP_ATTEMPTS, api->api_url);
                 last_err = fetch_one(api->api_url, api->device_token,
-                                     out, &status, &sock_errno);
+                                     out, &status, &sock_errno,
+                                     profile_timeout_ms(api->api_url, remaining_ms));
                 if (last_err == ESP_OK) {
                     ESP_LOGI(TAG, "API profile index=%u succeeded", idx);
                     cfg->last_success_network_idx = network_idx;
@@ -493,6 +521,7 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
             }
 
             if (attempt < DASHBOARD_HTTP_ATTEMPTS) {
+                if (fetch_cycle_remaining_ms(cycle_started_us) <= 0) goto budget_exhausted;
                 vTaskDelay(pdMS_TO_TICKS(DASHBOARD_HTTP_RETRY_DELAY_MS));
             }
         }
@@ -522,10 +551,13 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
             ESP_LOGI(TAG, "Trying API profile index=%u pass=%u url=%s",
                      idx, pass, api->api_url);
             for (uint8_t attempt = 1; attempt <= DASHBOARD_HTTP_ATTEMPTS; attempt++) {
+                int remaining_ms = fetch_cycle_remaining_ms(cycle_started_us);
+                if (remaining_ms <= 0) goto budget_exhausted;
                 ESP_LOGI(TAG, "API profile index=%u attempt=%u/%u",
                          idx, attempt, DASHBOARD_HTTP_ATTEMPTS);
                 last_err = fetch_one(api->api_url, api->device_token,
-                                     out, &status, &sock_errno);
+                                     out, &status, &sock_errno,
+                                     profile_timeout_ms(api->api_url, remaining_ms));
                 if (last_err == ESP_OK ||
                     !should_retry_same_profile(status, last_err) ||
                     attempt == DASHBOARD_HTTP_ATTEMPTS) {
@@ -533,6 +565,7 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                 }
                 ESP_LOGW(TAG, "API profile index=%u transient failure: err=%s status=%d; retrying",
                          idx, esp_err_to_name(last_err), status);
+                if (fetch_cycle_remaining_ms(cycle_started_us) <= 0) goto budget_exhausted;
                 vTaskDelay(pdMS_TO_TICKS(DASHBOARD_HTTP_RETRY_DELAY_MS));
             }
             if (last_err == ESP_OK) {
@@ -563,4 +596,10 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
     out->offline = true;
     ESP_LOGW(TAG, "All API profiles failed; last_err=%s", esp_err_to_name(last_err));
     return last_err;
+
+budget_exhausted:
+    out->offline = true;
+    ESP_LOGW(TAG, "Dashboard fetch cycle exceeded %d ms budget",
+             DASHBOARD_FETCH_CYCLE_BUDGET_MS);
+    return ESP_ERR_TIMEOUT;
 }

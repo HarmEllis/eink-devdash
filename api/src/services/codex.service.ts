@@ -260,7 +260,8 @@ function asJsonRpcResponse(value: unknown): JsonRpcResponse | null {
   return value as JsonRpcResponse
 }
 
-async function readRateLimitsFromAppServer(): Promise<AppServerRateLimitsResponse> {
+async function readRateLimitsFromAppServer(signal?: AbortSignal): Promise<AppServerRateLimitsResponse> {
+  signal?.throwIfAborted()
   await syncCodexRuntimeHome()
 
   const command = await resolveCodexCommand()
@@ -286,6 +287,7 @@ async function readRateLimitsFromAppServer(): Promise<AppServerRateLimitsRespons
       if (settled) return
       settled = true
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       child.kill('SIGTERM')
       if (err) reject(err)
       else resolve(result ?? {})
@@ -294,6 +296,10 @@ async function readRateLimitsFromAppServer(): Promise<AppServerRateLimitsRespons
     const timer = setTimeout(() => {
       finish(new Error(`Codex app-server timed out after ${timeoutMs}ms`))
     }, timeoutMs)
+    const onAbort = () => finish(
+      signal?.reason instanceof Error ? signal.reason : new Error('Codex usage aborted'),
+    )
+    signal?.addEventListener('abort', onAbort, { once: true })
 
     const send = (message: unknown) => {
       try {
@@ -392,14 +398,15 @@ function selectRateLimits(response: AppServerRateLimitsResponse): RateLimits | n
   return null
 }
 
-async function getLiveChatGptUsage(): Promise<CodexUsage | null> {
+async function getLiveChatGptUsage(signal?: AbortSignal): Promise<CodexUsage | null> {
   if (!CODEX_LIVE_USAGE_ENABLED) return null
 
   try {
-    const response = await readRateLimitsFromAppServer()
+    const response = await readRateLimitsFromAppServer(signal)
     const rateLimits = selectRateLimits(response)
     return rateLimits ? usageFromRateLimits(rateLimits) : null
   } catch (err) {
+    if (signal?.aborted) throw signal.reason ?? err
     if (isErrnoException(err) && err.code === 'ENOENT') return null
     console.warn('[codex] live usage probe failed; falling back to session files', err)
     return null
@@ -477,9 +484,11 @@ async function findLastRateLimits(filePath: string): Promise<RateLimits | null> 
   }
 }
 
-async function getChatGptUsage(): Promise<CodexUsage> {
-  const liveUsage = await getLiveChatGptUsage()
+async function getChatGptUsage(signal?: AbortSignal): Promise<CodexUsage> {
+  signal?.throwIfAborted()
+  const liveUsage = await getLiveChatGptUsage(signal)
   if (liveUsage) return liveUsage
+  signal?.throwIfAborted()
 
   try {
     for (const filePath of await listNewestSessionFiles()) {
@@ -498,10 +507,10 @@ async function getChatGptUsage(): Promise<CodexUsage> {
   return emptyChatGptUsage('unavailable')
 }
 
-export async function getCodexUsage(): Promise<CodexUsage> {
+export async function getCodexUsage(signal?: AbortSignal): Promise<CodexUsage> {
   /* ChatGPT-auth Codex usage is read live through the app-server when
    * available, with local session files as a fallback. A future api-key adapter
    * can auto-select when OPENAI_API_KEY is present and map spend budgets onto
    * the same short/long wire shape. */
-  return getChatGptUsage()
+  return getChatGptUsage(signal)
 }

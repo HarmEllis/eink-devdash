@@ -45,5 +45,5 @@ export type DashboardService = {
 
 export type DashboardServiceAdapter = {
   id: string
-  getService(): Promise<DashboardService | null>
+  getService(signal?: AbortSignal): Promise<DashboardService | null>
 }

@@ -30,12 +30,23 @@ interface OtaManifestEnabled {
 
 export type OtaManifest = OtaManifestDisabled | OtaManifestEnabled
 
+const UINT32_MAX = 0xffff_ffff
+const CANONICAL_VERSION_RE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+
+export function appVersionIsCanonical(version: string): boolean {
+  const match = CANONICAL_VERSION_RE.exec(version)
+  return !!match && match.slice(1).every((part) => {
+    const value = Number(part)
+    return Number.isSafeInteger(value) && value <= UINT32_MAX
+  })
+}
+
 export function buildManifest(opts: {
   otaEnabled: boolean
   appVersion: string
 }): OtaManifest {
   if (!opts.otaEnabled) return { otaEnabled: false }
-  if (!opts.appVersion) return { otaEnabled: false }
+  if (!appVersionIsCanonical(opts.appVersion)) return { otaEnabled: false }
   return {
     otaEnabled: true,
     latestVersion: opts.appVersion,
@@ -48,6 +59,15 @@ function readOtaEnv() {
     otaEnabled: process.env.OTA_ENABLED !== 'false',
     appVersion: process.env.APP_VERSION ?? '',
   }
+}
+
+export function getOtaManifest(): OtaManifest {
+  const env = readOtaEnv()
+  const manifest = buildManifest(env)
+  if (env.otaEnabled && !appVersionIsCanonical(env.appVersion)) {
+    console.warn(`[ota] APP_VERSION is not canonical; OTA disabled: ${env.appVersion || '(unset)'}`)
+  }
+  return manifest
 }
 
 export async function otaRoute(app: FastifyInstance) {
@@ -67,6 +87,6 @@ export async function otaRoute(app: FastifyInstance) {
   }
 
   app.get('/ota/manifest', async (_req, reply) => {
-    return reply.send(buildManifest(readOtaEnv()))
+    return reply.send(getOtaManifest())
   })
 }

@@ -5,6 +5,8 @@ import Fastify from 'fastify'
 import {
   buildDownloadUrl,
   buildManifest,
+  appVersionIsCanonical,
+  getOtaManifest,
   getRepoSlug,
   otaRoute,
 } from './ota.js'
@@ -46,6 +48,40 @@ test('buildManifest returns the full manifest when enabled + version present', (
         'https://github.com/HarmEllis/eink-devdash/releases/download/v0.2.0/eink-devdash.bin',
     },
   )
+})
+
+test('APP_VERSION must be canonical v-prefixed uint32 semver', () => {
+  assert.equal(appVersionIsCanonical('v0.4.0'), true)
+  for (const invalid of [
+    '0.4.0',
+    'v01.4.0',
+    'v0.4.0-rc1',
+    'v4294967296.0.0',
+    'v0.4',
+    '',
+  ]) {
+    assert.equal(appVersionIsCanonical(invalid), false, invalid)
+    assert.deepEqual(buildManifest({ otaEnabled: true, appVersion: invalid }), {
+      otaEnabled: false,
+    })
+  }
+})
+
+test('getOtaManifest is the environment-backed single source', () => {
+  const originalEnabled = process.env.OTA_ENABLED
+  const originalVersion = process.env.APP_VERSION
+  try {
+    process.env.OTA_ENABLED = 'true'
+    process.env.APP_VERSION = 'v0.4.0'
+    assert.equal(getOtaManifest().otaEnabled, true)
+    process.env.APP_VERSION = '0.4.0'
+    assert.deepEqual(getOtaManifest(), { otaEnabled: false })
+  } finally {
+    if (originalEnabled === undefined) delete process.env.OTA_ENABLED
+    else process.env.OTA_ENABLED = originalEnabled
+    if (originalVersion === undefined) delete process.env.APP_VERSION
+    else process.env.APP_VERSION = originalVersion
+  }
 })
 
 test('/ota/manifest is bearer-gated by the global auth hook', async () => {

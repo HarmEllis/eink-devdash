@@ -10,6 +10,8 @@ idf_component_register(
         "timekeep.c"
         "boot_button.c"
         "ota_client.c"
+        "ota_version.c"
+        "runtime_policy.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_event

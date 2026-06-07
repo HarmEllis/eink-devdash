@@ -19,11 +19,12 @@
 #include "sdkconfig.h"
 
 #include "display.h"
+#include "ota_version.h"
 
 static const char *TAG = "ota_client";
 
 #define OTA_MANIFEST_BUF_SIZE        1024
-#define OTA_MANIFEST_TIMEOUT_MS      6000
+#define OTA_MANIFEST_TIMEOUT_MS      10000
 #define OTA_DOWNLOAD_TIMEOUT_MS      60000
 
 /* RTC_DATA_ATTR is zero-initialized on cold boot / power loss and preserved
@@ -64,29 +65,6 @@ static void build_manifest_url(const char *base_url, char *out, size_t out_sz)
     size_t base_len = strlen(base_url);
     bool has_slash = base_len > 0 && base_url[base_len - 1] == '/';
     snprintf(out, out_sz, "%s%sota/manifest", base_url, has_slash ? "" : "/");
-}
-
-/* Strip a leading 'v' for comparison; matches IDF's default PROJECT_VER
- * (`git describe`) which produces "v0.2.0[-3-gabc[-dirty]]" against a
- * "vX.Y.Z" tag, and matches the API's "vX.Y.Z" latestVersion string. */
-static const char *strip_v(const char *s)
-{
-    if (s && s[0] == 'v') return s + 1;
-    return s ? s : "";
-}
-
-/*
- * Version comparison: strict equality on the dot-tuple. We don't try to
- * detect "newer", just "different" — anything non-equal triggers an OTA.
- * That keeps downgrades possible (a release can be retracted by republishing
- * an older tag) and avoids the strcmp-lexicographic 9→10 boundary trap (R14
- * in docs/decisions/0005-ota-updates.md). Local dev builds report e.g.
- * "0.1.0-3-gabc1234-dirty"; against a CI tag "0.2.0" those compare unequal
- * and OTA proceeds, which is the desired dev behaviour.
- */
-static bool versions_match(const char *running, const char *latest)
-{
-    return strcmp(strip_v(running), strip_v(latest)) == 0;
 }
 
 static bool running_image_pending_verify(void)
@@ -171,6 +149,10 @@ static esp_err_t fetch_manifest(const char *base_url,
         .event_handler = manifest_http_event_handler,
         .user_data = &ctx,
         .timeout_ms = OTA_MANIFEST_TIMEOUT_MS,
+        /* Attach the cert bundle unconditionally, mirroring
+         * api_client.c::/dashboard, so a relay's HTTPS base URL can verify the
+         * server certificate. Unused on plain-HTTP profiles. */
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&hcfg);
     if (!client) {
@@ -188,6 +170,17 @@ static esp_err_t fetch_manifest(const char *base_url,
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+
+    /* A reachable endpoint that has no manifest route (notably the
+     * payload-agnostic Cloudflare relay, which only serves /dashboard) answers
+     * 404. Treat that as "OTA not available on this profile": a no-op with
+     * *out_ota_enabled left false, not a fetch failure. Returning an error here
+     * would wrongly trip the retry throttle on every refresh. */
+    if (err == ESP_OK && status == 404) {
+        ESP_LOGI(TAG, "No OTA manifest at this profile (404); OTA unavailable here");
+        free(buf);
+        return ESP_OK;
+    }
 
     if (err != ESP_OK || status < 200 || status >= 300) {
         ESP_LOGW(TAG, "Manifest fetch failed: err=%s status=%d",
@@ -367,8 +360,21 @@ esp_err_t ota_client_maybe_update(const dash_config_v2_t *cfg,
     const char *running_version = running ? running->version : "";
     ESP_LOGI(TAG, "OTA: running=%s latest=%s", running_version, latest_version);
 
-    if (versions_match(running_version, latest_version)) {
-        ESP_LOGI(TAG, "Already on latest version; nothing to do");
+    /* Upgrade-only: install strictly newer versions, never equal or older.
+     * Fails closed on any malformed version, which closes downgrade attacks
+     * even via a freshly published old release. */
+    if (!ota_version_is_newer(latest_version, running_version)) {
+        ESP_LOGI(TAG, "Latest is not newer than running; nothing to do");
+        return ESP_OK;
+    }
+
+    /* Trust anchor: only the exact canonical GitHub Releases URL for this
+     * version is accepted, so a leaked publish key cannot redirect the device
+     * to another repo's binary. This is a deliberate no-op skip (not a
+     * throttled failure): a non-canonical URL is a misconfigured/hostile
+     * manifest, not a transient fetch error. */
+    if (!ota_download_url_is_canonical(download_url, latest_version)) {
+        ESP_LOGW(TAG, "Rejecting non-canonical OTA download URL: %s", download_url);
         return ESP_OK;
     }
 

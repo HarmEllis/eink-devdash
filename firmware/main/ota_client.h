@@ -10,11 +10,20 @@
  * e-paper refreshes in one wake cycle.
  *
  * Behaviour:
- *  - Fetches `<base_url>/ota/manifest` over plain HTTP with the existing
- *    Bearer auth for the picked network/api slot.
+ *  - Fetches `<base_url>/ota/manifest` over HTTP or HTTPS with the existing
+ *    Bearer auth for the picked network/api slot. A relay profile resolves
+ *    this to `/d/<uuid>/ota/manifest`, served from the manifest the API
+ *    publishes over its outbound WebSocket; a 404 (older relay / no manifest
+ *    / past TTL) is a graceful no-op, not a throttled failure.
  *  - If the API reports otaEnabled=false, returns ESP_OK without action.
- *  - If latestVersion equals the running esp_app_get_description()->version,
- *    returns ESP_OK without action.
+ *  - Upgrade-only: installs only when latestVersion is strictly newer than the
+ *    running esp_app_get_description()->version (numeric vMAJOR.MINOR.PATCH
+ *    compare). Equal, older, or malformed versions return ESP_OK without
+ *    action (see ota_version.h, ota_version_is_newer).
+ *  - Trust anchor: the manifest's downloadUrl must be byte-for-byte the
+ *    canonical GitHub Releases URL for latestVersion (see
+ *    ota_download_url_is_canonical); a non-canonical URL is refused without
+ *    action so a leaked publish key cannot install a foreign binary.
  *  - Otherwise runs esp_https_ota against the manifest's downloadUrl using
  *    the bundled Mozilla cert authority. On success, reboots (does not
  *    return).

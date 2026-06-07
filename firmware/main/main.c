@@ -15,6 +15,7 @@
 #include "boot_button.h"
 #include "ota_client.h"
 #include "timekeep.h"
+#include "runtime_policy.h"
 #include <string.h>
 
 static const char *TAG = "main";
@@ -321,7 +322,7 @@ void app_main(void)
 
     /* Set the RTC wall clock from the API's local timestamp so the next timer
      * wake can evaluate the quiet-hours window without turning on WiFi. */
-    if (data.updated_at_iso[0]) {
+    if (clock_should_apply(data.updated_at_iso, data.stale)) {
         timekeep_set_from_iso(data.updated_at_iso);
     }
     /* A normal refresh repaints the dashboard, so the sleeping footer (if any)
