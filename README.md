@@ -252,6 +252,7 @@ rather than hand-rolling a long `docker run`):
 ```bash
 curl -O https://raw.githubusercontent.com/HarmEllis/eink-devdash/main/docker-compose.yml
 cp relay-out/.env .env
+printf 'HOST_UID=%s\nHOST_GID=%s\n' "$(id -u)" "$(id -g)" >> .env  # match your user
 docker compose up -d
 ```
 

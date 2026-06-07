@@ -186,8 +186,9 @@ async function pushSecrets(identity) {
 }
 
 async function preflightEnvOut() {
-  // Verify the output is writable BEFORE we deploy and rotate Worker secrets, so
-  // a late write failure can't leave credentials we have no place to persist.
+  // Run BEFORE deploy/secret rotation and return the existing file contents, so
+  // an unwritable dir, a symlinked/unreadable target, or a non-regular file
+  // fails up front rather than after we have already rotated Worker secrets.
   const dir = dirname(envOutPath)
   try {
     await access(dir, fsConstants.W_OK)
@@ -197,34 +198,34 @@ async function preflightEnvOut() {
       + '  Mount a writable volume at /out, or set RELAY_SETUP_ENV_OUT to a writable path.',
     )
   }
-  if (existsSync(envOutPath)) {
-    // lstat (no-follow): refuse a symlink or special file up front.
-    const stat = await lstat(envOutPath)
-    if (!stat.isFile()) {
-      fail(`${envOutPath} is not a regular file (symlink or special file); refusing to write.`)
-    }
+
+  if (!existsSync(envOutPath)) {
+    return ''
+  }
+
+  // lstat (no-follow): refuse a symlink or special file up front.
+  const stat = await lstat(envOutPath)
+  if (!stat.isFile()) {
+    fail(`${envOutPath} is not a regular file (symlink or special file); refusing to write.`)
+  }
+  // Read now (O_NOFOLLOW) and reuse for the merge — a single read avoids a
+  // read/write TOCTOU and surfaces an unreadable file before we deploy.
+  let handle
+  try {
+    handle = await open(envOutPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    return await handle.readFile('utf8')
+  } catch (err) {
+    fail(`Cannot read ${envOutPath} (symlink or unreadable): ${err.message}`)
+  } finally {
+    await handle?.close()
   }
 }
 
-async function writeEnvFile(identity, workerUrl) {
+async function writeEnvFile(identity, workerUrl, existing) {
   step(`Updating ${envOutPath} (merge, not overwrite)...`)
 
-  let existing = ''
-  if (existsSync(envOutPath)) {
-    // Read without following a symlink (O_NOFOLLOW): the path may be a mounted,
-    // attacker-influenced volume and holds secrets.
-    let handle
-    try {
-      handle = await open(envOutPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
-      existing = await handle.readFile('utf8')
-    } catch (err) {
-      fail(`Cannot read ${envOutPath} (symlink or unreadable): ${err.message}`)
-    } finally {
-      await handle?.close()
-    }
-    if (/^\s*RELAY_PUBLISH_KEY\s*=/m.test(existing)) {
-      console.log('  Replacing existing relay credentials in this file (rotation).')
-    }
+  if (/^\s*RELAY_PUBLISH_KEY\s*=/m.test(existing)) {
+    console.log('  Replacing existing relay credentials in this file (rotation).')
   }
 
   const merged = mergeEnv(existing, relayEnvUpdates({ ...identity, workerUrl }))
@@ -295,7 +296,7 @@ async function printProvisioning(identity, workerUrl) {
 async function main() {
   await ensureWranglerInstalled()
   await ensureAuthenticated()
-  await preflightEnvOut()
+  const existingEnv = await preflightEnvOut()
 
   step('Generating a fresh device identity...')
   const identity = generateIdentity()
@@ -303,7 +304,7 @@ async function main() {
 
   const workerUrl = await deployWorker()
   await pushSecrets(identity)
-  await writeEnvFile(identity, workerUrl)
+  await writeEnvFile(identity, workerUrl, existingEnv)
   await printProvisioning(identity, workerUrl)
 
   console.log('Done. Start the publisher with the generated .env, then provision the firmware above.')
