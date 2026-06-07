@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-07
+
+This patch release makes offline display refreshes and SoftAP provisioning more reliable, and reworks the relay so every device fetch is served on demand over an active WebSocket.
+
+### Changed
+
+- The relay no longer stores dashboard snapshots, publishes periodically, or bypasses cooldowns; every device fetch is now served on demand over an active WebSocket connection.
+- The relay returns HTTP 503 when no publisher is available so firmware treats it as a transient error and retries.
+
+### Fixed
+
+- SoftAP provisioning now recovers reliably and reports explicit access point diagnostics.
+- The display shows `NO WIFI` and `NO API` retry attempts while still honoring the configured partial and full e-ink refresh limits.
+- The startup boot poster is shown again on boot.
+
 ## [0.4.0] - 2026-06-07
 
 This minor release adds GitHub inbox notifications, a schema version 2 dashboard API, and an optional Cloudflare relay for secure remote updates without exposing the local API.
@@ -83,6 +98,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.4.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.2.0...v0.3.0
