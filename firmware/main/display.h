@@ -26,7 +26,7 @@ typedef enum {
    surfaces use the correct variant-aware full refresh. */
 void display_set_panel_variant(eink_panel_variant_t v);
 
-/* Store the configured refresh interval (clamped 3..60) for the
+/* Store the configured refresh interval (clamped 1..60) for the
    render-count cap. main.c calls this on both branches of
    storage_load_v2 — its value gates the wall-clock-proxy that forces a
    periodic full BW refresh to clear ghost accumulation. */

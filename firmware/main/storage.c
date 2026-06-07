@@ -6,6 +6,7 @@
 #include "esp_rom_crc.h"
 #include "esp_attr.h"
 #include "sdkconfig.h"
+#include "runtime_policy.h"
 #include <string.h>
 #include <stdio.h>
 #include <stddef.h>
@@ -107,10 +108,13 @@ _Static_assert((size_t)DASH_API_URL_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWOR
                "URL/token caps × networks × APIs leave <512 B for headers — "
                "lower caps or switch to per-network blobs");
 
-static uint8_t clamp_refresh(uint8_t value)
+static uint8_t clamp_refresh(uint8_t value, uint8_t panel_variant,
+                             uint8_t max_partials)
 {
-    if (value < 3) return 3;
-    if (value > 60) return 60;
+    uint8_t minimum = dashboard_refresh_minimum(
+        panel_variant == EINK_PANEL_WEACT_29_BW, max_partials);
+    if (value < minimum) return minimum;
+    if (value > DASH_REFRESH_MAX) return DASH_REFRESH_MAX;
     return value;
 }
 
@@ -181,10 +185,13 @@ static bool cfg_v5_is_valid(const dash_config_v2_t *cfg)
     if (cfg->max_wifi_networks != MAX_WIFI_NETWORKS) return false;
     if (cfg->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
     if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
-    if (cfg->refresh_min < 3 || cfg->refresh_min > 60) return false;
     if (!panel_variant_is_known(cfg->panel_variant)) return false;
     if (cfg->max_partials < DASH_MAX_PARTIALS_MIN ||
         cfg->max_partials > DASH_MAX_PARTIALS_MAX) return false;
+    if (!dashboard_refresh_config_is_valid(
+            cfg->refresh_min,
+            cfg->panel_variant == EINK_PANEL_WEACT_29_BW,
+            cfg->max_partials)) return false;
     for (uint8_t i = 0; i < cfg->network_count; i++) {
         if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
     }
@@ -300,11 +307,12 @@ void storage_cfg_v2_defaults(dash_config_v2_t *cfg)
     cfg->version = DASH_CFG_V2_VERSION;
     cfg->max_wifi_networks = MAX_WIFI_NETWORKS;
     cfg->max_apis_per_network = MAX_APIS_PER_NETWORK;
-    cfg->refresh_min = clamp_refresh(CONFIG_DEVDASH_REFRESH_MIN);
     cfg->last_success_network_idx = -1;
     cfg->last_success_api_idx = -1;
     cfg->panel_variant = storage_default_panel_variant();
     cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
+    cfg->refresh_min = clamp_refresh(CONFIG_DEVDASH_REFRESH_MIN,
+                                     cfg->panel_variant, cfg->max_partials);
 }
 
 bool storage_validate_api_url(const char *url)
@@ -337,11 +345,12 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
     cfg->version = DASH_CFG_V2_VERSION;
     cfg->max_wifi_networks = MAX_WIFI_NETWORKS;
     cfg->max_apis_per_network = MAX_APIS_PER_NETWORK;
-    cfg->refresh_min = clamp_refresh(cfg->refresh_min);
     if (!panel_variant_is_known(cfg->panel_variant)) {
         cfg->panel_variant = storage_default_panel_variant();
     }
     cfg->max_partials = clamp_max_partials(cfg->max_partials);
+    cfg->refresh_min = clamp_refresh(cfg->refresh_min, cfg->panel_variant,
+                                     cfg->max_partials);
     if (cfg->network_count > MAX_WIFI_NETWORKS) cfg->network_count = MAX_WIFI_NETWORKS;
 
     for (uint8_t i = 0; i < cfg->network_count; i++) {

@@ -24,6 +24,7 @@
 #include "qrcode.h"
 #include "sdkconfig.h"
 #include "wifi_prov.h"
+#include "runtime_policy.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -896,11 +897,13 @@ static eink_panel_variant_t effective_panel_variant(void)
 
 static uint16_t render_count_cap(uint8_t refresh_min)
 {
-    if (refresh_min < 3)  refresh_min = 3;
-    if (refresh_min > 60) refresh_min = 60;
+    if (refresh_min < DASH_REFRESH_MIN_BW_TWO_PARTIALS) {
+        refresh_min = DASH_REFRESH_MIN_BW_TWO_PARTIALS;
+    }
+    if (refresh_min > DASH_REFRESH_MAX) refresh_min = DASH_REFRESH_MAX;
     uint16_t raw = (uint16_t)((24u * 60u + refresh_min - 1u) / refresh_min);
     if (raw < 8)   raw = 8;
-    if (raw > 480) raw = 480;
+    if (raw > 1440) raw = 1440;
     return raw;
 }
 
@@ -1034,8 +1037,10 @@ void display_force_full_refresh_next(void)
 
 void display_set_refresh_min(uint8_t refresh_min)
 {
-    if (refresh_min < 3)  refresh_min = 3;
-    if (refresh_min > 60) refresh_min = 60;
+    if (refresh_min < DASH_REFRESH_MIN_BW_TWO_PARTIALS) {
+        refresh_min = DASH_REFRESH_MIN_BW_TWO_PARTIALS;
+    }
+    if (refresh_min > DASH_REFRESH_MAX) refresh_min = DASH_REFRESH_MAX;
     s_refresh_min = refresh_min;
 }
 

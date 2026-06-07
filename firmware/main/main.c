@@ -55,8 +55,10 @@ static void enter_deep_sleep_seconds(uint32_t seconds)
 
 static void enter_deep_sleep(uint8_t minutes)
 {
-    if (minutes < 3)  minutes = 3;
-    if (minutes > 60) minutes = 60;
+    if (minutes < DASH_REFRESH_MIN_BW_TWO_PARTIALS) {
+        minutes = DASH_REFRESH_MIN_BW_TWO_PARTIALS;
+    }
+    if (minutes > DASH_REFRESH_MAX) minutes = DASH_REFRESH_MAX;
     enter_deep_sleep_seconds((uint32_t)minutes * 60u);
 }
 
