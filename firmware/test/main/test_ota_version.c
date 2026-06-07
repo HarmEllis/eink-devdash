@@ -170,6 +170,15 @@ static void test_refresh_config_rejects_unsafe_one_minute_combinations(void)
     TEST_ASSERT_FALSE(dashboard_refresh_config_is_valid(61, true, 2));
 }
 
+static void test_offline_partial_policy_enforces_both_caps(void)
+{
+    TEST_ASSERT_TRUE(offline_partial_refresh_allowed(0, 2, 1, 1440));
+    TEST_ASSERT_TRUE(offline_partial_refresh_allowed(1, 2, 2, 1440));
+    TEST_ASSERT_FALSE(offline_partial_refresh_allowed(2, 2, 3, 1440));
+    TEST_ASSERT_FALSE(offline_partial_refresh_allowed(0, 0, 1, 1440));
+    TEST_ASSERT_FALSE(offline_partial_refresh_allowed(0, 2, 24, 24));
+}
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -195,6 +204,7 @@ void app_main(void)
     RUN_TEST(test_relay_url_detection_uses_device_path);
     RUN_TEST(test_refresh_minimum_allows_one_minute_for_bw_at_least_two_partials);
     RUN_TEST(test_refresh_config_rejects_unsafe_one_minute_combinations);
+    RUN_TEST(test_offline_partial_policy_enforces_both_caps);
 
     int failures = UNITY_END();
     /* Surface the result as a process exit code so the devcontainer command

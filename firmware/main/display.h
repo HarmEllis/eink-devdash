@@ -69,11 +69,15 @@ typedef enum {
     DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT,
 } display_offline_reason_t;
 
+/* Render an offline poster for the current outage attempt. On BW, repeated
+ * calls for the same reason update only the footer counter through the partial
+ * refresh policy; BWR leaves the static poster unchanged between full frames. */
 void display_show_offline(display_offline_reason_t reason,
                           const dash_config_v2_t *cfg,
                           int network_idx,
                           const wifi_unreachable_diag_t *wifi_diag,
-                          const api_unreachable_diag_t *api_diag);
+                          const api_unreachable_diag_t *api_diag,
+                          uint32_t attempt);
 
 /* Static OTA install poster. This is intentionally a single full-refresh
  * frame shown before flash erase/write starts. The display layer must not

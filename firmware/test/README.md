@@ -2,7 +2,8 @@
 
 Host-side unit tests for the pure OTA trust-anchor helpers and runtime policies in
 `firmware/main/ota_version.c` (`ota_download_url_is_canonical`,
-`ota_version_is_newer`) plus `clock_should_apply` and `api_url_is_relay`.
+`ota_version_is_newer`) plus clock, relay URL, dashboard refresh, and offline
+partial-refresh policies from `runtime_policy.c`.
 The helpers have no ESP-IDF HTTP/TLS dependency, so
 they compile and run on the ESP-IDF `linux` target without flashing hardware.
 

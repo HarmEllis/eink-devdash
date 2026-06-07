@@ -7,7 +7,6 @@ export interface Env {
   DEVICE_TOKENS?: string
   DEVICE_UUID?: string
   DEVICE_TOKEN?: string
-  MIN_REFRESH_MS?: string
   ACK_TIMEOUT_MS?: string
   DASHBOARD_RESPONSE_DEADLINE_MS?: string
   MANIFEST_RESPONSE_DEADLINE_MS?: string
@@ -24,20 +23,13 @@ type ResponseFrame = {
 }
 type PublisherFrame =
   | { type: 'hello'; capabilities?: unknown }
-  | { type: 'dashboard'; payload?: unknown }
   | { type: 'request-ack'; id?: unknown }
   | ResponseFrame
   | { type: 'ping' }
 
-type StoredDashboard = {
-  payload: DashboardPayload
-  lastPublishAt: string
-  updatedAt: string | null
-}
 type SocketAttachment = { epoch: number; caps: Resource[] }
 type Settled =
   | { kind: 'fresh'; body: DashboardPayload }
-  | { kind: 'snapshot'; body: DashboardPayload }
   | { kind: 'fallback' }
 type Inflight = {
   id: string
@@ -59,16 +51,14 @@ type Inflight = {
 type DeviceStats = {
   uuid: string
   connected: boolean
-  lastPublishAt: string | null
-  publishCount: number
+  lastResponseAt: string | null
+  responseCount: number
   lastFetchAt: string | null
   fetchCount: number
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' }
 const DEVICE_HEADERS = { ...JSON_HEADERS, 'cache-control': 'no-store' }
-const STALE_AFTER_MS = 2 * 60 * 1000
-const DEFAULT_MIN_REFRESH_MS = 60_000
 const DEFAULT_ACK_TIMEOUT_MS = 2_000
 const DEFAULT_DEADLINES: Record<Resource, number> = {
   dashboard: 16_000,
@@ -165,11 +155,9 @@ function dashboardRequest(request: Request, env: Env, uuid: string): Promise<Res
   if (!UUID_RE.test(uuid)) return deviceResponse({ error: 'Invalid uuid' }, { status: 400 })
   const headers = new Headers(request.headers)
   headers.delete('x-relay-device-token')
-  headers.delete('x-relay-stale-after-ms')
   headers.delete('x-relay-uuid')
   const token = parseDeviceTokens(env)[uuid]
   if (token) headers.set('x-relay-device-token', token)
-  headers.set('x-relay-stale-after-ms', String(STALE_AFTER_MS))
   headers.set('x-relay-uuid', uuid)
   return relayStub(env, uuid).fetch(new Request(request, { headers }))
 }
@@ -222,7 +210,6 @@ export default {
 
 export class DashboardRelay extends DurableObject<Env> {
   private readonly inflight = new Map<Resource, Inflight>()
-  private readonly minRefreshMs: number
   private readonly ackTimeoutMs: number
   private readonly deadlines: Record<Resource, number>
 
@@ -231,7 +218,6 @@ export class DashboardRelay extends DurableObject<Env> {
     relayEnv: Env,
   ) {
     super(relayState, relayEnv)
-    this.minRefreshMs = positiveInt(relayEnv.MIN_REFRESH_MS, DEFAULT_MIN_REFRESH_MS)
     this.ackTimeoutMs = positiveInt(relayEnv.ACK_TIMEOUT_MS, DEFAULT_ACK_TIMEOUT_MS)
     this.deadlines = {
       dashboard: positiveInt(relayEnv.DASHBOARD_RESPONSE_DEADLINE_MS, DEFAULT_DEADLINES.dashboard),
@@ -260,20 +246,13 @@ export class DashboardRelay extends DurableObject<Env> {
     if (active) {
       result = await active.promise
     } else {
-      const nextAllowedAt = await this.relayState.storage.get<number>(`nextAllowedAt:${resource}`) ?? 0
-      if (Date.now() < nextAllowedAt) {
-        result = resource === 'dashboard'
-          ? await this.snapshotResult(request, false)
-          : { kind: 'fallback' }
-      } else {
-        const selected = await this.selectCandidates(resource)
-        result = selected.sockets.length === 0
-          ? { kind: 'fallback' }
-          : await this.startRequest(resource, selected.sockets, selected.epochs)
-      }
+      const selected = await this.selectCandidates(resource)
+      result = selected.sockets.length === 0
+        ? { kind: 'fallback' }
+        : await this.startRequest(resource, selected.sockets, selected.epochs)
     }
     await this.recordFetch()
-    return this.responseFor(resource, result, request)
+    return this.responseFor(resource, result)
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -300,14 +279,6 @@ export class DashboardRelay extends DurableObject<Env> {
         const attachment = this.attachment(ws)
         ws.serializeAttachment({ epoch: attachment.epoch, caps } satisfies SocketAttachment)
       }
-      return
-    }
-    if (frame.type === 'dashboard') {
-      if (this.isPayload(frame.payload)) {
-        const preferred = (await this.selectCandidates('dashboard')).sockets[0]
-        if (preferred === ws) await this.storeDashboard(frame.payload)
-      }
-      ws.send(JSON.stringify({ type: 'ack' }))
       return
     }
     if (frame.type === 'request-ack' && typeof frame.id === 'string') {
@@ -427,10 +398,8 @@ export class DashboardRelay extends DurableObject<Env> {
     }
     entry.promise = (async () => {
       try {
-        await this.relayState.storage.put(`nextAllowedAt:${resource}`, Date.now() + this.minRefreshMs)
-        if (delivered) return { kind: 'fallback' }
         // A close/error may have synchronously claimed failover while the
-        // cooldown write was pending. Only the untouched initial generation
+        // request was being initialized. Only the untouched initial generation
         // owns the first send; the failover path sends or settles otherwise.
         if (entry.generation === 0) sendToCandidate()
         const frame = await deferred
@@ -446,11 +415,12 @@ export class DashboardRelay extends DurableObject<Env> {
           return { kind: 'fallback' }
         }
         if (resource === 'dashboard') {
-          await this.storeDashboard(frame.payload)
           await this.clearDeprioritized(resource, epoch)
+          await this.recordResponse()
           return { kind: 'fresh', body: { ...frame.payload, stale: false } }
         }
         await this.clearDeprioritized(resource, epoch)
+        await this.recordResponse()
         return { kind: 'fresh', body: frame.payload }
       } catch (error) {
         console.error('relay request finalization failed', error)
@@ -510,38 +480,19 @@ export class DashboardRelay extends DurableObject<Env> {
     return !!value && typeof value === 'object' && !Array.isArray(value)
   }
 
-  private async snapshotResult(request: Request, forceStale: boolean): Promise<Settled> {
-    const stored = await this.relayState.storage.get<StoredDashboard>('dashboard')
-    if (!stored) return { kind: 'fallback' }
-    const staleAfterMs = Number(request.headers.get('x-relay-stale-after-ms') ?? STALE_AFTER_MS)
-    const timestamp = Date.parse(stored.lastPublishAt)
-    const stale = forceStale || !Number.isFinite(timestamp) || Date.now() - timestamp > staleAfterMs
-    return { kind: 'snapshot', body: { ...stored.payload, stale } }
-  }
-
-  private async responseFor(resource: Resource, result: Settled, request: Request): Promise<Response> {
-    if (result.kind === 'fresh' || result.kind === 'snapshot') return deviceResponse(result.body)
-    if (resource === 'manifest') {
-      return deviceResponse({ error: 'Manifest unavailable' }, { status: 404 })
-    }
-    const snapshot = await this.snapshotResult(request, true)
-    return snapshot.kind === 'snapshot'
-      ? deviceResponse(snapshot.body)
-      : deviceResponse({ error: 'Dashboard not published yet' }, { status: 404 })
+  private responseFor(resource: Resource, result: Settled): Response {
+    if (result.kind === 'fresh') return deviceResponse(result.body)
+    const name = resource === 'manifest' ? 'Manifest' : 'Dashboard'
+    return deviceResponse({ error: `${name} publisher unavailable` }, { status: 503 })
   }
 
   private async authorizeDevice(request: Request): Promise<boolean> {
     return authorized(request, request.headers.get('x-relay-device-token') ?? undefined)
   }
 
-  private async storeDashboard(payload: DashboardPayload): Promise<void> {
-    const existing = await this.relayState.storage.get<StoredDashboard>('dashboard')
-    const updatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : null
-    if (existing && existing.updatedAt === updatedAt) return
-    const now = new Date().toISOString()
-    await this.relayState.storage.put('dashboard', { payload, lastPublishAt: now, updatedAt } satisfies StoredDashboard)
-    await this.relayState.storage.put('lastPublishAt', now)
-    await this.increment('publishCount')
+  private async recordResponse(): Promise<void> {
+    await this.relayState.storage.put('lastResponseAt', new Date().toISOString())
+    await this.increment('responseCount')
   }
 
   private async getDeprioritized(resource: Resource): Promise<Set<number>> {
@@ -581,8 +532,8 @@ export class DashboardRelay extends DurableObject<Env> {
     return {
       uuid: await this.relayState.storage.get<string>('uuid') ?? this.relayState.id.toString(),
       connected: this.relayState.getWebSockets().some((socket) => socket.readyState === WebSocket.OPEN),
-      lastPublishAt: await this.relayState.storage.get<string>('lastPublishAt') ?? null,
-      publishCount: await this.relayState.storage.get<number>('publishCount') ?? 0,
+      lastResponseAt: await this.relayState.storage.get<string>('lastResponseAt') ?? null,
+      responseCount: await this.relayState.storage.get<number>('responseCount') ?? 0,
       lastFetchAt: await this.relayState.storage.get<string>('lastFetchAt') ?? null,
       fetchCount: await this.relayState.storage.get<number>('fetchCount') ?? 0,
     }

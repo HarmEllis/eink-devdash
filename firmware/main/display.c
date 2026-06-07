@@ -851,6 +851,7 @@ static uint8_t              s_refresh_min   = CONFIG_DEVDASH_REFRESH_MIN;
    layout fills the prefix and the unused tail stays zero-initialised. */
 #define REGION_COUNT_MAX 7
 static RTC_DATA_ATTR uint8_t  s_region_partial_count[REGION_COUNT_MAX];
+static RTC_DATA_ATTR uint8_t  s_offline_partial_count;
 static RTC_DATA_ATTR bool     s_force_full_refresh          = false;
 static RTC_DATA_ATTR uint16_t s_renders_since_full          = 0;
 /* The per-region partial machinery uses these to detect a show_github
@@ -1141,11 +1142,17 @@ static void draw_heading_with_dot(const char *left, const char *right)
     draw_str_adv(x, 22, right, 1, FONT_BOOT_W);
 }
 
-static void draw_footer_retry(const char *retry)
+static void draw_footer_retry(const char *retry, uint32_t attempt)
 {
-    char retry_text[18];
-    snprintf(retry_text, sizeof(retry_text), "retry %s", retry);
-    draw_str(6, 117, retry_text, 1);
+    char attempt_text[32];
+    if (attempt > 9999) {
+        snprintf(attempt_text, sizeof(attempt_text), "attempt 9999+ | retry %s",
+                 retry);
+    } else {
+        snprintf(attempt_text, sizeof(attempt_text), "attempt %lu | retry %s",
+                 (unsigned long)attempt, retry);
+    }
+    draw_str_adv(6, 117, attempt_text, 1, FONT_BOOT_W);
 
     char setup[32];
     snprintf(setup, sizeof(setup), "hold BOOT %ds -> setup",
@@ -1287,7 +1294,8 @@ static void draw_unreachable_poster(display_offline_reason_t reason,
                                     const dash_config_v2_t *cfg,
                                     int network_idx,
                                     const wifi_unreachable_diag_t *wifi_diag,
-                                    const api_unreachable_diag_t *api_diag)
+                                    const api_unreachable_diag_t *api_diag,
+                                    uint32_t attempt)
 {
     offline_row_t rows[5] = {0};
     char api_labels[5][DASH_API_URL_MAX] = {{0}};
@@ -1323,7 +1331,7 @@ static void draw_unreachable_poster(display_offline_reason_t reason,
 
     hline(122, 35, 169);
     draw_fail_rows(rows, row_count);
-    draw_footer_retry(retry);
+    draw_footer_retry(retry, attempt);
 }
 
 static void ensure_init(void)
@@ -1384,6 +1392,7 @@ static void commit_full_refresh_shared(bool need_red, bool wrote_safe_mode)
         (effective_panel_variant() == EINK_PANEL_WEACT_29_BWR) ? need_red
                                                                : false;
     memset(s_region_partial_count, 0, sizeof(s_region_partial_count));
+    s_offline_partial_count = 0;
     s_renders_since_full = 0;
     s_force_full_refresh = false;
     s_last_full_refresh_us = esp_timer_get_time();
@@ -2354,7 +2363,8 @@ void display_show_offline(display_offline_reason_t reason,
                           const dash_config_v2_t *cfg,
                           int network_idx,
                           const wifi_unreachable_diag_t *wifi_diag,
-                          const api_unreachable_diag_t *api_diag)
+                          const api_unreachable_diag_t *api_diag,
+                          uint32_t attempt)
 {
     display_frame_t frame = offline_frame_for_reason(reason);
     if (reason == DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT &&
@@ -2363,14 +2373,20 @@ void display_show_offline(display_offline_reason_t reason,
         return;
     }
 
-    ensure_init();
-    memset(bw_buf,  0xFF, sizeof(bw_buf));
-    memset(red_buf, 0x00, sizeof(red_buf));
-
     bool is_setup_timeout =
         (reason == DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT);
+    display_meta_t meta = {0};
+    bool same_offline_frame =
+        !is_setup_timeout &&
+        display_meta_load(&meta) &&
+        meta.frame == frame &&
+        s_first_refresh_done &&
+        s_last_bw_valid;
 
     if (is_setup_timeout) {
+        ensure_init();
+        memset(bw_buf,  0xFF, sizeof(bw_buf));
+        memset(red_buf, 0x00, sizeof(red_buf));
         /* Provisioning recovery surface — rendered through the variant-aware
            display_full_refresh() (readable on either physical panel). Draw the
            alert in BW only (inlined cross with use_red=0) so it renders
@@ -2383,14 +2399,82 @@ void display_show_offline(display_offline_reason_t reason,
         draw_str(19, 5, "OFFLINE", 0);
         hline(2, 15, 292);
         draw_str(6, 30, offline_message_for_reason(reason), 0);
-    } else {
-        draw_unreachable_poster(reason, cfg, network_idx, wifi_diag, api_diag);
-    }
-    if (is_setup_timeout) {
         display_full_refresh(/*need_red=*/false, "offline-setup-timeout");
-    } else {
-        display_full_refresh(/*need_red=*/true, "offline");
+        eink_sleep(&s_eink);
+        display_mark_frame(frame);
+        return;
     }
+
+    ensure_init();
+    if (same_offline_frame) {
+        /* Keep the NO WIFI or NO API diagnostic poster stable during an
+         * outage. Only the footer attempt counter changes, which gives the BW
+         * panel a small, fixed partial window and avoids redrawing diagnostic
+         * rows every minute. */
+        memcpy(bw_buf, s_last_bw_buf, sizeof(bw_buf));
+        memset(red_buf, 0x00, sizeof(red_buf));
+        fill_rect(2, 115, 291, 10, 0, 0);
+        char retry[12];
+        format_offline_retry(retry, sizeof(retry), cfg);
+        draw_footer_retry(retry, attempt);
+
+        eink_rect_t diff_rect = {0};
+        if (!find_bw_diff_rect(s_last_bw_buf, bw_buf, &diff_rect)) {
+            ESP_LOGI(TAG, "Offline frame unchanged; skipping refresh");
+            eink_sleep(&s_eink);
+            return;
+        }
+
+        if (effective_panel_variant() != EINK_PANEL_WEACT_29_BW) {
+            ESP_LOGI(TAG,
+                     "Offline attempt %lu recorded; BWR frame left unchanged "
+                     "to avoid an unnecessary full refresh",
+                     (unsigned long)attempt);
+            eink_sleep(&s_eink);
+            return;
+        }
+
+        uint16_t cap = render_count_cap(s_refresh_min);
+        uint16_t staged_count =
+            s_renders_since_full < UINT16_MAX
+                ? (uint16_t)(s_renders_since_full + 1)
+                : UINT16_MAX;
+        if (offline_partial_refresh_allowed(
+                s_offline_partial_count, s_max_partials_per_region,
+                staged_count, cap)) {
+            eink_rect_t footer =
+                physical_rect_from_logical(0, 112, 296, 16);
+            if (eink_refresh_bw_partial(&s_eink, s_last_bw_buf, bw_buf,
+                                        footer)) {
+                memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
+                s_last_bw_valid = true;
+                s_offline_partial_count++;
+                s_renders_since_full = staged_count;
+                eink_sleep(&s_eink);
+                ESP_LOGI(TAG,
+                         "Offline attempt %lu partial refresh (%u/%u)",
+                         (unsigned long)attempt,
+                         (unsigned)s_offline_partial_count,
+                         (unsigned)s_max_partials_per_region);
+                return;
+            }
+            ESP_LOGW(TAG, "Offline footer partial failed; full re-sync");
+        } else {
+            ESP_LOGI(TAG,
+                     "Offline full refresh required: partials=%u/%u "
+                     "renders=%u/%u",
+                     (unsigned)s_offline_partial_count,
+                     (unsigned)s_max_partials_per_region,
+                     (unsigned)staged_count, (unsigned)cap);
+        }
+    } else {
+        memset(bw_buf,  0xFF, sizeof(bw_buf));
+        memset(red_buf, 0x00, sizeof(red_buf));
+        draw_unreachable_poster(reason, cfg, network_idx, wifi_diag, api_diag,
+                                attempt);
+    }
+
+    display_full_refresh(/*need_red=*/true, "offline");
     eink_sleep(&s_eink);
     display_mark_frame(frame);
 }

@@ -16,7 +16,6 @@ export default defineConfig({
             '44444444-4444-4444-8444-444444444444': 'device-test',
             '55555555-5555-4555-8555-555555555555': 'device-test',
           }),
-          MIN_REFRESH_MS: '50',
           ACK_TIMEOUT_MS: '20',
           DASHBOARD_RESPONSE_DEADLINE_MS: '250',
           MANIFEST_RESPONSE_DEADLINE_MS: '100',
