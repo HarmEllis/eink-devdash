@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-07
+
+This minor release adds GitHub inbox notifications, a schema version 2 dashboard API, and an optional Cloudflare relay for secure remote updates without exposing the local API.
+
+### Added
+
+- GitHub inbox notifications on the dashboard, including unread pull request, issue, mention, and review-request summaries.
+- A payload-agnostic Cloudflare Worker and Durable Object relay that lets devices fetch dashboard data and OTA manifests remotely over HTTPS.
+- One-command relay setup for cloned repositories and a Docker-based setup path that does not require cloning the project.
+- Provider adapter registries for usage and code-host services, making the schema version 2 dashboard API extensible without adding provider-specific logic to the relay.
+- A one-minute refresh option for black/white panels when at least two partial refreshes are configured.
+
+### Changed
+
+- The dashboard API and firmware parser now use schema version 2 with normalized usage, code-host, alert, and metadata fields.
+- Relay deployment runs only for release tags and skips cleanly when Cloudflare credentials are unavailable.
+- OTA version selection and runtime policy handling are more robust for relay-backed devices.
+- The README now focuses on installation, operation, relay setup, and contributor workflows.
+
+### Fixed
+
+- The dashboard route no longer fails when `DASHBOARD_TIME_ZONE` is present but empty.
+- The captive portal accepts secure `https://` API profile URLs used by relay deployments.
+- Relay setup preserves existing environment values and writes generated files using the host user's UID and GID.
+
 ## [0.3.1] - 2026-06-04
 
 This patch release improves WiFi connection reliability on multi-AP networks by letting ESP-IDF roam across matching access points during connection attempts.
@@ -58,6 +83,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.4.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.1.0...v0.2.0
