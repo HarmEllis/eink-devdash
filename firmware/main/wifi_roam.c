@@ -29,6 +29,7 @@ typedef struct {
 typedef struct {
     volatile bool associated;
     volatile bool disconnected;
+    volatile bool auth_error_seen;
     volatile uint8_t disconnect_reason;
     volatile TickType_t disconnected_at;
 } connect_state_t;
@@ -66,6 +67,20 @@ static bool wifi_reason_is_auth_error(uint8_t reason)
     }
 }
 
+static const char *wifi_reason_name(uint8_t reason)
+{
+    switch (reason) {
+    case WIFI_REASON_AUTH_EXPIRE:       return "auth-expire";
+    case WIFI_REASON_AUTH_FAIL:         return "auth-fail";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+                                            return "4way-timeout";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT: return "handshake-timeout";
+    case WIFI_REASON_NO_AP_FOUND:       return "no-ap";
+    case WIFI_REASON_CONNECTION_FAIL:   return "connection-fail";
+    default:                            return "other";
+    }
+}
+
 static const char *connect_failure_reason(const connect_state_t *state,
                                           esp_err_t err,
                                           bool candidate_seen)
@@ -74,7 +89,8 @@ static const char *connect_failure_reason(const connect_state_t *state,
     if (state && state->disconnect_reason == WIFI_REASON_NO_AP_FOUND) {
         return "no-ap";
     }
-    if (state && wifi_reason_is_auth_error(state->disconnect_reason)) {
+    if (state && (state->auth_error_seen ||
+                  wifi_reason_is_auth_error(state->disconnect_reason))) {
         return "auth-err";
     }
     if (err == ESP_ERR_TIMEOUT || (state && state->associated)) {
@@ -98,7 +114,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         state->associated = false;
         state->disconnected = true;
         state->disconnect_reason = event ? event->reason : 0;
+        if (event && wifi_reason_is_auth_error(event->reason)) {
+            state->auth_error_seen = true;
+        }
         state->disconnected_at = xTaskGetTickCount();
+        ESP_LOGI(TAG,
+                 "WiFi disconnected: reason=%u (%s) auth_error_seen=%d",
+                 state->disconnect_reason,
+                 wifi_reason_name(state->disconnect_reason),
+                 state->auth_error_seen);
     }
 }
 

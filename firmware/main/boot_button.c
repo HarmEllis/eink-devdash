@@ -65,11 +65,14 @@ void boot_button_force_prov_mark(void)
     s_force_prov_magic = BOOT_FORCE_PROV_MAGIC;
 }
 
-bool boot_button_force_prov_consume(void)
+bool boot_button_force_prov_active(void)
 {
-    bool set = (s_force_prov_magic == BOOT_FORCE_PROV_MAGIC);
+    return s_force_prov_magic == BOOT_FORCE_PROV_MAGIC;
+}
+
+void boot_button_force_prov_clear(void)
+{
     s_force_prov_magic = 0;
-    return set;
 }
 
 static void boot_button_monitor_task(void *arg)

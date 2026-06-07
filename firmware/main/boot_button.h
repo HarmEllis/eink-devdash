@@ -14,7 +14,8 @@ bool boot_button_wait_longpress(uint32_t hold_ms);
 void boot_button_wait_release(void);
 
 void boot_button_force_prov_mark(void);
-bool boot_button_force_prov_consume(void);
+bool boot_button_force_prov_active(void);
+void boot_button_force_prov_clear(void);
 
 void boot_button_monitor_start(void);
 

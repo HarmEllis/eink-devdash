@@ -1,5 +1,6 @@
 #include "wifi_prov.h"
 #include "captive_dns.h"
+#include "boot_button.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -28,6 +29,38 @@ static EventGroupHandle_t s_wifi_events;
 
 static char s_portal_ssid[32];
 static char s_portal_password[16];
+
+static const char *ap_event_name(int32_t event_id)
+{
+    switch (event_id) {
+    case WIFI_EVENT_AP_START:           return "started";
+    case WIFI_EVENT_AP_STOP:            return "stopped";
+    case WIFI_EVENT_AP_STACONNECTED:    return "client-joined";
+    case WIFI_EVENT_AP_STADISCONNECTED: return "client-left";
+    default:                            return "other";
+    }
+}
+
+static void provisioning_wifi_event(void *arg, esp_event_base_t event_base,
+                                    int32_t event_id, void *event_data)
+{
+    (void)arg;
+    if (event_base != WIFI_EVENT) return;
+
+    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+        const wifi_event_ap_staconnected_t *event = event_data;
+        ESP_LOGI(TAG, "SoftAP event=%s station=" MACSTR " aid=%u",
+                 ap_event_name(event_id), MAC2STR(event->mac), event->aid);
+    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        const wifi_event_ap_stadisconnected_t *event = event_data;
+        ESP_LOGI(TAG, "SoftAP event=%s station=" MACSTR " aid=%u reason=%u",
+                 ap_event_name(event_id), MAC2STR(event->mac), event->aid,
+                 event->reason);
+    } else if (event_id == WIFI_EVENT_AP_START ||
+               event_id == WIFI_EVENT_AP_STOP) {
+        ESP_LOGI(TAG, "SoftAP event=%s", ap_event_name(event_id));
+    }
+}
 
 /* Parsed form state. Mirrors the V4 form-name contract — see
  * design_handoff_eink_v4_provisioning/README.md §Form-name contract. */
@@ -1231,6 +1264,10 @@ static esp_err_t handler_save(httpd_req_t *req)
     }
     free(form);
 
+    /* End the provisioning session only after the complete configuration has
+     * reached NVS. The deferred restart below may otherwise look like the USB
+     * reset that interrupted the portal and must keep it latched. */
+    boot_button_force_prov_clear();
     render_saved_page(req);
     /* DO NOT signal BIT_PROV_DONE here. The provisioning task holds the AP /
      * DNS / httpd open while it waits on that bit; if we signalled now,
@@ -1334,12 +1371,27 @@ static esp_err_t run_provisioning_window(void)
         return ESP_FAIL;
     }
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    esp_event_handler_instance_t ap_event_instance = NULL;
+    esp_err_t err = esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, provisioning_wifi_event, NULL,
+        &ap_event_instance);
+    if (err != ESP_OK) {
+        esp_netif_destroy_default_wifi(ap_netif);
+        prov_pm_lock_release();
+        return err;
+    }
+
+    /* Provisioning does not need a station interface. AP-only mode avoids STA
+     * channel/coexistence state influencing beaconing while the portal is up. */
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     wifi_config_t ap_config = {
         .ap = {
             .channel = 1,
             .max_connection = 4,
             .authmode = WIFI_AUTH_WPA2_PSK,
+            .ssid_hidden = 0,
+            .beacon_interval = 100,
+            .pairwise_cipher = WIFI_CIPHER_TYPE_CCMP,
         },
     };
     strncpy((char *)ap_config.ap.ssid, s_portal_ssid,
@@ -1349,6 +1401,9 @@ static esp_err_t run_provisioning_window(void)
     ap_config.ap.ssid_len = strlen(s_portal_ssid);
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20));
+    ESP_ERROR_CHECK(esp_wifi_set_protocol(
+        WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
     ESP_ERROR_CHECK(esp_wifi_start());
 
     captive_dns_start();
@@ -1358,12 +1413,21 @@ static esp_err_t run_provisioning_window(void)
 
     /* Password intentionally not logged — it lands in serial buffers and would
      * leak the SoftAP PoP. Read it from the e-ink QR or the SETUP screen. */
-    ESP_LOGI(TAG, "Starting SoftAP HTTP provisioning portal: ssid=%s url=http://192.168.4.1",
-             s_portal_ssid);
+    int8_t tx_power = 0;
+    esp_wifi_get_max_tx_power(&tx_power);
+    wifi_config_t active_config = {0};
+    esp_wifi_get_config(WIFI_IF_AP, &active_config);
+    ESP_LOGI(TAG,
+             "Starting SoftAP HTTP provisioning portal: ssid=%s hidden=%u "
+             "channel=%u beacon=%ums tx_power=%d quarter-dBm "
+             "url=http://192.168.4.1",
+             s_portal_ssid, active_config.ap.ssid_hidden,
+             active_config.ap.channel, active_config.ap.beacon_interval,
+             tx_power);
 
-    /* Wait up to the configured timeout for the user to save credentials
-     * via the HTTP portal (POST /save sets BIT_PROV_DONE before the deferred
-     * restart fires). */
+    /* Wait up to the configured timeout for the user to save credentials.
+     * A successful POST schedules esp_restart(), so this wait normally does
+     * not return; BIT_PROV_DONE remains available for non-restart test paths. */
     TickType_t ticks = CONFIG_DEVDASH_PROV_TIMEOUT_S > 0
         ? pdMS_TO_TICKS(CONFIG_DEVDASH_PROV_TIMEOUT_S * 1000)
         : portMAX_DELAY;
@@ -1374,6 +1438,10 @@ static esp_err_t run_provisioning_window(void)
     esp_wifi_stop();
     esp_wifi_set_mode(WIFI_MODE_STA);
     if (ap_netif) esp_netif_destroy_default_wifi(ap_netif);
+    if (ap_event_instance) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                              ap_event_instance);
+    }
     prov_pm_lock_release();
 
     return (bits & BIT_PROV_DONE) ? ESP_OK : ESP_ERR_TIMEOUT;

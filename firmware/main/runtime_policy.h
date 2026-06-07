@@ -14,3 +14,7 @@ uint8_t dashboard_refresh_input_minimum(bool is_bw);
 uint8_t dashboard_refresh_minimum(bool is_bw, uint8_t max_partials);
 bool dashboard_refresh_config_is_valid(uint8_t refresh_min, bool is_bw,
                                        uint8_t max_partials);
+bool offline_partial_refresh_allowed(uint8_t partial_count,
+                                     uint8_t max_partials,
+                                     uint16_t renders_since_full,
+                                     uint16_t render_cap);

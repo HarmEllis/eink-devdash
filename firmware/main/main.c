@@ -29,6 +29,34 @@ static const char *BUILD_MARKER =
  * Reset to false on a normal dashboard render so the next window repaints. */
 static RTC_DATA_ATTR bool s_quiet_footer_shown = false;
 
+typedef struct {
+    uint32_t magic;
+    uint32_t attempt;
+    uint8_t reason;
+} offline_episode_t;
+
+#define OFFLINE_EPISODE_MAGIC 0x0FF11E01u
+
+static RTC_DATA_ATTR offline_episode_t s_offline_episode;
+
+static uint32_t offline_attempt_next(display_offline_reason_t reason)
+{
+    if (s_offline_episode.magic != OFFLINE_EPISODE_MAGIC ||
+        s_offline_episode.reason != (uint8_t)reason) {
+        s_offline_episode.magic = OFFLINE_EPISODE_MAGIC;
+        s_offline_episode.attempt = 1;
+        s_offline_episode.reason = (uint8_t)reason;
+    } else if (s_offline_episode.attempt < UINT32_MAX) {
+        s_offline_episode.attempt++;
+    }
+    return s_offline_episode.attempt;
+}
+
+static void offline_episode_clear(void)
+{
+    memset(&s_offline_episode, 0, sizeof(s_offline_episode));
+}
+
 static void enter_deep_sleep_seconds(uint32_t seconds)
 {
     /* Floor at 60 s so a window boundary that is < 1 min away cannot spin the
@@ -171,15 +199,16 @@ void app_main(void)
         }
     }
 
-    /* Force-provisioning flag set by the in-app long-press monitor before
-     * esp_restart(). Stored in RTC_NOINIT memory inside boot_button.c so it
-     * survives the soft reset but zero-initialises on cold boot (BOARD_NOTES). */
-    bool force_prov = boot_button_force_prov_consume();
+    /* The provisioning flag is a session latch, not a one-shot. It remains set
+     * across software/USB resets until the portal saves successfully or the
+     * provisioning window returns with a controlled error. */
+    bool force_prov = boot_button_force_prov_active();
 
     ESP_LOGI(TAG, "Boot: networks=%u refresh=%u reset=%d wake=%d boot_wake=%d force_prov=%d",
              cfg.network_count, cfg.refresh_min, reset, wake, boot_wake, force_prov);
 
     if (boot_wake || force_prov || cfg.network_count == 0) {
+        boot_button_force_prov_mark();
         char prov_ssid[32], prov_pop[16];
         wifi_net_get_prov_info(prov_ssid, sizeof(prov_ssid),
                                prov_pop, sizeof(prov_pop));
@@ -192,13 +221,14 @@ void app_main(void)
         err = reconfigure ? wifi_net_open_config_window()
                           : wifi_net_provision_if_needed();
         if (err != ESP_OK) {
+            boot_button_force_prov_clear();
             ESP_LOGE(TAG, "Provisioning/config window err=%d", err);
             /* ESP_ERR_TIMEOUT = user did not finish in time; the portal was
              * up. Anything else (FAIL etc.) means the SoftAP itself did not
              * start, so paint the V4 S1 red error variant. */
             if (err == ESP_ERR_TIMEOUT) {
                 display_show_offline(DISPLAY_OFFLINE_REASON_SETUP_TIMEOUT,
-                                     &cfg, -1, NULL, NULL);
+                                     &cfg, -1, NULL, NULL, 0);
             }
             else                        display_show_setup_failed();
             wifi_net_stop();
@@ -267,14 +297,14 @@ void app_main(void)
      * USB-CDC alive so we can reflash) or drop to deep sleep (battery-
      * friendly default for production). Toggle via Kconfig. */
 #if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
-    bool offline_shown = false;
+    bool offline_displayed = false;
+    display_offline_reason_t displayed_offline_reason =
+        DISPLAY_OFFLINE_REASON_WIFI;
+    TickType_t next_offline_display_at = 0;
 #endif
     bool wake_refresh = (wake == ESP_SLEEP_WAKEUP_TIMER ||
                          wake == ESP_SLEEP_WAKEUP_EXT0);
     bool prefer_last_success_api = wake_refresh;
-    if (!wake_refresh) {
-        display_show_connecting(DISPLAY_CTX_NORMAL_BOOT, false, &cfg);
-    }
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
         memset(&wifi_diag, 0, sizeof(wifi_diag));
@@ -301,22 +331,32 @@ void app_main(void)
         }
 
 #if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
-        /* Refresh the offline screen only on the first failure of an
-         * outage episode. The panel can't refresh faster than ~3 minutes
-         * without ghosting, so silently retry in the background after
-         * that. display_render() on the next success will repaint. */
-        if (!offline_shown) {
+        /* Count every connection cycle, but update the panel no faster than
+         * the configured dashboard interval. This keeps the bring-up retry
+         * loop from bypassing the one-minute/two-partial safety contract. */
+        uint32_t attempt = offline_attempt_next(offline_reason);
+        TickType_t now = xTaskGetTickCount();
+        bool reason_changed =
+            offline_displayed && displayed_offline_reason != offline_reason;
+        bool display_due =
+            !offline_displayed || reason_changed ||
+            (int32_t)(now - next_offline_display_at) >= 0;
+        if (display_due) {
             display_show_offline(offline_reason, &cfg, network_idx,
-                                 &wifi_diag, &api_diag);
-            offline_shown = true;
+                                 &wifi_diag, &api_diag, attempt);
+            offline_displayed = true;
+            displayed_offline_reason = offline_reason;
+            next_offline_display_at =
+                now + pdMS_TO_TICKS((uint32_t)cfg.refresh_min * 60u * 1000u);
         }
         ESP_LOGW(TAG, "Offline, retrying in %ds",
                  CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S);
         vTaskDelay(pdMS_TO_TICKS(CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S * 1000));
         continue;
 #else
+        uint32_t attempt = offline_attempt_next(offline_reason);
         display_show_offline(offline_reason, &cfg, network_idx,
-                             &wifi_diag, &api_diag);
+                             &wifi_diag, &api_diag, attempt);
         enter_deep_sleep(cfg.refresh_min);
         return;
 #endif
@@ -330,6 +370,7 @@ void app_main(void)
     /* A normal refresh repaints the dashboard, so the sleeping footer (if any)
      * is gone — let the next quiet-window entry repaint it. */
     s_quiet_footer_shown = false;
+    offline_episode_clear();
 
     display_set_connection_slots(&cfg, network_idx, api_idx);
 

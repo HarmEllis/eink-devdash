@@ -41,3 +41,13 @@ bool dashboard_refresh_config_is_valid(uint8_t refresh_min, bool is_bw,
     return refresh_min >= dashboard_refresh_minimum(is_bw, max_partials) &&
            refresh_min <= DASH_REFRESH_MAX;
 }
+
+bool offline_partial_refresh_allowed(uint8_t partial_count,
+                                     uint8_t max_partials,
+                                     uint16_t renders_since_full,
+                                     uint16_t render_cap)
+{
+    return max_partials > 0 &&
+           partial_count < max_partials &&
+           renders_since_full < render_cap;
+}

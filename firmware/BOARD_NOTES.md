@@ -88,6 +88,10 @@ built-in USB-Serial-JTAG. Implications:
   ESP-IDF v5.3 has `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`, but that only
   prevents automatic light sleep while the USB-Serial-JTAG port is connected;
   it does not disable the reset/download control sequence.
+- Provisioning mode is latched in RTC memory until `POST /save` has committed
+  the complete configuration to NVS. If ESP Web Tools or another USB host
+  issues `USB_UART_CHIP_RESET` while the captive portal is open, the next boot
+  returns to the SoftAP instead of consuming the setup request.
 
 For development this is workable but not pleasant; for production it is
 irrelevant because the chip is battery-powered and the host is absent.
@@ -130,7 +134,7 @@ prefix. Field names match `design_handoff_eink_v4_provisioning/README.md`:
 | `wN_aK_url`      | url      | `http://` only — TLS is out of scope.            |
 | `wN_aK_tok`      | password | New token. Same keep/clear/replace rules as PASS.|
 | `wN_aK_cleartok` | checkbox | Force-erase saved token.                         |
-| `iv`             | number   | Refresh interval, 3..60 (stored in cfg.refresh_min). |
+| `iv`             | number   | Refresh interval, 1..60 on BW with at least two partials; otherwise 3..60. |
 | `pv`             | number   | Panel variant, 0 = BWR / 1 = BW (stored in cfg.panel_variant). |
 | `mp`             | number   | Max partial refreshes, 1..100 (stored in cfg.max_partials). |
 
@@ -141,6 +145,14 @@ URL checks delegated to `storage_validate_api_url` and final clamping in
 `POST /save` returns the V4 saved page and schedules `esp_restart()` 4 s
 later via `esp_timer`, leaving time for the on-page spinner→check
 transition before the AP drops.
+
+The provisioning radio runs in AP-only mode on channel 1 with a visible SSID,
+100 ms beacon interval, HT20 bandwidth, and 802.11b/g/n enabled. Runtime logs
+include the effective channel, hidden flag, beacon interval, transmit-power
+setting, AP start/stop, and client join/leave events. A successful
+`WIFI_EVENT_AP_START` proves that the ESP-IDF driver accepted the AP
+configuration; a client join event is the stronger proof that beacons are
+actually receivable.
 
 The HTTP server runs with `uri_match_fn = httpd_uri_match_wildcard`. The
 explicit captive-detect routes (`/generate_204`, `/hotspot-detect.html`,
@@ -159,6 +171,21 @@ generated once at first boot via `storage_get_or_init_ap_password` and
 persisted under NVS key `ap_pwd` in the `devdash` namespace. Factory
 reset (`storage_erase`) clears the key; the next boot generates a new
 password. ADR-0002 records the policy.
+
+## Offline display refresh policy
+
+The `NO WIFI` and `NO API` posters are each static for the duration of one
+outage reason. An RTC-backed attempt counter is rendered in their footer. On
+the BW panel only that fixed footer window receives partial refreshes. The
+configured `max_partials` limit and the 24-hour render cap force a full refresh
+when needed; with a one-minute interval and the required minimum of two partials,
+regular offline full refreshes are at least three minutes apart. On BWR the
+poster remains unchanged between necessary full refreshes because updating the
+counter would itself require a full color refresh.
+
+Normal boot no longer paints a temporary full-screen connecting poster before
+the network attempt. The first display operation is the resulting dashboard or
+offline poster, avoiding two full refreshes within one connection timeout.
 
 ## Phase 0 — WeAct 2.9" BW panel + per-region partial refresh bring-up
 
