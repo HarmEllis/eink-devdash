@@ -203,19 +203,21 @@ Authenticate one of two ways:
 
 **API token (recommended).** Create a token in the Cloudflare dashboard
 (My Profile → API Tokens → "Edit Cloudflare Workers" template). Scope it to the
-target account and give it an expiry. Pass it through the environment so the
-value never lands in your shell history:
+target account and give it an expiry. Read it into the environment with a silent
+prompt so the value is not recorded in your shell history:
 
 ```bash
 mkdir -p relay-out
-export CLOUDFLARE_API_TOKEN=...      # required
-export CLOUDFLARE_ACCOUNT_ID=...     # required only if the token spans accounts
+read -rs CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN   # paste, then Enter
+export CLOUDFLARE_ACCOUNT_ID=...     # only if the token spans multiple accounts
 docker run --rm -it \
   --user "$(id -u):$(id -g)" \
   -e CLOUDFLARE_API_TOKEN -e CLOUDFLARE_ACCOUNT_ID \
   -v "$PWD/relay-out":/out \
   ghcr.io/harmellis/eink-devdash-relay-setup:latest
 ```
+
+(Or put the token in a `chmod 600` file and pass `--env-file`.)
 
 **Browser login (no token).** Map the OAuth callback port and copy the printed
 URL into your browser; the `localhost:8976` redirect is forwarded into the
@@ -233,25 +235,28 @@ Notes:
 
 - Use a dedicated output dir (`relay-out/`), not a directory that already holds
   an unrelated `.env` — the setup rotates relay credentials in that file.
-- Keep `-it` for the first deploy. A brand-new Cloudflare account must register
-  a `workers.dev` subdomain once (dashboard → Workers & Pages); until then
-  `wrangler deploy` cannot run headlessly.
-- Add `-e RELAY_SETUP_PRINT_ENV=1` to also echo the `.env` block to the terminal
-  (handy when you cannot mount a volume). Otherwise the secrets only land in the
-  output file.
+- If your Cloudflare account has no `workers.dev` subdomain yet, register one
+  once in the dashboard (Workers & Pages → set up a subdomain) before running;
+  `wrangler deploy` cannot create it from this non-interactive container.
+- `-it` is needed for the browser-login flow and to render the provisioning QR
+  codes; it does not answer the deploy step (its stdin is ignored).
+- Add `-e RELAY_SETUP_PRINT_ENV=1` to also echo the `.env` block (which includes
+  `RELAY_PUBLISH_KEY`) to the terminal — handy when you cannot mount a volume.
+  The device token and admin key are printed in the summary regardless.
 
 The image produces `relay-out/.env`. To run the publisher without cloning the
-repo, start the published API image with that env file (mirror the mounts from
-`docker-compose.yml`):
+repo, fetch the maintained Compose file and point it at that env file (this
+keeps the host UID/GID mapping, Codex/Claude mounts, and restart policy in sync
+rather than hand-rolling a long `docker run`):
 
 ```bash
-docker run -d --env-file relay-out/.env -p 3000:3000 \
-  -v "$HOME/.claude:/home/node/.claude" \
-  ghcr.io/harmellis/eink-devdash:latest
+curl -O https://raw.githubusercontent.com/HarmEllis/eink-devdash/main/docker-compose.yml
+cp relay-out/.env .env
+docker compose up -d
 ```
 
-If you did clone the repo, copy `relay-out/.env` to the root `.env` and use
-`docker compose up -d` instead.
+If you cloned the repo, just copy `relay-out/.env` to the root `.env` and run
+`docker compose up -d`.
 
 ### LAN and relay profiles
 

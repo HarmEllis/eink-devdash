@@ -4,6 +4,9 @@ node_modules
 .wrangler
 .env
 .env.*
+.dev.vars
+.dev.vars.*
+.npmrc
 *.log
 test
 coverage

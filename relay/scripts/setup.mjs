@@ -17,8 +17,9 @@
 //   RELAY_SETUP_PRINT_ENV=1    also echo the full .env block to stdout
 
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { chmod, lstat, readFile, rename, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { constants as fsConstants, existsSync } from 'node:fs'
+import { access, chmod, lstat, open, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -184,29 +185,61 @@ async function pushSecrets(identity) {
   await pushSecret('ADMIN_KEY', identity.adminKey)
 }
 
+async function preflightEnvOut() {
+  // Verify the output is writable BEFORE we deploy and rotate Worker secrets, so
+  // a late write failure can't leave credentials we have no place to persist.
+  const dir = dirname(envOutPath)
+  try {
+    await access(dir, fsConstants.W_OK)
+  } catch {
+    fail(
+      `Output directory ${dir} is not writable.\n`
+      + '  Mount a writable volume at /out, or set RELAY_SETUP_ENV_OUT to a writable path.',
+    )
+  }
+  if (existsSync(envOutPath)) {
+    // lstat (no-follow): refuse a symlink or special file up front.
+    const stat = await lstat(envOutPath)
+    if (!stat.isFile()) {
+      fail(`${envOutPath} is not a regular file (symlink or special file); refusing to write.`)
+    }
+  }
+}
+
 async function writeEnvFile(identity, workerUrl) {
   step(`Updating ${envOutPath} (merge, not overwrite)...`)
 
   let existing = ''
   if (existsSync(envOutPath)) {
-    // Refuse to follow a symlink or write through a non-regular file; the path
-    // may be attacker-controlled (a mounted volume) and holds secrets.
-    const stat = await lstat(envOutPath)
-    if (!stat.isFile()) {
-      fail(`${envOutPath} is not a regular file (symlink or special file); refusing to write.`)
+    // Read without following a symlink (O_NOFOLLOW): the path may be a mounted,
+    // attacker-influenced volume and holds secrets.
+    let handle
+    try {
+      handle = await open(envOutPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+      existing = await handle.readFile('utf8')
+    } catch (err) {
+      fail(`Cannot read ${envOutPath} (symlink or unreadable): ${err.message}`)
+    } finally {
+      await handle?.close()
     }
-    existing = await readFile(envOutPath, 'utf8')
     if (/^\s*RELAY_PUBLISH_KEY\s*=/m.test(existing)) {
       console.log('  Replacing existing relay credentials in this file (rotation).')
     }
   }
 
   const merged = mergeEnv(existing, relayEnvUpdates({ ...identity, workerUrl }))
-  // Write a temp sibling then rename over the target so a reader never sees a
-  // half-written secrets file. mode 0600 on the temp file carries through.
-  const tmpPath = `${envOutPath}.tmp-${process.pid}`
-  await writeFile(tmpPath, merged, { mode: 0o600 })
-  await rename(tmpPath, envOutPath)
+  // Exclusive, randomized temp sibling ('wx' = O_CREAT|O_EXCL, never follows a
+  // symlink and never collides), then atomic rename over the target. rename()
+  // does not follow symlinks, so a symlinked target is replaced by our regular
+  // file instead of written through.
+  const tmpPath = `${envOutPath}.tmp-${randomBytes(8).toString('hex')}`
+  try {
+    await writeFile(tmpPath, merged, { flag: 'wx', mode: 0o600 })
+    await rename(tmpPath, envOutPath)
+  } catch (err) {
+    await unlink(tmpPath).catch(() => {})
+    fail(`Failed to write ${envOutPath}: ${err.message}`)
+  }
   // Best-effort: chmod is a no-op on some Docker Desktop bind mounts.
   try {
     await chmod(envOutPath, 0o600)
@@ -227,9 +260,10 @@ async function printProvisioning(identity, workerUrl) {
     workerUrl,
   }))
 
-  // Secrets live in the written env file. Only echo the full block when opted
-  // in (e.g. a container run without a mounted volume), to keep RELAY_PUBLISH_KEY
-  // out of terminal history and captured logs by default.
+  // The summary above intentionally echoes the device token (needed to
+  // provision the firmware) and admin key (needed for /admin/stats). The .env
+  // file is the primary machine-readable channel; RELAY_SETUP_PRINT_ENV=1 also
+  // echoes that full block, which adds RELAY_PUBLISH_KEY.
   if (process.env.RELAY_SETUP_PRINT_ENV === '1') {
     console.log('\n.env (keep secret):\n')
     console.log(formatEnvBlock(identity, workerUrl))
@@ -261,6 +295,7 @@ async function printProvisioning(identity, workerUrl) {
 async function main() {
   await ensureWranglerInstalled()
   await ensureAuthenticated()
+  await preflightEnvOut()
 
   step('Generating a fresh device identity...')
   const identity = generateIdentity()
