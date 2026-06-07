@@ -2,10 +2,8 @@ name: Relay Deploy
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "relay/**"
-      - ".github/workflows/relay-deploy.yml"
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
 
 permissions:
@@ -15,6 +13,8 @@ jobs:
   deploy:
     name: deploy worker
     runs-on: ubuntu-24.04
+    env:
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
     defaults:
       run:
         working-directory: relay
@@ -39,7 +39,22 @@ jobs:
       - name: Relay tests
         run: npm test
 
+      # Deploying targets a maintainer's own Cloudflare account. When no
+      # CF_API_TOKEN secret is configured (the default for the self-hosted
+      # model, where each user deploys their own relay), skip the deploy
+      # instead of failing — build and tests above still gate the release.
+      - name: Check Cloudflare credentials
+        id: gate
+        run: |
+          if [ -z "$CF_API_TOKEN" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "CF_API_TOKEN not set — skipping relay deploy."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy Worker
+        if: steps.gate.outputs.configured == 'true'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
