@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "runtime_policy.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -508,11 +509,21 @@ static const char V4_JS[] =
 "});"
 "function syncRange(a,b){a.addEventListener('input',function(){b.value=a.value});"
 "b.addEventListener('input',function(){a.value=b.value});}"
+"function updateRefreshMinimum(){"
+"var r=document.getElementById('iv-range');var n=document.getElementById('iv-num');"
+"var h=document.getElementById('iv-hint');"
+"var bw=document.querySelector('input[name=\"pv\"][value=\"1\"]:checked');"
+"if(!r||!n)return;var min=bw?1:3;"
+"r.min=min;n.min=min;if(Number(n.value)<min){n.value=min;r.value=min;}"
+"if(h)h.textContent=min===1?'1-60 min. The 1-minute option requires the BW panel and at least 2 partial refreshes.':'3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.';"
+"}"
 "window.addEventListener('DOMContentLoaded',function(){"
 "var r=document.getElementById('iv-range');var n=document.getElementById('iv-num');"
 "if(r&&n)syncRange(r,n);"
 "var mr=document.getElementById('mp-range');var mn=document.getElementById('mp-num');"
 "if(mr&&mn)syncRange(mr,mn);"
+"document.querySelectorAll('input[name=\"pv\"]').forEach(function(p){p.addEventListener('change',updateRefreshMinimum);});"
+"updateRefreshMinimum();"
 "document.querySelectorAll('.card-on,.api-on').forEach(function(t){"
 "if(t.classList.contains('api-on'))tgl(t,'.api-list>li','disabled');"
 "else tgl(t,'.card','disabled');"
@@ -782,6 +793,11 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
     }
 
     int iv = cfg->refresh_min ? cfg->refresh_min : 5;
+    /* Expose the 1-minute input server-side for every saved BW panel so the
+       option does not depend on captive-portal JavaScript. Save validation
+       still requires max_partials >= 2 before accepting a 1-minute interval. */
+    int iv_min = dashboard_refresh_input_minimum(
+        cfg->panel_variant == EINK_PANEL_WEACT_29_BW);
     snprintf(page_buf, sizeof(page_buf),
         "</section>"
         "<section class=\"block\" id=\"display-block\">"
@@ -790,13 +806,17 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
         "<label class=\"lab full\" for=\"iv-range\" style=\"font-size:14px;color:#1c1f24\">"
         "Refresh interval <span style=\"color:#6b7280;font-weight:400\">- how often "
         "the dashboard polls.</span></label>"
-        "<input type=\"range\" id=\"iv-range\" min=\"3\" max=\"60\" step=\"1\" value=\"%d\">"
+        "<input type=\"range\" id=\"iv-range\" min=\"%d\" max=\"60\" step=\"1\" value=\"%d\">"
         "<div class=\"num-wrap\"><input type=\"number\" id=\"iv-num\" name=\"iv\" "
-        "min=\"3\" max=\"60\" step=\"1\" value=\"%d\"><span class=\"unit\">min</span></div>"
-        "<p class=\"full\" style=\"margin:0;color:#6b7280;font-size:12px\">"
-        "3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.</p>"
+        "min=\"%d\" max=\"60\" step=\"1\" value=\"%d\"><span class=\"unit\">min</span></div>"
+        "<p class=\"full\" id=\"iv-hint\" style=\"margin:0;color:#6b7280;font-size:12px\">"
+        "%s</p>"
         "</div>",
-        iv, iv);
+        iv_min, iv, iv_min, iv,
+        iv_min == DASH_REFRESH_MIN_BW_TWO_PARTIALS
+            ? "1-60 min. The 1-minute option requires the BW panel and at least "
+              "2 partial refreshes."
+            : "3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.");
     CHUNK(req, page_buf);
 
     /* BW per-region partial cap (max_partials). Mirrors the interval control. */
@@ -939,15 +959,8 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
      * out the same id to every new entry. */
     uint32_t next_id = storage_next_profile_id(prev);
 
-    if (form->iv_present && form->iv >= 3 && form->iv <= 60) {
-        cfg->refresh_min = (uint8_t)form->iv;
-    } else {
-        cfg->refresh_min = prev->refresh_min ? prev->refresh_min : 5;
-    }
-
-    /* Same keep-on-invalid pattern as iv: only accept an in-range value, else
-       preserve the previous setting (atoi maps garbage to 0, which is < min and
-       thus rejected). storage_cfg_v2_normalize clamps defensively as well. */
+    /* Accept only an in-range partial cap; otherwise preserve the previous
+       setting. storage_cfg_v2_normalize clamps defensively as well. */
     if (form->mp_present && form->mp >= DASH_MAX_PARTIALS_MIN &&
         form->mp <= DASH_MAX_PARTIALS_MAX) {
         cfg->max_partials = (uint8_t)form->mp;
@@ -965,6 +978,15 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
         cfg->panel_variant = form->pv;
     } else {
         cfg->panel_variant = prev->panel_variant;
+    }
+
+    bool is_bw = cfg->panel_variant == EINK_PANEL_WEACT_29_BW;
+    if (form->iv_present && form->iv >= 0 && form->iv <= UINT8_MAX &&
+        dashboard_refresh_config_is_valid((uint8_t)form->iv, is_bw,
+                                          cfg->max_partials)) {
+        cfg->refresh_min = (uint8_t)form->iv;
+    } else {
+        cfg->refresh_min = prev->refresh_min ? prev->refresh_min : 5;
     }
 
     int out_n = 0;
@@ -1119,12 +1141,23 @@ static esp_err_t handler_save(httpd_req_t *req)
      * — the V4 design's inline-error rendering would double the renderer
      * size; this keeps the caller informed without a full second pass. */
     const char *reason = NULL;
-    if (form->iv_present && (form->iv < 3 || form->iv > 60)) {
-        reason = "Refresh interval must be between 3 and 60.";
-    }
-    if (!reason && form->mp_present &&
+    if (form->mp_present &&
         (form->mp < DASH_MAX_PARTIALS_MIN || form->mp > DASH_MAX_PARTIALS_MAX)) {
         reason = "Max partial refreshes must be between 1 and 100.";
+    }
+    bool submitted_bw = form->pv_present &&
+                        form->pv == EINK_PANEL_WEACT_29_BW;
+    uint8_t submitted_partials =
+        form->mp_present && form->mp >= DASH_MAX_PARTIALS_MIN &&
+                form->mp <= DASH_MAX_PARTIALS_MAX
+            ? (uint8_t)form->mp
+            : 0;
+    if (!reason && form->iv_present &&
+        (form->iv < 0 || form->iv > UINT8_MAX ||
+         !dashboard_refresh_config_is_valid(
+             (uint8_t)form->iv, submitted_bw, submitted_partials))) {
+        reason = "Refresh interval must be 3-60 minutes, or 1-60 minutes "
+                 "with the BW panel and at least 2 partial refreshes.";
     }
     for (int n = 0; n < MAX_WIFI_NETWORKS && !reason; n++) {
         const net_form_t *nf = &form->nets[n];

@@ -147,6 +147,29 @@ static void test_relay_url_detection_uses_device_path(void)
     TEST_ASSERT_FALSE(api_url_is_relay(NULL));
 }
 
+static void test_refresh_minimum_allows_one_minute_for_bw_at_least_two_partials(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(1, dashboard_refresh_input_minimum(true));
+    TEST_ASSERT_EQUAL_UINT8(3, dashboard_refresh_input_minimum(false));
+    TEST_ASSERT_EQUAL_UINT8(1, dashboard_refresh_minimum(true, 2));
+    TEST_ASSERT_EQUAL_UINT8(1, dashboard_refresh_minimum(true, 3));
+    TEST_ASSERT_EQUAL_UINT8(1, dashboard_refresh_minimum(true, 100));
+    TEST_ASSERT_EQUAL_UINT8(3, dashboard_refresh_minimum(true, 1));
+    TEST_ASSERT_EQUAL_UINT8(3, dashboard_refresh_minimum(false, 2));
+}
+
+static void test_refresh_config_rejects_unsafe_one_minute_combinations(void)
+{
+    TEST_ASSERT_TRUE(dashboard_refresh_config_is_valid(1, true, 2));
+    TEST_ASSERT_TRUE(dashboard_refresh_config_is_valid(1, true, 3));
+    TEST_ASSERT_TRUE(dashboard_refresh_config_is_valid(1, true, 100));
+    TEST_ASSERT_TRUE(dashboard_refresh_config_is_valid(3, true, 1));
+    TEST_ASSERT_TRUE(dashboard_refresh_config_is_valid(3, false, 2));
+    TEST_ASSERT_FALSE(dashboard_refresh_config_is_valid(1, true, 1));
+    TEST_ASSERT_FALSE(dashboard_refresh_config_is_valid(1, false, 2));
+    TEST_ASSERT_FALSE(dashboard_refresh_config_is_valid(61, true, 2));
+}
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -170,6 +193,8 @@ void app_main(void)
     RUN_TEST(test_version_fails_closed_on_malformed_running);
     RUN_TEST(test_clock_applies_only_fresh_nonempty_iso);
     RUN_TEST(test_relay_url_detection_uses_device_path);
+    RUN_TEST(test_refresh_minimum_allows_one_minute_for_bw_at_least_two_partials);
+    RUN_TEST(test_refresh_config_rejects_unsafe_one_minute_combinations);
 
     int failures = UNITY_END();
     /* Surface the result as a process exit code so the devcontainer command
