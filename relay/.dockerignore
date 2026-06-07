@@ -1,0 +1,11 @@
+# Keep the build context clean: secrets, local state, and heavy/dev-only files
+# must not enter the image or its context.
+node_modules
+.wrangler
+.env
+.env.*
+*.log
+test
+coverage
+.co-develop
+vitest.config.ts

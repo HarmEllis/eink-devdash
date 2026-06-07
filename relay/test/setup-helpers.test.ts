@@ -2,7 +2,10 @@ import { test, expect } from 'vitest'
 
 import {
   base64url,
+  buildLoginArgs,
   buildRelayDashboardUrl,
+  chooseAuthMode,
+  formatEnvBlock,
   formatProvisioningSummary,
   generateIdentity,
   generateToken,
@@ -118,4 +121,38 @@ test('formatProvisioningSummary shows the URL, token, and admin curl', () => {
   expect(text).toContain('https://relay.example.workers.dev/d/uuid')
   expect(text).toContain('tok')
   expect(text).toContain('Bearer adm')
+})
+
+test('formatEnvBlock emits all relay keys as KEY=VALUE lines', () => {
+  const block = formatEnvBlock(
+    { deviceUuid: 'uuid', deviceToken: 'tok', relayPublishKey: 'pub' },
+    'https://relay.example.workers.dev',
+  )
+  expect(block).toContain('DEVICE_TOKEN=tok')
+  expect(block).toContain('DEVICE_UUID=uuid')
+  expect(block).toContain('RELAY_ENABLED=true')
+  expect(block).toContain('RELAY_URL=https://relay.example.workers.dev')
+  expect(block).toContain('RELAY_PUBLISH_KEY=pub')
+})
+
+test('chooseAuthMode prefers a token, then a TTY, else unavailable', () => {
+  expect(chooseAuthMode({ hasToken: true, isInteractive: false })).toBe('token')
+  expect(chooseAuthMode({ hasToken: true, isInteractive: true })).toBe('token')
+  expect(chooseAuthMode({ hasToken: false, isInteractive: true })).toBe('login')
+  expect(chooseAuthMode({ hasToken: false, isInteractive: false })).toBe('unavailable')
+})
+
+test('buildLoginArgs stays bare locally and adds container flags with a callback host', () => {
+  expect(buildLoginArgs()).toEqual(['login'])
+  expect(buildLoginArgs({ callbackHost: '0.0.0.0' })).toEqual([
+    'login',
+    '--browser=false',
+    '--callback-host=0.0.0.0',
+  ])
+  expect(buildLoginArgs({ callbackHost: '0.0.0.0', callbackPort: '8976' })).toEqual([
+    'login',
+    '--browser=false',
+    '--callback-host=0.0.0.0',
+    '--callback-port=8976',
+  ])
 })

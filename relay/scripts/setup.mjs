@@ -1,21 +1,32 @@
 #!/usr/bin/env node
 // One-command self-host setup for the Cloudflare relay.
 //
-//   cd relay && npm install && npm run setup
+//   cd relay && npm install && npm run setup     # local
+//   docker run ... eink-devdash-relay-setup       # no clone (see README)
 //
-// End to end: ensure wrangler is authenticated, generate a fresh device
-// identity, deploy the Worker, push its secrets, merge the root .env that
-// Docker + the API consume, and print provisioning details (URL + token + QR)
-// for the firmware captive portal. No secret is ever typed or copied by hand.
+// End to end: authenticate wrangler (CLOUDFLARE_API_TOKEN, else interactive
+// login), generate a fresh device identity, deploy the Worker, push its
+// secrets, merge the .env that Docker + the API consume, and print provisioning
+// details (URL + token + QR) for the firmware captive portal. No secret is ever
+// typed or copied by hand.
+//
+// Env overrides (used by the container image):
+//   RELAY_SETUP_ENV_OUT       where to write the merged .env (default repo .env)
+//   RELAY_SETUP_CALLBACK_HOST  wrangler login --callback-host (e.g. 0.0.0.0)
+//   RELAY_SETUP_CALLBACK_PORT  wrangler login --callback-port
+//   RELAY_SETUP_PRINT_ENV=1    also echo the full .env block to stdout
 
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { chmod, readFile, writeFile } from 'node:fs/promises'
+import { chmod, lstat, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  buildLoginArgs,
   buildRelayDashboardUrl,
+  chooseAuthMode,
+  formatEnvBlock,
   formatProvisioningSummary,
   generateIdentity,
   mergeEnv,
@@ -26,7 +37,9 @@ import {
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const relayDir = join(scriptDir, '..')
 const rootDir = join(relayDir, '..')
-const rootEnvPath = join(rootDir, '.env')
+// Default to the repo-root .env (local `npm run setup`). The container image
+// sets RELAY_SETUP_ENV_OUT=/out/.env so the file lands on a mounted volume.
+const envOutPath = process.env.RELAY_SETUP_ENV_OUT || join(rootDir, '.env')
 
 const WRANGLER_BIN = join(relayDir, 'node_modules', '.bin', 'wrangler')
 
@@ -75,6 +88,30 @@ async function ensureWranglerInstalled() {
 }
 
 async function ensureAuthenticated() {
+  const mode = chooseAuthMode({
+    hasToken: Boolean(process.env.CLOUDFLARE_API_TOKEN),
+    isInteractive: process.stdin.isTTY === true,
+  })
+
+  if (mode === 'token') {
+    // Don't gate on `wrangler whoami`: narrowly-scoped Workers tokens can deploy
+    // but lack the user/account read that whoami needs. Let `wrangler deploy`
+    // be the real auth gate and surface its error.
+    step('Using CLOUDFLARE_API_TOKEN for authentication.')
+    return
+  }
+
+  if (mode === 'unavailable') {
+    fail(
+      'No Cloudflare authentication available in this non-interactive run.\n'
+      + '  Provide a token:  export CLOUDFLARE_API_TOKEN=... '
+      + '(and CLOUDFLARE_ACCOUNT_ID if your token spans multiple accounts)\n'
+      + '  Or log in:        re-run with a TTY, e.g. `docker run -it -p 8976:8976 ...`',
+    )
+  }
+
+  // mode === 'login': interactive OAuth. Short-circuit if already logged in so
+  // re-runs don't force a fresh login.
   step('Checking Cloudflare authentication (wrangler whoami)...')
   let result
   try {
@@ -90,10 +127,14 @@ async function ensureAuthenticated() {
     return
   }
 
-  step('Not authenticated - opening Cloudflare login in your browser...')
-  const login = await runWrangler(['login'], { interactive: true })
+  step('Not authenticated - starting Cloudflare login...')
+  const args = buildLoginArgs({
+    callbackHost: process.env.RELAY_SETUP_CALLBACK_HOST,
+    callbackPort: process.env.RELAY_SETUP_CALLBACK_PORT,
+  })
+  const login = await runWrangler(args, { interactive: true })
   if (login.code !== 0) {
-    fail('wrangler login failed. Re-run "npm run setup" once you are logged in.')
+    fail('wrangler login failed. Re-run once you are logged in.')
   }
 }
 
@@ -103,7 +144,15 @@ async function deployWorker() {
   process.stdout.write(result.stdout)
   if (result.code !== 0) {
     process.stderr.write(result.stderr)
-    fail('wrangler deploy failed. Check the output above (account not ready? quota?).')
+    const combined = `${result.stdout}\n${result.stderr}`
+    if (/workers\.dev|subdomain|register/i.test(combined)) {
+      fail(
+        'wrangler deploy failed: your Cloudflare account may not have a workers.dev\n'
+        + '  subdomain yet. Register one once at https://dash.cloudflare.com\n'
+        + '  (Workers & Pages -> set up a subdomain), then re-run.',
+      )
+    }
+    fail('wrangler deploy failed. Check the output above (token scope? account id? quota?).')
   }
 
   const workerUrl = parseWorkerUrl(result.stdout) ?? parseWorkerUrl(result.stderr)
@@ -135,18 +184,36 @@ async function pushSecrets(identity) {
   await pushSecret('ADMIN_KEY', identity.adminKey)
 }
 
-async function updateRootEnv(identity, workerUrl) {
-  step(`Updating ${rootEnvPath} (merge, not overwrite)...`)
+async function writeEnvFile(identity, workerUrl) {
+  step(`Updating ${envOutPath} (merge, not overwrite)...`)
+
   let existing = ''
-  if (existsSync(rootEnvPath)) {
-    existing = await readFile(rootEnvPath, 'utf8')
+  if (existsSync(envOutPath)) {
+    // Refuse to follow a symlink or write through a non-regular file; the path
+    // may be attacker-controlled (a mounted volume) and holds secrets.
+    const stat = await lstat(envOutPath)
+    if (!stat.isFile()) {
+      fail(`${envOutPath} is not a regular file (symlink or special file); refusing to write.`)
+    }
+    existing = await readFile(envOutPath, 'utf8')
+    if (/^\s*RELAY_PUBLISH_KEY\s*=/m.test(existing)) {
+      console.log('  Replacing existing relay credentials in this file (rotation).')
+    }
   }
+
   const merged = mergeEnv(existing, relayEnvUpdates({ ...identity, workerUrl }))
-  await writeFile(rootEnvPath, merged)
-  // writeFile's mode only applies on creation; force 0600 so a pre-existing
-  // world-readable .env does not keep leaking the secrets we just wrote.
-  await chmod(rootEnvPath, 0o600)
-  console.log('  .env updated (DEVICE_TOKEN, DEVICE_UUID, RELAY_* set; mode 0600).')
+  // Write a temp sibling then rename over the target so a reader never sees a
+  // half-written secrets file. mode 0600 on the temp file carries through.
+  const tmpPath = `${envOutPath}.tmp-${process.pid}`
+  await writeFile(tmpPath, merged, { mode: 0o600 })
+  await rename(tmpPath, envOutPath)
+  // Best-effort: chmod is a no-op on some Docker Desktop bind mounts.
+  try {
+    await chmod(envOutPath, 0o600)
+  } catch {
+    /* ignore */
+  }
+  console.log('  Wrote DEVICE_TOKEN, DEVICE_UUID, RELAY_* (mode 0600 best-effort).')
 }
 
 async function printProvisioning(identity, workerUrl) {
@@ -160,23 +227,33 @@ async function printProvisioning(identity, workerUrl) {
     workerUrl,
   }))
 
-  let qrcode
-  try {
-    qrcode = (await import('qrcode-terminal')).default
-  } catch {
-    qrcode = null
+  // Secrets live in the written env file. Only echo the full block when opted
+  // in (e.g. a container run without a mounted volume), to keep RELAY_PUBLISH_KEY
+  // out of terminal history and captured logs by default.
+  if (process.env.RELAY_SETUP_PRINT_ENV === '1') {
+    console.log('\n.env (keep secret):\n')
+    console.log(formatEnvBlock(identity, workerUrl))
   }
 
-  // Two QR codes so neither field has to be transcribed by hand: one for the
-  // captive portal's API URL field, one for the device token field. A single
-  // combined provisioning URL is a planned firmware-side enhancement.
-  console.log('\nScan for the API URL field:\n')
-  if (qrcode) qrcode.generate(relayDashboardUrl, { small: true })
-  else console.log('  (install qrcode-terminal to render a QR here)')
+  // QR codes only make sense on an interactive terminal.
+  if (process.stdout.isTTY) {
+    let qrcode
+    try {
+      qrcode = (await import('qrcode-terminal')).default
+    } catch {
+      qrcode = null
+    }
 
-  console.log('\nScan for the device token field:\n')
-  if (qrcode) qrcode.generate(identity.deviceToken, { small: true })
-  else console.log('  (install qrcode-terminal to render a QR here)')
+    // Two QR codes so neither field has to be transcribed by hand: one for the
+    // captive portal's API URL field, one for the device token field.
+    console.log('\nScan for the API URL field:\n')
+    if (qrcode) qrcode.generate(relayDashboardUrl, { small: true })
+    else console.log('  (install qrcode-terminal to render a QR here)')
+
+    console.log('\nScan for the device token field:\n')
+    if (qrcode) qrcode.generate(identity.deviceToken, { small: true })
+    else console.log('  (install qrcode-terminal to render a QR here)')
+  }
 
   console.log(divider + '\n')
 }
@@ -191,10 +268,10 @@ async function main() {
 
   const workerUrl = await deployWorker()
   await pushSecrets(identity)
-  await updateRootEnv(identity, workerUrl)
+  await writeEnvFile(identity, workerUrl)
   await printProvisioning(identity, workerUrl)
 
-  console.log('Done. Next: "docker compose up -d", then provision the firmware above.')
+  console.log('Done. Start the publisher with the generated .env, then provision the firmware above.')
 }
 
 main().catch((err) => fail(err?.stack ?? String(err)))

@@ -193,6 +193,66 @@ for the device's API URL and token fields.
 Re-running `npm run setup` rotates the generated identity and credentials.
 Reconfigure the device afterwards.
 
+### Setup without cloning (Docker)
+
+If you would rather not clone the repo or install Node, run the prebuilt setup
+image. It deploys the Worker to *your* Cloudflare account, pushes the secrets,
+and writes a `.env` to the mounted output directory.
+
+Authenticate one of two ways:
+
+**API token (recommended).** Create a token in the Cloudflare dashboard
+(My Profile → API Tokens → "Edit Cloudflare Workers" template). Scope it to the
+target account and give it an expiry. Pass it through the environment so the
+value never lands in your shell history:
+
+```bash
+mkdir -p relay-out
+export CLOUDFLARE_API_TOKEN=...      # required
+export CLOUDFLARE_ACCOUNT_ID=...     # required only if the token spans accounts
+docker run --rm -it \
+  --user "$(id -u):$(id -g)" \
+  -e CLOUDFLARE_API_TOKEN -e CLOUDFLARE_ACCOUNT_ID \
+  -v "$PWD/relay-out":/out \
+  ghcr.io/harmellis/eink-devdash-relay-setup:latest
+```
+
+**Browser login (no token).** Map the OAuth callback port and copy the printed
+URL into your browser; the `localhost:8976` redirect is forwarded into the
+container:
+
+```bash
+mkdir -p relay-out
+docker run --rm -it -p 8976:8976 \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/relay-out":/out \
+  ghcr.io/harmellis/eink-devdash-relay-setup:latest
+```
+
+Notes:
+
+- Use a dedicated output dir (`relay-out/`), not a directory that already holds
+  an unrelated `.env` — the setup rotates relay credentials in that file.
+- Keep `-it` for the first deploy. A brand-new Cloudflare account must register
+  a `workers.dev` subdomain once (dashboard → Workers & Pages); until then
+  `wrangler deploy` cannot run headlessly.
+- Add `-e RELAY_SETUP_PRINT_ENV=1` to also echo the `.env` block to the terminal
+  (handy when you cannot mount a volume). Otherwise the secrets only land in the
+  output file.
+
+The image produces `relay-out/.env`. To run the publisher without cloning the
+repo, start the published API image with that env file (mirror the mounts from
+`docker-compose.yml`):
+
+```bash
+docker run -d --env-file relay-out/.env -p 3000:3000 \
+  -v "$HOME/.claude:/home/node/.claude" \
+  ghcr.io/harmellis/eink-devdash:latest
+```
+
+If you did clone the repo, copy `relay-out/.env` to the root `.env` and use
+`docker compose up -d` instead.
+
 ### LAN and relay profiles
 
 Enabling the relay does not disable the local `/dashboard` route. A device can

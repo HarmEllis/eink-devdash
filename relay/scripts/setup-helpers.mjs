@@ -120,12 +120,46 @@ export function formatProvisioningSummary({ relayDashboardUrl, deviceToken, admi
     `  API URL (captive portal):  ${relayDashboardUrl}`,
     `  Device token:              ${deviceToken}`,
     '',
-    'Docker (.env) was updated; start the publisher with:',
-    '',
-    '  docker compose up -d',
-    '',
     'Keep these secret. Admin stats:',
     '',
     `  curl -H "Authorization: Bearer ${adminKey}" ${workerUrl}/admin/stats`,
   ].join('\n')
+}
+
+/**
+ * A ready-to-paste .env block (all relay keys). Used for the opt-in
+ * RELAY_SETUP_PRINT_ENV path when the written file is not convenient (e.g. a
+ * container run without a mounted output volume).
+ */
+export function formatEnvBlock(identity, workerUrl) {
+  const updates = relayEnvUpdates({ ...identity, workerUrl })
+  return Object.entries(updates).map(([key, value]) => `${key}=${value}`).join('\n')
+}
+
+/**
+ * Decide how to authenticate wrangler:
+ * - 'token'       CLOUDFLARE_API_TOKEN is set — non-interactive, no browser.
+ * - 'login'       no token but a TTY is available — interactive OAuth.
+ * - 'unavailable' neither — the caller must fail with guidance.
+ */
+export function chooseAuthMode({ hasToken, isInteractive }) {
+  if (hasToken) return 'token'
+  if (isInteractive) return 'login'
+  return 'unavailable'
+}
+
+/**
+ * `wrangler login` args. When a callbackHost is given (the container case) we
+ * also pass --browser=false so wrangler prints the auth URL instead of trying
+ * to open a browser, and --callback-host so its OAuth callback server binds an
+ * address reachable through `docker run -p 8976:8976`. Cloudflare's redirect_uri
+ * is fixed to localhost:8976, so map that port on the host.
+ */
+export function buildLoginArgs({ callbackHost, callbackPort } = {}) {
+  const args = ['login']
+  if (callbackHost) {
+    args.push('--browser=false', `--callback-host=${callbackHost}`)
+    if (callbackPort) args.push(`--callback-port=${callbackPort}`)
+  }
+  return args
 }
