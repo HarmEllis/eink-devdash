@@ -18,6 +18,12 @@ bool api_url_is_relay(const char *url)
            device[0] != '?' && device[0] != '#';
 }
 
+uint8_t dashboard_refresh_input_minimum(bool is_bw)
+{
+    return is_bw ? DASH_REFRESH_MIN_BW_TWO_PARTIALS
+                 : DASH_REFRESH_MIN_STANDARD;
+}
+
 uint8_t dashboard_refresh_minimum(bool is_bw, uint8_t max_partials)
 {
     /* At one-minute sleeps, two partial cycles put the next regular full

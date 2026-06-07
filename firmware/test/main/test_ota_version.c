@@ -149,6 +149,8 @@ static void test_relay_url_detection_uses_device_path(void)
 
 static void test_refresh_minimum_allows_one_minute_only_for_bw_two_partials(void)
 {
+    TEST_ASSERT_EQUAL_UINT8(1, dashboard_refresh_input_minimum(true));
+    TEST_ASSERT_EQUAL_UINT8(3, dashboard_refresh_input_minimum(false));
     TEST_ASSERT_EQUAL_UINT8(1, dashboard_refresh_minimum(true, 2));
     TEST_ASSERT_EQUAL_UINT8(3, dashboard_refresh_minimum(true, 1));
     TEST_ASSERT_EQUAL_UINT8(3, dashboard_refresh_minimum(true, 3));

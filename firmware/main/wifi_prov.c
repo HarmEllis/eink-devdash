@@ -511,9 +511,9 @@ static const char V4_JS[] =
 "b.addEventListener('input',function(){a.value=b.value});}"
 "function updateRefreshMinimum(){"
 "var r=document.getElementById('iv-range');var n=document.getElementById('iv-num');"
-"var mn=document.getElementById('mp-num');var h=document.getElementById('iv-hint');"
+"var h=document.getElementById('iv-hint');"
 "var bw=document.querySelector('input[name=\"pv\"][value=\"1\"]:checked');"
-"if(!r||!n||!mn)return;var min=bw&&Number(mn.value)===2?1:3;"
+"if(!r||!n)return;var min=bw?1:3;"
 "r.min=min;n.min=min;if(Number(n.value)<min){n.value=min;r.value=min;}"
 "if(h)h.textContent=min===1?'1-60 min. The 1-minute option requires the BW panel and exactly 2 partial refreshes.':'3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.';"
 "}"
@@ -521,7 +521,7 @@ static const char V4_JS[] =
 "var r=document.getElementById('iv-range');var n=document.getElementById('iv-num');"
 "if(r&&n)syncRange(r,n);"
 "var mr=document.getElementById('mp-range');var mn=document.getElementById('mp-num');"
-"if(mr&&mn){syncRange(mr,mn);mr.addEventListener('input',updateRefreshMinimum);mn.addEventListener('input',updateRefreshMinimum);}"
+"if(mr&&mn)syncRange(mr,mn);"
 "document.querySelectorAll('input[name=\"pv\"]').forEach(function(p){p.addEventListener('change',updateRefreshMinimum);});"
 "updateRefreshMinimum();"
 "document.querySelectorAll('.card-on,.api-on').forEach(function(t){"
@@ -793,8 +793,11 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
     }
 
     int iv = cfg->refresh_min ? cfg->refresh_min : 5;
-    int iv_min = dashboard_refresh_minimum(
-        cfg->panel_variant == EINK_PANEL_WEACT_29_BW, cfg->max_partials);
+    /* Expose the 1-minute input server-side for every saved BW panel so the
+       option does not depend on captive-portal JavaScript. Save validation
+       still requires max_partials == 2 before accepting a 1-minute interval. */
+    int iv_min = dashboard_refresh_input_minimum(
+        cfg->panel_variant == EINK_PANEL_WEACT_29_BW);
     snprintf(page_buf, sizeof(page_buf),
         "</section>"
         "<section class=\"block\" id=\"display-block\">"
