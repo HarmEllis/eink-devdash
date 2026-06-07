@@ -305,6 +305,9 @@ void app_main(void)
     bool wake_refresh = (wake == ESP_SLEEP_WAKEUP_TIMER ||
                          wake == ESP_SLEEP_WAKEUP_EXT0);
     bool prefer_last_success_api = wake_refresh;
+    if (!wake_refresh) {
+        display_show_connecting(DISPLAY_CTX_NORMAL_BOOT, false, &cfg);
+    }
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
         memset(&wifi_diag, 0, sizeof(wifi_diag));
