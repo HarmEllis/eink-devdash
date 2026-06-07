@@ -8,6 +8,8 @@ type ClaudeUsage = {
 }
 
 const credentialStore = new ClaudeCredentialStore()
+export const CLAUDE_ADAPTER_BUDGET_MS = 11_000
+const PROBE_TIMEOUT_MS = 5_000
 
 type ParsedRateLimit = { rate: RateLimit; present: boolean }
 
@@ -81,7 +83,15 @@ type ProbeOutcome =
   | { kind: 'unauthorized' }
   | { kind: 'empty' }
 
-async function probeUsage(token: string): Promise<ProbeOutcome> {
+async function probeUsage(
+  token: string,
+  signal: AbortSignal | undefined,
+  deadline: number,
+): Promise<ProbeOutcome> {
+  const remaining = deadline - Date.now()
+  if (remaining <= 0) return { kind: 'empty' }
+  const timeout = AbortSignal.timeout(Math.max(1, Math.min(PROBE_TIMEOUT_MS, remaining)))
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -100,6 +110,7 @@ async function probeUsage(token: string): Promise<ProbeOutcome> {
         max_tokens: 1,
         messages: [{ role: 'user', content: '.' }],
       }),
+      signal: combined,
     })
 
     if (res.status === 401) return { kind: 'unauthorized' }
@@ -125,25 +136,27 @@ async function probeUsage(token: string): Promise<ProbeOutcome> {
       usage: { fiveHour: fiveHour.rate, weekly: weekly.rate, authError: false },
     }
   } catch (err) {
+    if (signal?.aborted) throw signal.reason ?? err
     console.warn('[claude] usage probe failed', err instanceof Error ? err.message : err)
     return { kind: 'empty' }
   }
 }
 
-export async function getClaudeUsage(): Promise<ClaudeUsage> {
-  const token = await credentialStore.getAccessToken()
+export async function getClaudeUsage(signal?: AbortSignal): Promise<ClaudeUsage> {
+  const deadline = Date.now() + CLAUDE_ADAPTER_BUDGET_MS
+  const token = await credentialStore.getAccessToken({ signal, deadline })
   if (!token) return EMPTY
 
-  const first = await probeUsage(token)
+  const first = await probeUsage(token, signal, deadline)
   if (first.kind === 'usage') return first.usage
   if (first.kind === 'empty') return EMPTY
 
   // 401 path: cached/disk token was rejected. Invalidate the cache, force a
   // fresh refresh against disk, and retry once before surfacing authError.
   credentialStore.invalidateCache()
-  const refreshed = await credentialStore.getAccessToken({ forceRefresh: true })
+  const refreshed = await credentialStore.getAccessToken({ forceRefresh: true, signal, deadline })
   if (!refreshed || refreshed === token) return EMPTY
 
-  const second = await probeUsage(refreshed)
+  const second = await probeUsage(refreshed, signal, deadline)
   return second.kind === 'usage' ? second.usage : EMPTY
 }

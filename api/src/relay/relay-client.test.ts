@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
+import { WebSocketServer, type WebSocket } from 'ws'
 
 import {
   buildRelayConnectUrl,
@@ -71,4 +73,120 @@ test('enabled-but-incomplete relay config opens no socket and does not throw', (
   assert.doesNotThrow(() => publisher.start())
   assert.deepEqual(warnings, [{ missing: ['RELAY_URL', 'RELAY_PUBLISH_KEY', 'DEVICE_UUID'] }])
   publisher.stop()
+})
+
+function jsonQueue(socket: WebSocket) {
+  const frames: Array<Record<string, any>> = []
+  const waiters: Array<(frame: Record<string, any>) => void> = []
+  socket.on('message', (data) => {
+    const frame = JSON.parse(data.toString()) as Record<string, any>
+    const waiter = waiters.shift()
+    if (waiter) waiter(frame)
+    else frames.push(frame)
+  })
+  return {
+    next(): Promise<Record<string, any>> {
+      const frame = frames.shift()
+      return frame ? Promise.resolve(frame) : new Promise((resolve) => waiters.push(resolve))
+    },
+  }
+}
+
+test('publisher negotiates capabilities and serves correlated requests', { timeout: 5_000 }, async () => {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await once(server, 'listening')
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('missing websocket port')
+
+  let payloadCalls = 0
+  let resolveBuild!: (value: any) => void
+  const publisher = createRelayPublisher({
+    config: {
+      enabled: true,
+      relayUrl: `http://127.0.0.1:${address.port}`,
+      publishKey: 'publish-test',
+      deviceUuid: '11111111-1111-4111-8111-111111111111',
+      publishIntervalMs: 60_000,
+      reconnectMinMs: 5,
+      reconnectMaxMs: 10,
+    },
+    logger: { info() {}, warn() {}, error() {} },
+    getPayload: async (signal) => {
+      assert.equal(signal, undefined)
+      payloadCalls += 1
+      if (payloadCalls === 1) {
+        return {
+          schemaVersion: 2,
+          services: [],
+          updatedAt: '2026-06-07T10:00:00.000Z',
+          updatedAtLocal: '12:00',
+          updatedAtLocalIso: '2026-06-07T12:00:00',
+        }
+      }
+      return new Promise((resolve) => { resolveBuild = resolve })
+    },
+    getManifest: () => ({
+      otaEnabled: true,
+      latestVersion: 'v0.4.0',
+      downloadUrl:
+        'https://github.com/HarmEllis/eink-devdash/releases/download/v0.4.0/eink-devdash.bin',
+    }),
+  })
+
+  try {
+    const connected = new Promise<{ socket: WebSocket; messages: ReturnType<typeof jsonQueue> }>(
+      (resolve) => server.once('connection', (socket) => {
+        resolve({ socket, messages: jsonQueue(socket) })
+      }),
+    )
+    publisher.start()
+    const { socket, messages } = await connected
+
+    assert.deepEqual(await messages.next(), {
+      type: 'hello',
+      capabilities: ['dashboard', 'manifest'],
+    })
+    assert.equal((await messages.next()).type, 'dashboard')
+
+    socket.send(JSON.stringify({ type: 'request', id: 'dash-1', resource: 'dashboard' }))
+    assert.deepEqual(await messages.next(), { type: 'request-ack', id: 'dash-1' })
+    assert.equal(payloadCalls, 2)
+    resolveBuild({
+      schemaVersion: 2,
+      services: [],
+      updatedAt: '2026-06-07T10:01:00.000Z',
+      updatedAtLocal: '12:01',
+      updatedAtLocalIso: '2026-06-07T12:01:00',
+    })
+    assert.deepEqual(await messages.next(), {
+      type: 'response',
+      id: 'dash-1',
+      resource: 'dashboard',
+      payload: {
+        schemaVersion: 2,
+        services: [],
+        updatedAt: '2026-06-07T10:01:00.000Z',
+        updatedAtLocal: '12:01',
+        updatedAtLocalIso: '2026-06-07T12:01:00',
+      },
+    })
+
+    socket.send(JSON.stringify({ type: 'request', id: 'manifest-1', resource: 'manifest' }))
+    assert.deepEqual(await messages.next(), { type: 'request-ack', id: 'manifest-1' })
+    assert.deepEqual(await messages.next(), {
+      type: 'response',
+      id: 'manifest-1',
+      resource: 'manifest',
+      payload: {
+        otaEnabled: true,
+        latestVersion: 'v0.4.0',
+        downloadUrl:
+          'https://github.com/HarmEllis/eink-devdash/releases/download/v0.4.0/eink-devdash.bin',
+      },
+    })
+  } finally {
+    publisher.stop()
+    for (const client of server.clients) client.terminate()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
 })

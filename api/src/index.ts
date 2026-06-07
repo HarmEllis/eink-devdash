@@ -1,6 +1,8 @@
 import { Bonjour } from 'bonjour-service'
 import { createApp } from './app.js'
-import { buildDashboardPayload, createDashboardAdapters } from './routes/dashboard.js'
+import { createDashboardCoordinator } from './dashboard-coordinator.js'
+import { createDashboardAdapters, resolveTimeZone } from './routes/dashboard.js'
+import { getOtaManifest } from './routes/ota.js'
 import { createRelayPublisher, type RelayPublisher } from './relay/relay-client.js'
 
 const PORT = 3000
@@ -10,7 +12,12 @@ if (!DEVICE_TOKEN) throw new Error('DEVICE_TOKEN env var required')
 const MDNS_ENABLED = process.env.MDNS_ENABLED !== 'false'
 const MDNS_NAME = process.env.MDNS_NAME || 'devdash-api'
 
-const app = createApp({ deviceToken: DEVICE_TOKEN })
+const adapters = createDashboardAdapters()
+const coordinator = createDashboardCoordinator(
+  adapters,
+  resolveTimeZone(process.env.DASHBOARD_TIME_ZONE, process.env.TZ),
+)
+const app = createApp({ deviceToken: DEVICE_TOKEN, coordinator })
 
 let bonjour: Bonjour | null = null
 let mdnsService: ReturnType<Bonjour['publish']> | null = null
@@ -49,7 +56,8 @@ app.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
   startMdns()
   relayPublisher = createRelayPublisher({
     logger: app.log,
-    getPayload: () => buildDashboardPayload(new Date(), createDashboardAdapters()),
+    getPayload: () => coordinator.getDashboard(),
+    getManifest: () => getOtaManifest(),
   })
   relayPublisher.start()
 })

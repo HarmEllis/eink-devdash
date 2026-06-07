@@ -34,7 +34,7 @@ type CodexUsage = {
 }
 
 type UsageAdapterOptions<TUsage> = {
-  getUsage?: () => Promise<TUsage>
+  getUsage?: (signal?: AbortSignal) => Promise<TUsage>
 }
 
 export function serviceFromClaudeUsage(usage: ClaudeUsage): DashboardService {
@@ -98,8 +98,8 @@ export function createClaudeUsageAdapter(
 ): DashboardServiceAdapter {
   return {
     id: 'claude',
-    async getService() {
-      const usage = await (options.getUsage ?? getClaudeUsage)()
+    async getService(signal?: AbortSignal) {
+      const usage = await (options.getUsage ?? getClaudeUsage)(signal)
       return serviceFromClaudeUsage(usage)
     },
   }
@@ -110,8 +110,8 @@ export function createCodexUsageAdapter(
 ): DashboardServiceAdapter {
   return {
     id: 'codex',
-    async getService() {
-      const usage = await (options.getUsage ?? getCodexUsage)()
+    async getService(signal?: AbortSignal) {
+      const usage = await (options.getUsage ?? getCodexUsage)(signal)
       return serviceFromCodexUsage(usage)
     },
   }

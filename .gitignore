@@ -1,4 +1,5 @@
 .co-develop/
+.claude/
 .temp/
 node_modules/
 dist/
@@ -11,6 +12,9 @@ firmware/managed_components/
 firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/.idf_build_apps.json
+firmware/test/build/
+firmware/test/sdkconfig
+firmware/test/sdkconfig.old
 
 # devcontainer
 .devcontainer/.env

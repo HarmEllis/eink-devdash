@@ -4,6 +4,7 @@ const BASE = 'https://api.github.com'
 const CACHE_TTL_MS = 60_000
 const NOTIFICATION_PAGE_SIZE = 100
 const MAX_NOTIFICATION_PAGES = 50
+const GITHUB_FETCH_TIMEOUT_MS = 10_000
 
 export type GitHubStats = {
   issues: number
@@ -245,7 +246,8 @@ export function createGitHubServiceAdapter(
 
   return {
     id: 'github',
-    async getService() {
+    async getService(signal?: AbortSignal) {
+      signal?.throwIfAborted()
       const token = options.token ?? process.env.GITHUB_TOKEN
       if (!token?.trim()) return null
       const notificationsToken = options.notificationsToken ?? process.env.GITHUB_NOTIFICATIONS_TOKEN
@@ -254,7 +256,14 @@ export function createGitHubServiceAdapter(
       }
 
       try {
-        const data = await fetchFresh(token, notificationsToken, fetchImpl)
+        const boundedFetch: GitHubFetch = async (url, init = {}) => {
+          const timeout = AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS)
+          const combined = signal
+            ? AbortSignal.any([signal, timeout, ...(init.signal ? [init.signal] : [])])
+            : AbortSignal.any([timeout, ...(init.signal ? [init.signal] : [])])
+          return fetchImpl(url, { ...init, signal: combined })
+        }
+        const data = await fetchFresh(token, notificationsToken, boundedFetch)
         cache = { data, ts: Date.now() }
         return serviceFromGitHubStats(data)
       } catch (err) {

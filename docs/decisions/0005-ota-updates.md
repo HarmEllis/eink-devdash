@@ -128,9 +128,15 @@ main.c app_main:
   enter_deep_sleep(cfg.refresh_min);
 ```
 
-- **Manifest fetch.** Plain HTTP to the local API with the existing
-  Bearer token — same auth profile and HTTP stack as
-  `api_client.c::/dashboard`. No new TLS surface on the LAN hop.
+- **Manifest fetch.** HTTP or HTTPS to the configured API base URL with the
+  existing Bearer token — same auth profile, HTTP stack, and cert bundle as
+  `api_client.c::/dashboard`. A local LAN API uses plain HTTP (no new TLS
+  surface on the LAN hop); a self-hosted HTTPS API verifies the server
+  certificate via `crt_bundle_attach = esp_crt_bundle_attach`. A Cloudflare
+  relay profile requests `/d/<uuid>/ota/manifest`; the Worker asks the API for
+  a fresh manifest over the existing publisher WebSocket. The relay never
+  caches manifests and returns 404 when no fresh answer is available. Firmware
+  treats that 404 as a graceful skip.
 - **Binary download.** HTTPS to GitHub Releases via
   `esp_https_ota_config_t` with `crt_bundle_attach = esp_crt_bundle_attach`
   and `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y`. `esp_http_client` follows
@@ -138,10 +144,13 @@ main.c app_main:
   bundle covers both hosts. The firmware only accepts initial manifest
   download URLs whose authority is exactly `github.com` or
   `objects.githubusercontent.com`, case-insensitive and without userinfo.
-- **Version comparison.** Strip a leading `v`, then strict `strcmp`
-  equality. Any non-equal pair triggers an update. We deliberately do
-  not implement `>` comparison so a release can be retracted by
-  republishing an older tag.
+- **Trust and version comparison.** The API accepts only canonical
+  `vMAJOR.MINOR.PATCH` versions with uint32-bounded components and no leading
+  zeros. Firmware pins the exact GitHub repository/tag/asset URL and installs
+  only a strictly newer version. This blocks arbitrary download locations and
+  downgrades. It does not authenticate the bytes at that path: firmware verifies
+  no release signature, so binary authenticity rests on TLS and GitHub
+  repository access control.
 - **Throttle.** A single `RTC_NOINIT_ATTR uint32_t` counter (same
   pattern as `boot_button.c`'s force-prov magic). On any failure the
   counter is set to `DEVDASH_OTA_THROTTLE_CYCLES` (Kconfig, default 6),
@@ -233,5 +242,5 @@ can be added if reproducibility becomes more important than patch uptake.
 | R5 | `latest` Docker tag races ahead of the GH Release | OTA throttle absorbs a transient 404 |
 | R6 | `esp_https_ota` doesn't follow the 302 to `objects.githubusercontent.com` | Verified during first end-to-end integration; fallback is to resolve the redirect with `esp_http_client` and pass the absolute URL to `esp_https_ota` |
 | R7 | A bad release leaves devices on a broken image | Bootloader rollback handles crash-loops; webflasher reflash is the escape hatch for "boots but unhappy" |
-| R8 | Version compare wrong when minor/patch crosses 9→10 | We use strict equality (not `>`), so this class of bug does not apply |
+| R8 | Version compare wrong when minor/patch crosses 9→10 | Strict numeric semver parsing is host-tested, including `v0.9.0 < v0.10.0` and overflow rejection |
 | R9 | Multiple display states request full refreshes in one wake cycle | OTA check runs before dashboard render when an update is available, progress redraws are forbidden, and `DEVDASH_WARN_FULL_REFRESH_INTERVAL_S` logs accidental close refreshes without blocking UX |

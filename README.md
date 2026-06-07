@@ -221,8 +221,11 @@ service and no manual "accept device" step, so there is no open-proxy surface to
 abuse — the only tenant of your Worker is you.
 
 ```text
-API container --WSS  /connect?uuid=<DEVICE_UUID>--> your Cloudflare Worker
-ESP32         --HTTPS /d/<DEVICE_UUID>/dashboard--> same Worker
+ESP32 --HTTPS /d/<uuid>/{dashboard,ota/manifest}--> Cloudflare Worker
+                                                        |
+                                                        | request / response
+                                                        v
+API container <------ outbound WSS /connect?uuid=<uuid>--+
 ```
 
 #### One-command setup
@@ -275,12 +278,14 @@ always serves `/dashboard` locally; the relay publisher is a pure opt-in toggle
 (`RELAY_ENABLED`). The firmware uses the same fetch path for both — only the
 provisioned profile differs:
 
-| | Direct → Docker API | Via relay (proxy) |
+| | Direct → Docker API | Via relay |
 |---|---|---|
 | `api_url` | `http://<host>:3000` (LAN) | `https://<worker>/d/<uuid>` |
 | TLS | http: none; https: cert-bundle validated | always TLS, cert-bundle validated |
 | `device_token` | **required** (`Bearer DEVICE_TOKEN`) | **required** (relay enforces it) |
-| path appended | `…:3000/dashboard` | `…/d/<uuid>/dashboard` |
+| dashboard | live `…:3000/dashboard` | live, on-demand `…/d/<uuid>/dashboard` |
+| OTA manifest | live `…:3000/ota/manifest` | fresh-only `…/d/<uuid>/ota/manifest`; `404` when unavailable |
+| dashboard timeout | 10 seconds | 22 seconds |
 
 The **same** `DEVICE_TOKEN` authenticates both, so a single token provisions
 either route. The firmware supports up to five API profiles per Wi-Fi network,
@@ -297,10 +302,25 @@ curl -H "Authorization: Bearer <ADMIN_KEY>" \
   "https://<worker>.workers.dev/admin/stats?uuid=<DEVICE_UUID>"
 ```
 
-The relay returns the last published dashboard with a computed `stale` flag when
-the API has not published recently. Run only one API container with relay
-publishing enabled per `DEVICE_UUID`; two publishers for the same UUID overwrite
-the same cached payload and make stats ambiguous.
+Device reads request a fresh dashboard or manifest from the API over the
+publisher WebSocket. Concurrent reads coalesce and each resource is limited to
+one build attempt per minute per device. Dashboard failures return the
+last-known snapshot with `stale:true`; manifest failures return `404` and are
+never cached.
+
+The API must run under a restart supervisor. Its dashboard coordinator exits if
+provider work ignores cancellation beyond the build budget and grace period;
+the supplied Compose services already provide the required restart policy.
+
+Cloudflare must bypass cache for `/d/*`, especially OTA manifests. Origin
+responses also carry `Cache-Control: no-store` and a unique response nonce, but
+a Cache Rule that overrides origin headers can defeat `no-store`. Verify the
+deployment after configuring the rule:
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_KEY>" \
+  "https://<worker>.workers.dev/admin/cache-bypass-probe?uuid=<DEVICE_UUID>"
+```
 
 #### Manual / advanced deploy
 
@@ -338,11 +358,17 @@ What the transport guarantees today, so you know the trust boundary:
 - **Secrets live on disk.** The generated `.env` holds `DEVICE_TOKEN` and
   `RELAY_PUBLISH_KEY` in plaintext (standard for Docker env; `.env` is
   git-ignored). Keep the file readable only by you.
-- **Static bearer tokens, no replay protection.** A leaked token is replayable
-  until rotated. `RELAY_PUBLISH_KEY` can publish/overwrite the payload for any
-  UUID on your Worker; `DEVICE_TOKEN` can read the dashboard. Rotate by
-  re-running setup or `wrangler secret put`.
-- **No app-level rate limiting** beyond Cloudflare's platform defaults.
+- **Static bearer tokens.** A leaked token is replayable until rotated.
+  `DEVICE_TOKEN` can read both device routes. `RELAY_PUBLISH_KEY` is a global
+  publisher credential and can select any canonical official release newer than
+  the device, including an older superseded release that is still an upgrade.
+  The canonical URL and upgrade-only checks constrain the path and block
+  arbitrary hosts/downgrades, but firmware verifies no release signature and
+  therefore provides no independent binary-authenticity guarantee. Rotate the
+  key immediately with `wrangler secret put RELAY_PUBLISH_KEY` on suspected
+  compromise.
+- **Bounded request load.** The Worker coalesces concurrent reads and persists a
+  one-minute attempt cooldown per device and resource.
 - **The direct LAN route is the trusted-network design.** Do not expose port
   3000 to the internet or put it behind a generic public reverse proxy. A
   `http://<ip>` LAN profile sends the token in cleartext on the LAN — on hostile

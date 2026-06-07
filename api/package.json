@@ -6,7 +6,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --test src/*.test.ts src/**/*.test.ts"
   },
   "dependencies": {
     "@fastify/sensible": "^6.0.0",

@@ -1667,7 +1667,7 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     int codex_ses  = data->codex.short_pct;
     int codex_wk   = data->codex.long_pct;
 
-    bool offline    = data->offline || data->stale;
+    bool offline    = data->offline;
     bool show_github = data->github_present;
     bool deps_alert = show_github && data->github.dependabot > 0;
     bool auth_err   = show_github && data->github.auth_error;
@@ -1715,6 +1715,9 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
             const int x_next   = 290 - next_w;
             const int x_clock  = x_next - text_gap - clock_w;
             const int x_sync   = x_clock - icon_gap - sync_w;
+            if (data->stale) {
+                fill_rect(x_sync - 5, 7, 3, 3, 1, 0);
+            }
             icon_sync(x_sync, 4);
             draw_str(x_clock, 5, data->updated_at, 0);
             draw_str(x_next,  5, next, 0);
@@ -1914,12 +1917,12 @@ void display_render(const dashboard_data_t *data)
         s_last_dashboard_layout_valid = true;
     }
 
-    if (!data->offline && !data->stale) {
+    if (!data->offline) {
         s_last_content_valid = true;
         memcpy(&s_last_data, data, sizeof(s_last_data));
         s_last_data_valid = true;
     }
-    display_mark_frame((data->offline || data->stale)
+    display_mark_frame(data->offline
                        ? DISPLAY_FRAME_OFFLINE_API
                        : DISPLAY_FRAME_CONTENT);
 }

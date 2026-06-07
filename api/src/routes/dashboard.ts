@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import type { DashboardCoordinator } from '../dashboard-coordinator.js'
 import { createCodeHostAdapters } from '../services/code-host.adapters.js'
 import {
   DASHBOARD_SCHEMA_VERSION,
@@ -94,8 +95,9 @@ export async function buildDashboardPayload(
   now: Date,
   adapters: DashboardServiceAdapter[],
   timeZone: string = DASHBOARD_TIME_ZONE,
+  opts: { signal?: AbortSignal } = {},
 ): Promise<DashboardPayload> {
-  const services = (await Promise.all(adapters.map((adapter) => adapter.getService())))
+  const services = (await Promise.all(adapters.map((adapter) => adapter.getService(opts.signal))))
     .filter((service): service is DashboardService => service !== null)
 
   return {
@@ -111,13 +113,15 @@ export type DashboardRouteOptions = {
   // Inject adapters in tests; production falls back to the real set so the
   // route stays self-contained when registered with no options.
   adapters?: DashboardServiceAdapter[]
+  coordinator?: DashboardCoordinator
 }
 
 export async function dashboardRoute(app: FastifyInstance, opts: DashboardRouteOptions = {}) {
-  const adapters = opts.adapters ?? createDashboardAdapters()
+  const adapters = opts.coordinator ? null : opts.adapters ?? createDashboardAdapters()
   app.get('/dashboard', async (_req, reply) => {
-    const now = new Date()
-    const body = await buildDashboardPayload(now, adapters)
+    const body = opts.coordinator
+      ? await opts.coordinator.getDashboard()
+      : await buildDashboardPayload(new Date(), adapters!)
 
     return reply.send(body)
   })

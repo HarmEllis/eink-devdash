@@ -29,6 +29,28 @@ const LOCK_RETRY_OPTIONS = {
 }
 const REFRESH_SKEW_MS = 60_000
 
+type TokenOptions = {
+  forceRefresh?: boolean
+  signal?: AbortSignal
+  deadline?: number
+}
+
+function remainingMs(deadline?: number): number {
+  return deadline === undefined ? HTTP_TIMEOUT_MS : Math.max(0, deadline - Date.now())
+}
+
+function lockRetriesFor(remaining: number) {
+  let delay = LOCK_RETRY_OPTIONS.minTimeout
+  let total = 0
+  let retries = 0
+  while (retries < LOCK_RETRY_OPTIONS.retries && total + delay < remaining) {
+    total += delay
+    retries += 1
+    delay = Math.min(LOCK_RETRY_OPTIONS.maxTimeout, delay * LOCK_RETRY_OPTIONS.factor)
+  }
+  return { ...LOCK_RETRY_OPTIONS, retries }
+}
+
 type ClaudeAiOauth = {
   accessToken?: unknown
   refreshToken?: unknown
@@ -105,10 +127,12 @@ export class ClaudeCredentialStore {
     this.credentialsPath = credentialsPath
   }
 
-  async getAccessToken(options: { forceRefresh?: boolean } = {}): Promise<string | null> {
+  async getAccessToken(options: TokenOptions = {}): Promise<string | null> {
     try {
-      return await this.acquireToken(options.forceRefresh === true)
+      options.signal?.throwIfAborted()
+      return await this.acquireToken(options)
     } catch (err) {
+      if (options.signal?.aborted) throw options.signal.reason ?? err
       // Last-resort safety net: anything unexpected in the credential
       // store must not propagate into /dashboard. The route still gets
       // EMPTY/authError and the next request can heal.
@@ -120,7 +144,8 @@ export class ClaudeCredentialStore {
     }
   }
 
-  private async acquireToken(force: boolean): Promise<string | null> {
+  private async acquireToken(options: TokenOptions): Promise<string | null> {
+    const force = options.forceRefresh === true
     if (!force && this.cached && this.cached.expiresAt - Date.now() > REFRESH_SKEW_MS) {
       return this.cached.accessToken
     }
@@ -141,7 +166,7 @@ export class ClaudeCredentialStore {
       return disk.accessToken
     }
 
-    return this.refreshAndPersist(disk)
+    return this.refreshAndPersist(disk, options)
   }
 
   invalidateCache(): void {
@@ -186,12 +211,15 @@ export class ClaudeCredentialStore {
     return this.writable
   }
 
-  private async refreshAndPersist(initial: DiskCreds): Promise<string | null> {
+  private async refreshAndPersist(initial: DiskCreds, options: TokenOptions): Promise<string | null> {
+    options.signal?.throwIfAborted()
+    const remaining = remainingMs(options.deadline)
+    if (remaining <= 0) throw new Error('Claude credential deadline exceeded')
     let release: (() => Promise<void>) | null = null
     try {
       release = await lockfile.lock(this.credentialsPath, {
         stale: LOCK_STALE_MS,
-        retries: LOCK_RETRY_OPTIONS,
+        retries: lockRetriesFor(remaining),
         realpath: false,
       })
     } catch (err) {
@@ -204,6 +232,7 @@ export class ClaudeCredentialStore {
     }
 
     try {
+      options.signal?.throwIfAborted()
       // Another process may have refreshed while we were waiting on the lock.
       const fresh = await this.readDisk()
       const current = fresh ?? initial
@@ -212,7 +241,12 @@ export class ClaudeCredentialStore {
         return current.accessToken
       }
 
-      const refreshed = await this.callRefresh(current.refreshToken, current.scopes)
+      const refreshed = await this.callRefresh(
+        current.refreshToken,
+        current.scopes,
+        options.signal,
+        options.deadline,
+      )
       if (!refreshed) return null
 
       // Final TOCTOU narrowing: re-stat right before write. If someone else
@@ -261,9 +295,19 @@ export class ClaudeCredentialStore {
     }
   }
 
-  private async callRefresh(refreshToken: string, scopes: string[]): Promise<RefreshResult | null> {
+  private async callRefresh(
+    refreshToken: string,
+    scopes: string[],
+    signal?: AbortSignal,
+    deadline?: number,
+  ): Promise<RefreshResult | null> {
+    signal?.throwIfAborted()
+    const timeoutMs = Math.min(HTTP_TIMEOUT_MS, remainingMs(deadline))
+    if (timeoutMs <= 0) throw new Error('Claude refresh deadline exceeded')
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS)
+    const onAbort = () => controller.abort(signal?.reason)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
       const res = await fetch(OAUTH_TOKEN_ENDPOINT, {
         method: 'POST',
@@ -303,11 +347,13 @@ export class ClaudeCredentialStore {
 
       return { accessToken, expiresAt, refreshToken: newRefresh }
     } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err
       const reason = err instanceof Error ? err.name : 'unknown'
       console.warn(`[claude] OAuth refresh threw (${reason})`)
       return null
     } finally {
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
     }
   }
 

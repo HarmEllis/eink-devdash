@@ -1,4 +1,5 @@
 import type { DashboardPayload } from '../routes/dashboard.js'
+import type { OtaManifest } from '../routes/ota.js'
 import WebSocket from 'ws'
 
 export type RelayLogger = {
@@ -22,7 +23,8 @@ export type RelayPublisherOptions = {
   config?: RelayConfig
   env?: NodeJS.ProcessEnv
   logger: RelayLogger
-  getPayload: () => Promise<DashboardPayload>
+  getPayload: (signal?: AbortSignal) => Promise<DashboardPayload>
+  getManifest?: () => Promise<OtaManifest> | OtaManifest
 }
 
 export type RelayPublisher = {
@@ -83,16 +85,15 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
   const logger = options.logger
 
   let ws: WebSocket | null = null
-  let publishTimer: ReturnType<typeof setInterval> | null = null
+  const publishTimers = new Set<ReturnType<typeof setInterval>>()
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let reconnectDelayMs = config.reconnectMinMs
   let stopped = false
-  let publishing = false
 
   function clearTimers() {
-    if (publishTimer) clearInterval(publishTimer)
+    for (const timer of publishTimers) clearInterval(timer)
+    publishTimers.clear()
     if (reconnectTimer) clearTimeout(reconnectTimer)
-    publishTimer = null
     reconnectTimer = null
   }
 
@@ -107,20 +108,49 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
     logger.warn({ delayMs: delay }, 'relay websocket disconnected; reconnect scheduled')
   }
 
-  async function publishCurrentDashboard() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
-    if (publishing) {
-      logger.debug?.('relay dashboard publish skipped; previous publish still running')
-      return
-    }
-    publishing = true
+  async function publishCurrentDashboard(socket: WebSocket) {
+    if (socket.readyState !== WebSocket.OPEN) return
     try {
       const payload = await options.getPayload()
-      ws.send(JSON.stringify({ type: 'dashboard', payload }))
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'dashboard', payload }))
+      }
     } catch (err) {
       logger.warn({ err }, 'relay dashboard publish failed')
-    } finally {
-      publishing = false
+    }
+  }
+
+  async function handleRequest(
+    socket: WebSocket,
+    frame: { id: string; resource: 'dashboard' | 'manifest' },
+  ) {
+    if (socket.readyState !== WebSocket.OPEN) return
+    socket.send(JSON.stringify({ type: 'request-ack', id: frame.id }))
+    try {
+      const payload = frame.resource === 'dashboard'
+        ? await options.getPayload()
+        : options.getManifest
+          ? await options.getManifest()
+          : undefined
+      if (payload === undefined) throw new Error(`Unsupported relay resource: ${frame.resource}`)
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'response',
+          id: frame.id,
+          resource: frame.resource,
+          payload,
+        }))
+      }
+    } catch (err) {
+      logger.warn({ err, resource: frame.resource }, 'relay on-demand request failed')
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'response',
+          id: frame.id,
+          resource: frame.resource,
+          error: 'request_failed',
+        }))
+      }
     }
   }
 
@@ -134,26 +164,51 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
       return
     }
 
-    ws = new WebSocket(connectUrl, {
+    const socket = new WebSocket(connectUrl, {
       headers: { authorization: `Bearer ${config.publishKey}` },
     })
+    ws = socket
 
-    ws.on('open', () => {
+    socket.on('open', () => {
       reconnectDelayMs = config.reconnectMinMs
       logger.info({ relayUrl: config.relayUrl, deviceUuid: config.deviceUuid }, 'relay websocket connected')
-      void publishCurrentDashboard()
-      publishTimer = setInterval(() => void publishCurrentDashboard(), config.publishIntervalMs)
+      const capabilities = ['dashboard', ...(options.getManifest ? ['manifest'] : [])]
+      socket.send(JSON.stringify({ type: 'hello', capabilities }))
+      void publishCurrentDashboard(socket)
+      const timer = setInterval(() => void publishCurrentDashboard(socket), config.publishIntervalMs)
+      publishTimers.add(timer)
+      socket.once('close', () => {
+        clearInterval(timer)
+        publishTimers.delete(timer)
+      })
     })
-    ws.on('message', (data) => {
-      logger.debug?.({ message: data.toString() }, 'relay websocket message')
+    socket.on('message', (data) => {
+      const text = data.toString()
+      let frame: unknown
+      try {
+        frame = JSON.parse(text)
+      } catch {
+        logger.warn('relay websocket received invalid JSON')
+        return
+      }
+      if (
+        frame
+        && typeof frame === 'object'
+        && (frame as { type?: unknown }).type === 'request'
+        && typeof (frame as { id?: unknown }).id === 'string'
+        && ((frame as { resource?: unknown }).resource === 'dashboard'
+          || (frame as { resource?: unknown }).resource === 'manifest')
+      ) {
+        void handleRequest(socket, frame as { id: string; resource: 'dashboard' | 'manifest' })
+        return
+      }
+      logger.debug?.({ message: text }, 'relay websocket message')
     })
-    ws.on('close', () => {
-      if (publishTimer) clearInterval(publishTimer)
-      publishTimer = null
-      ws = null
+    socket.on('close', () => {
+      if (ws === socket) ws = null
       scheduleReconnect()
     })
-    ws.on('error', (err) => {
+    socket.on('error', (err) => {
       logger.warn({ err }, 'relay websocket error')
     })
   }

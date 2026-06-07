@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify'
-import { dashboardRoute } from './routes/dashboard.js'
+import { createDashboardCoordinator, type DashboardCoordinator } from './dashboard-coordinator.js'
+import { createDashboardAdapters, dashboardRoute } from './routes/dashboard.js'
 import { otaRoute } from './routes/ota.js'
 import type { DashboardServiceAdapter } from './services/dashboard-service.js'
 
@@ -9,6 +10,7 @@ export type CreateAppOptions = {
   deviceToken: string
   // Inject dashboard adapters in tests; production uses the real set.
   adapters?: DashboardServiceAdapter[]
+  coordinator?: DashboardCoordinator
   logger?: FastifyServerOptions['logger']
 }
 
@@ -20,6 +22,11 @@ export type CreateAppOptions = {
  */
 export function createApp(options: CreateAppOptions): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true })
+  const coordinator = options.coordinator
+    ?? createDashboardCoordinator(
+      options.adapters ?? createDashboardAdapters(),
+      process.env.DASHBOARD_TIME_ZONE,
+    )
 
   app.addHook('onRequest', async (req, reply) => {
     if (req.url === '/health') return
@@ -30,7 +37,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
   })
 
   app.get('/health', async () => ({ ok: true }))
-  app.register(dashboardRoute, { adapters: options.adapters })
+  app.register(dashboardRoute, { coordinator })
   app.register(otaRoute)
 
   return app
