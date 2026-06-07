@@ -38,21 +38,6 @@ async function advertise(ws: WebSocket, capabilities: string[]) {
   await expect(pong).resolves.toMatchObject({ data: '{"type":"pong"}' })
 }
 
-async function pushDashboard(ws: WebSocket, updatedAt: string) {
-  const ack = nextMessage(ws)
-  ws.send(JSON.stringify({
-    type: 'dashboard',
-    payload: {
-      schemaVersion: 2,
-      services: [],
-      updatedAt,
-      updatedAtLocal: '12:00',
-      updatedAtLocalIso: '2026-06-07T12:00:00',
-    },
-  }))
-  await expect(ack).resolves.toMatchObject({ data: '{"type":"ack"}' })
-}
-
 test('health returns ok without auth', async () => {
   const response = await worker.fetch('https://relay.test/health')
   expect(response.status).toBe(200)
@@ -66,24 +51,14 @@ test('rejects unauthenticated publisher websocket', async () => {
   expect(response.status).toBe(401)
 })
 
-test('publishes dashboard over websocket and serves it to the device', async () => {
+test('requests every dashboard response on demand over websocket', async () => {
   const ws = await connect()
-  ws.send(JSON.stringify({ type: 'hello', capabilities: ['dashboard'] }))
-  const message = nextMessage(ws)
-  ws.send(JSON.stringify({
-    type: 'dashboard',
-    payload: {
-      schemaVersion: 2,
-      services: [],
-      updatedAt: '2026-06-05T10:00:00.000Z',
-      updatedAtLocal: '12:00',
-      updatedAtLocalIso: '2026-06-05T12:00:00',
-    },
-  }))
-  await expect(message).resolves.toMatchObject({ data: '{"type":"ack"}' })
+  await advertise(ws, ['dashboard'])
+  let requests = 0
   ws.addEventListener('message', (event) => {
     const frame = JSON.parse(String(event.data)) as { type: string; id?: string; resource?: string }
     if (frame.type === 'request' && frame.id && frame.resource === 'dashboard') {
+      requests += 1
       ws.send(JSON.stringify({ type: 'request-ack', id: frame.id }))
       ws.send(JSON.stringify({
         type: 'response',
@@ -100,20 +75,16 @@ test('publishes dashboard over websocket and serves it to the device', async () 
     }
   })
 
-  const response = await worker.fetch(`https://relay.test/d/${UUID}`, {
-    headers: DEVICE_AUTH,
-  })
-  expect(response.status).toBe(200)
-  expect(response.headers.get('cache-control')).toBe('no-store')
-  expect(response.headers.get('x-relay-response-nonce')).toBeTruthy()
-  await expect(response.json()).resolves.toEqual({
-    schemaVersion: 2,
-    services: [],
-    updatedAt: '2026-06-05T10:00:00.000Z',
-    updatedAtLocal: '12:00',
-    updatedAtLocalIso: '2026-06-05T12:00:00',
-    stale: false,
-  })
+  for (let i = 1; i <= 2; i++) {
+    const response = await worker.fetch(`https://relay.test/d/${UUID}`, {
+      headers: DEVICE_AUTH,
+    })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('x-relay-response-nonce')).toBeTruthy()
+    await expect(response.json()).resolves.toMatchObject({ stale: false })
+    expect(requests).toBe(i)
+  }
   ws.close()
 })
 
@@ -147,8 +118,9 @@ test('serves OTA manifest on demand and never stores a fallback copy', async () 
   const unavailable = await worker.fetch(`https://relay.test/d/${UUID}/ota/manifest`, {
     headers: DEVICE_AUTH,
   })
-  expect(unavailable.status).toBe(404)
+  expect(unavailable.status).toBe(503)
   expect(unavailable.headers.get('cache-control')).toBe('no-store')
+  await expect(unavailable.json()).resolves.toEqual({ error: 'Manifest publisher unavailable' })
 })
 
 test('coalesces concurrent dashboard fetches into one publisher request', async () => {
@@ -185,7 +157,7 @@ test('coalesces concurrent dashboard fetches into one publisher request', async 
   ws.close()
 })
 
-test('legacy publisher is not sent requests and dashboard fallback is immediate', async () => {
+test('publisher without dashboard capability returns unavailable immediately', async () => {
   const legacy = await connect(UUID_LEGACY)
   let receivedRequest = false
   legacy.addEventListener('message', (event) => {
@@ -196,10 +168,10 @@ test('legacy publisher is not sent requests and dashboard fallback is immediate'
   const response = await worker.fetch(`https://relay.test/d/${UUID_LEGACY}`, {
     headers: DEVICE_AUTH,
   })
-  expect(response.status).toBe(404)
+  expect(response.status).toBe(503)
   expect(Date.now() - started).toBeLessThan(100)
   expect(receivedRequest).toBe(false)
-  expect(await response.json()).toMatchObject({ error: 'Dashboard not published yet' })
+  expect(await response.json()).toEqual({ error: 'Dashboard publisher unavailable' })
   legacy.close()
 })
 
@@ -244,10 +216,9 @@ test('unacknowledged newest publisher fails over with the same request id', asyn
   newer.close()
 })
 
-test('publisher error response falls back immediately to the stored dashboard', async () => {
+test('publisher error response returns unavailable without a stored fallback', async () => {
   const ws = await connect(UUID_ERROR)
   await advertise(ws, ['dashboard'])
-  await pushDashboard(ws, '2026-06-07T10:40:00.000Z')
   ws.addEventListener('message', (event) => {
     const frame = JSON.parse(String(event.data)) as { type: string; id?: string }
     if (frame.type !== 'request' || !frame.id) return
@@ -263,9 +234,9 @@ test('publisher error response falls back immediately to the stored dashboard', 
   const response = await worker.fetch(`https://relay.test/d/${UUID_ERROR}`, {
     headers: DEVICE_AUTH,
   })
-  expect(response.status).toBe(200)
+  expect(response.status).toBe(503)
   expect(Date.now() - started).toBeLessThan(100)
-  expect(await response.json()).toMatchObject({ stale: true })
+  expect(await response.json()).toEqual({ error: 'Dashboard publisher unavailable' })
   ws.close()
 })
 
@@ -287,18 +258,7 @@ test('device fetch ignores client-supplied internal relay token headers', async 
 test('unknown uuid cannot be authorized by spoofed internal token header', async () => {
   const unknownUuid = '22222222-2222-4222-8222-222222222222'
   const ws = await connect(unknownUuid)
-  const message = nextMessage(ws)
-  ws.send(JSON.stringify({
-    type: 'dashboard',
-    payload: {
-      schemaVersion: 2,
-      services: [],
-      updatedAt: '2026-06-05T10:00:00.000Z',
-      updatedAtLocal: '12:00',
-      updatedAtLocalIso: '2026-06-05T12:00:00',
-    },
-  }))
-  await expect(message).resolves.toMatchObject({ data: '{"type":"ack"}' })
+  await advertise(ws, ['dashboard'])
 
   const response = await worker.fetch(`https://relay.test/d/${unknownUuid}`, {
     headers: {
@@ -310,16 +270,16 @@ test('unknown uuid cannot be authorized by spoofed internal token header', async
   ws.close()
 })
 
-test('admin stats reports publish and fetch counters', async () => {
+test('admin stats reports on-demand response and fetch counters', async () => {
   const response = await worker.fetch(`https://relay.test/admin/stats?uuid=${UUID}`, {
     headers: ADMIN_AUTH,
   })
   expect(response.status).toBe(200)
   const body = await response.json() as {
-    devices: Array<{ publishCount: number; fetchCount: number }>
+    devices: Array<{ responseCount: number; fetchCount: number }>
   }
   expect(body.devices).toHaveLength(1)
-  expect(body.devices[0].publishCount).toBeGreaterThanOrEqual(1)
+  expect(body.devices[0].responseCount).toBeGreaterThanOrEqual(1)
   expect(body.devices[0].fetchCount).toBeGreaterThanOrEqual(1)
 })
 

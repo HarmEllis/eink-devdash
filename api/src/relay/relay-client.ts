@@ -14,7 +14,6 @@ export type RelayConfig = {
   relayUrl: string
   publishKey: string
   deviceUuid: string
-  publishIntervalMs: number
   reconnectMinMs: number
   reconnectMaxMs: number
 }
@@ -32,7 +31,6 @@ export type RelayPublisher = {
   stop(): void
 }
 
-const DEFAULT_PUBLISH_INTERVAL_MS = 300_000
 const DEFAULT_RECONNECT_MIN_MS = 1_000
 const DEFAULT_RECONNECT_MAX_MS = 60_000
 
@@ -52,7 +50,6 @@ export function relayConfigFromEnv(env: NodeJS.ProcessEnv = process.env): RelayC
     relayUrl: optionalEnv(env.RELAY_URL),
     publishKey: optionalEnv(env.RELAY_PUBLISH_KEY),
     deviceUuid: optionalEnv(env.DEVICE_UUID),
-    publishIntervalMs: intEnv(env.RELAY_PUBLISH_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS),
     reconnectMinMs: intEnv(env.RELAY_RECONNECT_MIN_MS, DEFAULT_RECONNECT_MIN_MS),
     reconnectMaxMs: intEnv(env.RELAY_RECONNECT_MAX_MS, DEFAULT_RECONNECT_MAX_MS),
   }
@@ -85,14 +82,11 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
   const logger = options.logger
 
   let ws: WebSocket | null = null
-  const publishTimers = new Set<ReturnType<typeof setInterval>>()
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let reconnectDelayMs = config.reconnectMinMs
   let stopped = false
 
   function clearTimers() {
-    for (const timer of publishTimers) clearInterval(timer)
-    publishTimers.clear()
     if (reconnectTimer) clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
@@ -106,18 +100,6 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
       connect()
     }, delay)
     logger.warn({ delayMs: delay }, 'relay websocket disconnected; reconnect scheduled')
-  }
-
-  async function publishCurrentDashboard(socket: WebSocket) {
-    if (socket.readyState !== WebSocket.OPEN) return
-    try {
-      const payload = await options.getPayload()
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: 'dashboard', payload }))
-      }
-    } catch (err) {
-      logger.warn({ err }, 'relay dashboard publish failed')
-    }
   }
 
   async function handleRequest(
@@ -174,13 +156,6 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
       logger.info({ relayUrl: config.relayUrl, deviceUuid: config.deviceUuid }, 'relay websocket connected')
       const capabilities = ['dashboard', ...(options.getManifest ? ['manifest'] : [])]
       socket.send(JSON.stringify({ type: 'hello', capabilities }))
-      void publishCurrentDashboard(socket)
-      const timer = setInterval(() => void publishCurrentDashboard(socket), config.publishIntervalMs)
-      publishTimers.add(timer)
-      socket.once('close', () => {
-        clearInterval(timer)
-        publishTimers.delete(timer)
-      })
     })
     socket.on('message', (data) => {
       const text = data.toString()

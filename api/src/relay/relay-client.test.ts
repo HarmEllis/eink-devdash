@@ -17,7 +17,6 @@ test('relayConfigFromEnv defaults to disabled', () => {
     relayUrl: '',
     publishKey: '',
     deviceUuid: '',
-    publishIntervalMs: 300_000,
     reconnectMinMs: 1_000,
     reconnectMaxMs: 60_000,
   })
@@ -53,7 +52,6 @@ test('enabled-but-incomplete relay config opens no socket and does not throw', (
     relayUrl: '',
     publishKey: '',
     deviceUuid: '',
-    publishIntervalMs: 300_000,
     reconnectMinMs: 1_000,
     reconnectMaxMs: 60_000,
   }
@@ -99,14 +97,12 @@ test('publisher negotiates capabilities and serves correlated requests', { timeo
   if (!address || typeof address === 'string') throw new Error('missing websocket port')
 
   let payloadCalls = 0
-  let resolveBuild!: (value: any) => void
   const publisher = createRelayPublisher({
     config: {
       enabled: true,
       relayUrl: `http://127.0.0.1:${address.port}`,
       publishKey: 'publish-test',
       deviceUuid: '11111111-1111-4111-8111-111111111111',
-      publishIntervalMs: 60_000,
       reconnectMinMs: 5,
       reconnectMaxMs: 10,
     },
@@ -114,16 +110,13 @@ test('publisher negotiates capabilities and serves correlated requests', { timeo
     getPayload: async (signal) => {
       assert.equal(signal, undefined)
       payloadCalls += 1
-      if (payloadCalls === 1) {
-        return {
-          schemaVersion: 2,
-          services: [],
-          updatedAt: '2026-06-07T10:00:00.000Z',
-          updatedAtLocal: '12:00',
-          updatedAtLocalIso: '2026-06-07T12:00:00',
-        }
+      return {
+        schemaVersion: 2,
+        services: [],
+        updatedAt: `2026-06-07T10:0${payloadCalls}:00.000Z`,
+        updatedAtLocal: `12:0${payloadCalls}`,
+        updatedAtLocalIso: `2026-06-07T12:0${payloadCalls}:00`,
       }
-      return new Promise((resolve) => { resolveBuild = resolve })
     },
     getManifest: () => ({
       otaEnabled: true,
@@ -146,18 +139,10 @@ test('publisher negotiates capabilities and serves correlated requests', { timeo
       type: 'hello',
       capabilities: ['dashboard', 'manifest'],
     })
-    assert.equal((await messages.next()).type, 'dashboard')
+    assert.equal(payloadCalls, 0)
 
     socket.send(JSON.stringify({ type: 'request', id: 'dash-1', resource: 'dashboard' }))
     assert.deepEqual(await messages.next(), { type: 'request-ack', id: 'dash-1' })
-    assert.equal(payloadCalls, 2)
-    resolveBuild({
-      schemaVersion: 2,
-      services: [],
-      updatedAt: '2026-06-07T10:01:00.000Z',
-      updatedAtLocal: '12:01',
-      updatedAtLocalIso: '2026-06-07T12:01:00',
-    })
     assert.deepEqual(await messages.next(), {
       type: 'response',
       id: 'dash-1',
@@ -170,6 +155,23 @@ test('publisher negotiates capabilities and serves correlated requests', { timeo
         updatedAtLocalIso: '2026-06-07T12:01:00',
       },
     })
+    assert.equal(payloadCalls, 1)
+
+    socket.send(JSON.stringify({ type: 'request', id: 'dash-2', resource: 'dashboard' }))
+    assert.deepEqual(await messages.next(), { type: 'request-ack', id: 'dash-2' })
+    assert.deepEqual(await messages.next(), {
+      type: 'response',
+      id: 'dash-2',
+      resource: 'dashboard',
+      payload: {
+        schemaVersion: 2,
+        services: [],
+        updatedAt: '2026-06-07T10:02:00.000Z',
+        updatedAtLocal: '12:02',
+        updatedAtLocalIso: '2026-06-07T12:02:00',
+      },
+    })
+    assert.equal(payloadCalls, 2)
 
     socket.send(JSON.stringify({ type: 'request', id: 'manifest-1', resource: 'manifest' }))
     assert.deepEqual(await messages.next(), { type: 'request-ack', id: 'manifest-1' })

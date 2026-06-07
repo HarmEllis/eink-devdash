@@ -170,6 +170,10 @@ without exposing port 3000. It deploys a Cloudflare Worker in your own account
 and transports dashboard requests between the device and the API over HTTPS
 and an outbound WebSocket.
 
+Dashboard and OTA manifest payloads are fetched strictly on demand: the Worker
+does not store dashboard snapshots, and each device request is forwarded to an
+active API publisher over the WebSocket.
+
 ```text
 ESP32 -- HTTPS --> Cloudflare Worker <-- outbound WSS -- API container
 ```
@@ -399,7 +403,7 @@ Docker host
     Codex usage
     Optional outbound relay publisher
           |
-          | HTTP on LAN or HTTPS through the relay
+          | HTTP on LAN or on-demand HTTPS through the relay
           v
 ESP32-S3 firmware
   WiFi provisioning
