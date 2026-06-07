@@ -31,7 +31,7 @@ config DEVDASH_REFRESH_MIN
     help
         Default minutes between dashboard refreshes (deep-sleep duration).
         The provisioning portal may allow a 1-minute interval for the BW panel
-        when exactly two partial refreshes separate regular full refreshes.
+        when at least two partial refreshes separate regular full refreshes.
 
 config DEVDASH_DEFAULT_PANEL_VARIANT
     int "Default panel variant SKU (-1=unset, 0=BWR, 1=BW)"

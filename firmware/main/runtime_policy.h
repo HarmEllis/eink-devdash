@@ -6,7 +6,7 @@
 #define DASH_REFRESH_MIN_STANDARD                3
 #define DASH_REFRESH_MIN_BW_TWO_PARTIALS         1
 #define DASH_REFRESH_MAX                         60
-#define DASH_REFRESH_BW_SHORT_INTERVAL_PARTIALS 2
+#define DASH_REFRESH_BW_SHORT_INTERVAL_MIN_PARTIALS 2
 
 bool clock_should_apply(const char *iso, bool stale);
 bool api_url_is_relay(const char *url);

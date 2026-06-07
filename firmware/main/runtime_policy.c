@@ -26,10 +26,10 @@ uint8_t dashboard_refresh_input_minimum(bool is_bw)
 
 uint8_t dashboard_refresh_minimum(bool is_bw, uint8_t max_partials)
 {
-    /* At one-minute sleeps, two partial cycles put the next regular full
-       refresh three minutes after the previous full refresh. */
+    /* At one-minute sleeps, at least two partial cycles put the next regular
+       full refresh no sooner than three minutes after the previous full. */
     if (is_bw &&
-        max_partials == DASH_REFRESH_BW_SHORT_INTERVAL_PARTIALS) {
+        max_partials >= DASH_REFRESH_BW_SHORT_INTERVAL_MIN_PARTIALS) {
         return DASH_REFRESH_MIN_BW_TWO_PARTIALS;
     }
     return DASH_REFRESH_MIN_STANDARD;

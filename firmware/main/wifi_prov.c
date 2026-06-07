@@ -515,7 +515,7 @@ static const char V4_JS[] =
 "var bw=document.querySelector('input[name=\"pv\"][value=\"1\"]:checked');"
 "if(!r||!n)return;var min=bw?1:3;"
 "r.min=min;n.min=min;if(Number(n.value)<min){n.value=min;r.value=min;}"
-"if(h)h.textContent=min===1?'1-60 min. The 1-minute option requires the BW panel and exactly 2 partial refreshes.':'3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.';"
+"if(h)h.textContent=min===1?'1-60 min. The 1-minute option requires the BW panel and at least 2 partial refreshes.':'3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.';"
 "}"
 "window.addEventListener('DOMContentLoaded',function(){"
 "var r=document.getElementById('iv-range');var n=document.getElementById('iv-num');"
@@ -795,7 +795,7 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
     int iv = cfg->refresh_min ? cfg->refresh_min : 5;
     /* Expose the 1-minute input server-side for every saved BW panel so the
        option does not depend on captive-portal JavaScript. Save validation
-       still requires max_partials == 2 before accepting a 1-minute interval. */
+       still requires max_partials >= 2 before accepting a 1-minute interval. */
     int iv_min = dashboard_refresh_input_minimum(
         cfg->panel_variant == EINK_PANEL_WEACT_29_BW);
     snprintf(page_buf, sizeof(page_buf),
@@ -814,7 +814,7 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
         "</div>",
         iv_min, iv, iv_min, iv,
         iv_min == DASH_REFRESH_MIN_BW_TWO_PARTIALS
-            ? "1-60 min. The 1-minute option requires the BW panel and exactly "
+            ? "1-60 min. The 1-minute option requires the BW panel and at least "
               "2 partial refreshes."
             : "3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.");
     CHUNK(req, page_buf);
@@ -1157,7 +1157,7 @@ static esp_err_t handler_save(httpd_req_t *req)
          !dashboard_refresh_config_is_valid(
              (uint8_t)form->iv, submitted_bw, submitted_partials))) {
         reason = "Refresh interval must be 3-60 minutes, or 1-60 minutes "
-                 "with the BW panel and exactly 2 partial refreshes.";
+                 "with the BW panel and at least 2 partial refreshes.";
     }
     for (int n = 0; n < MAX_WIFI_NETWORKS && !reason; n++) {
         const net_form_t *nf = &form->nets[n];
