@@ -9,6 +9,16 @@ export default defineConfig({
         bindings: {
           RELAY_PUBLISH_KEY: 'publish-test',
           ADMIN_KEY: 'admin-test',
+          DEVICE_IDENTITY_66666666666646668666666666666666: JSON.stringify({
+            deviceToken: 'device-one',
+            publishKey: 'publish-one',
+            adminKey: 'admin-one',
+          }),
+          DEVICE_IDENTITY_77777777777747778777777777777777: JSON.stringify({
+            deviceToken: 'device-two',
+            publishKey: 'publish-two',
+            adminKey: 'admin-two',
+          }),
           DEVICE_TOKENS: JSON.stringify({
             '11111111-1111-4111-8111-111111111111': 'device-test',
             '22222222-2222-4222-8222-222222222222': 'device-test',

@@ -38,6 +38,7 @@ export function generateIdentity() {
   }
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const ENV_KEY_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/
 
 function envKeyOf(line) {
@@ -77,14 +78,66 @@ export function mergeEnv(existing, updates) {
   return merged.join('\n') + '\n'
 }
 
+export function parseEnvValues(existing) {
+  const values = {}
+  for (const line of existing.split('\n')) {
+    const key = envKeyOf(line)
+    if (!key) continue
+    const separator = line.indexOf('=')
+    values[key] = line.slice(separator + 1).trim()
+  }
+  return values
+}
+
+/**
+ * Reuse a complete local identity so setup is idempotent on one machine.
+ * Legacy setup files have no RELAY_ADMIN_KEY; add only that missing secret.
+ */
+export function identityFromEnv(existing) {
+  const env = parseEnvValues(existing)
+  if (!env.DEVICE_UUID && !env.RELAY_PUBLISH_KEY) return null
+  const present = ['DEVICE_UUID', 'DEVICE_TOKEN', 'RELAY_PUBLISH_KEY']
+    .filter((key) => Boolean(env[key]))
+  if (present.length !== 3) {
+    throw new Error(
+      'Existing .env has an incomplete relay identity; expected DEVICE_UUID, '
+      + 'DEVICE_TOKEN, and RELAY_PUBLISH_KEY together.',
+    )
+  }
+  if (!UUID_RE.test(env.DEVICE_UUID)) {
+    throw new Error('Existing DEVICE_UUID is not a valid UUID.')
+  }
+  return {
+    deviceUuid: env.DEVICE_UUID,
+    deviceToken: env.DEVICE_TOKEN,
+    relayPublishKey: env.RELAY_PUBLISH_KEY,
+    adminKey: env.RELAY_ADMIN_KEY || generateToken(),
+  }
+}
+
+export function workerSecretName(deviceUuid) {
+  if (!UUID_RE.test(deviceUuid)) throw new Error('Cannot build secret names for an invalid UUID.')
+  const suffix = deviceUuid.replace(/-/g, '').toUpperCase()
+  return `DEVICE_IDENTITY_${suffix}`
+}
+
+export function workerIdentitySecret(identity) {
+  return JSON.stringify({
+    deviceToken: identity.deviceToken,
+    publishKey: identity.relayPublishKey,
+    adminKey: identity.adminKey,
+  })
+}
+
 /** The values setup writes/merges into the root .env for Docker + the API. */
-export function relayEnvUpdates({ deviceUuid, deviceToken, relayPublishKey, workerUrl }) {
+export function relayEnvUpdates({ deviceUuid, deviceToken, relayPublishKey, adminKey, workerUrl }) {
   return {
     DEVICE_TOKEN: deviceToken,
     DEVICE_UUID: deviceUuid,
     RELAY_ENABLED: 'true',
     RELAY_URL: workerUrl,
     RELAY_PUBLISH_KEY: relayPublishKey,
+    RELAY_ADMIN_KEY: adminKey,
   }
 }
 

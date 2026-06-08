@@ -5,10 +5,10 @@
 //   docker run ... eink-devdash-relay-setup       # no clone (see README)
 //
 // End to end: authenticate wrangler (CLOUDFLARE_API_TOKEN, else interactive
-// login), generate a fresh device identity, deploy the Worker, push its
-// secrets, merge the .env that Docker + the API consume, and print provisioning
-// details (URL + token + QR) for the firmware captive portal. No secret is ever
-// typed or copied by hand.
+// login), create or reuse this machine's device identity, deploy the Worker,
+// add per-device secrets, merge the .env that Docker + the API consume, and
+// print provisioning details (URL + token + QR) for the firmware captive
+// portal. No secret is ever typed or copied by hand.
 //
 // Env overrides (used by the container image):
 //   RELAY_SETUP_ENV_OUT       where to write the merged .env (default repo .env)
@@ -30,9 +30,12 @@ import {
   formatEnvBlock,
   formatProvisioningSummary,
   generateIdentity,
+  identityFromEnv,
   mergeEnv,
   parseWorkerUrl,
   relayEnvUpdates,
+  workerIdentitySecret,
+  workerSecretName,
 } from './setup-helpers.mjs'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
@@ -178,17 +181,14 @@ async function pushSecret(name, value) {
 }
 
 async function pushSecrets(identity) {
-  step('Pushing Worker secrets (via stdin, never argv)...')
-  await pushSecret('DEVICE_UUID', identity.deviceUuid)
-  await pushSecret('DEVICE_TOKEN', identity.deviceToken)
-  await pushSecret('RELAY_PUBLISH_KEY', identity.relayPublishKey)
-  await pushSecret('ADMIN_KEY', identity.adminKey)
+  step('Adding this device identity to the Worker (via stdin, never argv)...')
+  await pushSecret(workerSecretName(identity.deviceUuid), workerIdentitySecret(identity))
 }
 
 async function preflightEnvOut() {
-  // Run BEFORE deploy/secret rotation and return the existing file contents, so
+  // Run BEFORE deploy/secret registration and return the existing file contents, so
   // an unwritable dir, a symlinked/unreadable target, or a non-regular file
-  // fails up front rather than after we have already rotated Worker secrets.
+  // fails up front rather than after we have already updated the Worker.
   const dir = dirname(envOutPath)
   try {
     await access(dir, fsConstants.W_OK)
@@ -224,10 +224,6 @@ async function preflightEnvOut() {
 async function writeEnvFile(identity, workerUrl, existing) {
   step(`Updating ${envOutPath} (merge, not overwrite)...`)
 
-  if (/^\s*RELAY_PUBLISH_KEY\s*=/m.test(existing)) {
-    console.log('  Replacing existing relay credentials in this file (rotation).')
-  }
-
   const merged = mergeEnv(existing, relayEnvUpdates({ ...identity, workerUrl }))
   // Exclusive, randomized temp sibling ('wx' = O_CREAT|O_EXCL, never follows a
   // symlink and never collides), then atomic rename over the target. rename()
@@ -247,7 +243,7 @@ async function writeEnvFile(identity, workerUrl, existing) {
   } catch {
     /* ignore */
   }
-  console.log('  Wrote DEVICE_TOKEN, DEVICE_UUID, RELAY_* (mode 0600 best-effort).')
+  console.log('  Wrote this machine\'s DEVICE_TOKEN, DEVICE_UUID, and RELAY_* values.')
 }
 
 async function printProvisioning(identity, workerUrl) {
@@ -298,8 +294,18 @@ async function main() {
   await ensureAuthenticated()
   const existingEnv = await preflightEnvOut()
 
-  step('Generating a fresh device identity...')
-  const identity = generateIdentity()
+  let identity
+  try {
+    identity = identityFromEnv(existingEnv)
+  } catch (error) {
+    fail(error.message)
+  }
+  if (identity) {
+    step('Reusing this machine\'s existing device identity...')
+  } else {
+    step('Generating a fresh device identity...')
+    identity = generateIdentity()
+  }
   console.log(`  DEVICE_UUID: ${identity.deviceUuid}`)
 
   const workerUrl = await deployWorker()
