@@ -194,6 +194,13 @@ The setup command authenticates Wrangler when needed, generates the relay
 credentials, deploys the Worker, updates the root `.env`, and prints QR codes
 for the device's API URL and token fields.
 
+To show the QR codes again without rotating credentials:
+
+```bash
+cd relay
+npm run qr
+```
+
 Re-running `npm run setup` rotates the generated identity and credentials.
 Reconfigure the device afterwards.
 
@@ -252,6 +259,16 @@ The image produces `relay-out/.env`. To run the publisher without cloning the
 repo, fetch the maintained Compose file and point it at that env file (this
 keeps the host UID/GID mapping, Codex/Claude mounts, and restart policy in sync
 rather than hand-rolling a long `docker run`):
+
+To show the provisioning QR codes again without rotating credentials:
+
+```bash
+docker run --rm -it \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/relay-out":/out \
+  --entrypoint npm \
+  ghcr.io/harmellis/eink-devdash-relay-setup:latest run qr
+```
 
 ```bash
 curl -O https://raw.githubusercontent.com/HarmEllis/eink-devdash/main/docker-compose.yml

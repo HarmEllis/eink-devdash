@@ -7,6 +7,7 @@
     "build": "tsc --noEmit",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
+    "qr": "node scripts/show-qr.mjs",
     "setup": "node scripts/setup.mjs",
     "test": "vitest run"
   },
