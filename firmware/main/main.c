@@ -136,6 +136,38 @@ void app_main(void)
     for (;;) vTaskDelay(portMAX_DELAY);
 #endif
 
+    /* If a device-side factory reset was armed from the setup-screen BOOT
+     * gesture, erase the whole NVS partition before init (nvs_flash_erase
+     * requires NVS to be uninitialised). Lets the user fully reset without the
+     * web flasher. The flag lives in RTC memory and survives the esp_restart()
+     * the gesture issues. */
+    /* Gate the DESTRUCTIVE erase on a software-reset reason as well as the RTC
+     * latch. The latch lives in RTC_NOINIT memory (it must survive the gesture's
+     * esp_restart() — RTC_DATA_ATTR would be reinitialised on a non-deep-sleep
+     * boot, per esp_attr.h, and silently lose it). RTC_NOINIT is undefined after
+     * a cold/power-on boot, so a stale word equal to the magic could otherwise
+     * trigger a no-gesture wipe. The gesture always reaches here via esp_restart
+     * (ESP_RST_SW); a power-on (ESP_RST_POWERON) or deep-sleep wake therefore
+     * never honours the latch, making the worst case fail safe. */
+    if (boot_button_factory_reset_pending() &&
+        esp_reset_reason() == ESP_RST_SW) {
+        ESP_LOGW(TAG, "Factory reset armed: erasing entire NVS partition");
+        esp_err_t ferr = nvs_flash_erase();
+        if (ferr == ESP_OK) {
+            boot_button_factory_reset_clear();
+            ESP_LOGW(TAG, "Factory reset: NVS erased");
+        } else {
+            /* Fail closed: never fall through into normal operation with the
+             * secrets the user asked to wipe. Keep the RTC flag set and restart
+             * after a short delay so the erase is retried, rather than booting
+             * the old config. */
+            ESP_LOGE(TAG, "Factory reset erase failed: %s — restarting to retry",
+                     esp_err_to_name(ferr));
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
+        }
+    }
+
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -156,6 +188,7 @@ void app_main(void)
        These live in RTC memory, not the NVS blob, to avoid per-wake blob
        rewrites; apply them onto the freshly loaded cfg before first use. */
     storage_apply_last_success(&cfg);
+
     /* Always seed the refresh interval — even on a defaulted cfg — so the
        display layer's 24h forced-full cap uses the right cadence. */
     display_set_refresh_min(cfg.refresh_min);
@@ -236,7 +269,6 @@ void app_main(void)
             return;
         }
         storage_load_v2(&cfg);
-        if (cfg.network_count == 0) storage_seed_current_sta(&cfg);
         esp_restart();
     }
 

@@ -98,7 +98,6 @@ void storage_init(void);
    how callers distinguish a real persisted config from defaults. */
 bool storage_load_v2(dash_config_v2_t *cfg);
 esp_err_t storage_save_v2(dash_config_v2_t *cfg);
-esp_err_t storage_seed_current_sta(dash_config_v2_t *cfg);
 void storage_erase(void);
 
 void storage_cfg_v2_defaults(dash_config_v2_t *cfg);
@@ -137,3 +136,17 @@ void storage_mask_token(const char *token, char *out, size_t out_sz);
  * Writes `out` with a NUL-terminated 12-char string (out_sz must be >= 13).
  * Returns ESP_OK on success. */
 esp_err_t storage_get_or_init_ap_password(char *out, size_t out_sz);
+
+/* WiFi regulatory country code, persisted under its own NVS key (not the cfg_v2
+ * blob). storage_get_wifi_country writes a NUL-terminated 2-char code into `out`
+ * (out_sz must be >= 3), returning the portal-chosen value or, when none is
+ * saved/valid, the build-stamped CONFIG_DEVDASH_WIFI_COUNTRY (falling back to
+ * "01" if that is malformed). storage_set_wifi_country validates (via
+ * wifi_country_is_supported in runtime_policy) and persists a new choice. */
+esp_err_t storage_get_wifi_country(char *out, size_t out_sz);
+esp_err_t storage_set_wifi_country(const char *cc);
+/* True iff an explicit wifi_cc key exists in NVS (vs. falling back to the build
+ * default). Lets the portal roll a failed save back to the *exact* prior state —
+ * restoring the old value, or erasing the key when none existed. */
+bool storage_wifi_country_is_saved(void);
+esp_err_t storage_clear_wifi_country(void);

@@ -2359,6 +2359,35 @@ void display_show_setup_failed(void)
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
+void display_show_factory_confirm(bool wifi_cleared)
+{
+    ensure_init();
+    memset(bw_buf,  0xFF, sizeof(bw_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
+
+    draw_s1_chrome();
+    draw_s1_info_column(NULL, NULL, NULL, false);
+
+    /* Drawn black-only so it renders identically on BW and BWR panels. The top
+     * line reflects whether the Wi-Fi-only wipe actually committed, so the
+     * screen never claims a reset that failed; the full-erase offer below is
+     * always shown because it is the recovery when the lighter wipe could not
+     * persist (e.g. a full NVS). */
+    int qr_centre_x = 12 + 89 / 2;
+    const char *L1 = wifi_cleared ? "WIFI RESET"  : "RESET FAIL";
+    const char *L2 = "BOOT again";
+    const char *L3 = "= WIPE ALL";
+    const char *L4 = wifi_cleared ? "wait = keep" : "wait=retry";
+    draw_str(qr_centre_x - str_w(L1) / 2, 34, L1, 0);
+    draw_str(qr_centre_x - str_w(L2) / 2, 50, L2, 0);
+    draw_str(qr_centre_x - str_w(L3) / 2, 60, L3, 0);
+    draw_str(qr_centre_x - str_w(L4) / 2, 76, L4, 0);
+
+    display_full_refresh(/*need_red=*/false, "factory confirm");
+    eink_sleep(&s_eink);
+    display_mark_frame(DISPLAY_FRAME_QR);
+}
+
 void display_show_offline(display_offline_reason_t reason,
                           const dash_config_v2_t *cfg,
                           int network_idx,

@@ -10,6 +10,12 @@
 
 bool clock_should_apply(const char *iso, bool stale);
 bool api_url_is_relay(const char *url);
+
+/* True iff `cc` is a WiFi regulatory country code esp_wifi_set_country_code()
+ * accepts on ESP-IDF 5.3 (the "01" world-safe sentinel or a supported two-letter
+ * ISO code). Single source of truth for stored values, the build-time default,
+ * and portal save validation. Pure (no NVS/IDF deps) so it is host-testable. */
+bool wifi_country_is_supported(const char *cc);
 uint8_t dashboard_refresh_input_minimum(bool is_bw);
 uint8_t dashboard_refresh_minimum(bool is_bw, uint8_t max_partials);
 bool dashboard_refresh_config_is_valid(uint8_t refresh_min, bool is_bw,

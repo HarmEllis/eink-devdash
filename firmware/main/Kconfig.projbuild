@@ -78,6 +78,22 @@ config DEVDASH_BOOT_LONGPRESS_MS
         is re-verified after an EXT0 wake so a short press is treated as
         a refresh-only event and does not enter the portal.
 
+config DEVDASH_WIFI_COUNTRY
+    string "Default WiFi country code (regulatory domain)"
+    default "01"
+    help
+        Built-in default two-letter ISO country code, applied via
+        esp_wifi_set_country_code() until the user picks a region in the
+        captive provisioning portal (the portal choice is persisted under its
+        own NVS key and overrides this default — see storage_get_wifi_country).
+
+        "01" is the world-safe default: it ships legally to any country. It
+        makes channels 12-13 passive-only, so a router on auto-channel that
+        lands on 13 is only reachable after the user selects their actual
+        region in the portal (which they do during provisioning anyway).
+        Setting a concrete region here (e.g. "NL") instead enables channels
+        1-13 for active scan out of the box for single-region builds.
+
 config DEVDASH_WIFI_CONNECT_TIMEOUT_S
     int "WiFi connect timeout (seconds)"
     range 5 120

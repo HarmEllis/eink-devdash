@@ -179,6 +179,31 @@ static void test_offline_partial_policy_enforces_both_caps(void)
     TEST_ASSERT_FALSE(offline_partial_refresh_allowed(0, 2, 24, 24));
 }
 
+static void test_wifi_country_accepts_world_and_supported(void)
+{
+    TEST_ASSERT_TRUE(wifi_country_is_supported("01"));  /* world-safe */
+    TEST_ASSERT_TRUE(wifi_country_is_supported("NL"));  /* in dropdown */
+    TEST_ASSERT_TRUE(wifi_country_is_supported("US"));
+    /* Supported by ESP-IDF but intentionally absent from the portal shortlist —
+     * must still validate so an off-dropdown choice round-trips on save. */
+    TEST_ASSERT_TRUE(wifi_country_is_supported("BG"));
+    TEST_ASSERT_TRUE(wifi_country_is_supported("KR"));
+    TEST_ASSERT_TRUE(wifi_country_is_supported("MX"));
+    TEST_ASSERT_TRUE(wifi_country_is_supported("TW"));
+}
+
+static void test_wifi_country_rejects_unsupported_and_malformed(void)
+{
+    TEST_ASSERT_FALSE(wifi_country_is_supported("ZZ"));  /* uppercase but unsupported */
+    TEST_ASSERT_FALSE(wifi_country_is_supported("XX"));
+    TEST_ASSERT_FALSE(wifi_country_is_supported("nl"));  /* lowercase */
+    TEST_ASSERT_FALSE(wifi_country_is_supported("N"));   /* too short */
+    TEST_ASSERT_FALSE(wifi_country_is_supported("NLD")); /* too long */
+    TEST_ASSERT_FALSE(wifi_country_is_supported("0"));
+    TEST_ASSERT_FALSE(wifi_country_is_supported(""));
+    TEST_ASSERT_FALSE(wifi_country_is_supported(NULL));
+}
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -205,6 +230,8 @@ void app_main(void)
     RUN_TEST(test_refresh_minimum_allows_one_minute_for_bw_at_least_two_partials);
     RUN_TEST(test_refresh_config_rejects_unsafe_one_minute_combinations);
     RUN_TEST(test_offline_partial_policy_enforces_both_caps);
+    RUN_TEST(test_wifi_country_accepts_world_and_supported);
+    RUN_TEST(test_wifi_country_rejects_unsupported_and_malformed);
 
     int failures = UNITY_END();
     /* Surface the result as a process exit code so the devcontainer command

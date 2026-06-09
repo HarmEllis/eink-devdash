@@ -2,7 +2,6 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
-#include "esp_wifi.h"
 #include "esp_rom_crc.h"
 #include "esp_attr.h"
 #include "sdkconfig.h"
@@ -123,14 +122,6 @@ static uint8_t clamp_max_partials(uint8_t value)
     if (value < DASH_MAX_PARTIALS_MIN) return DASH_MAX_PARTIALS_MIN;
     if (value > DASH_MAX_PARTIALS_MAX) return DASH_MAX_PARTIALS_MAX;
     return value;
-}
-
-static void copy_str(char *dst, size_t dst_sz, const char *src)
-{
-    if (!dst || dst_sz == 0) return;
-    if (!src) src = "";
-    strncpy(dst, src, dst_sz - 1);
-    dst[dst_sz - 1] = '\0';
 }
 
 /* Piecewise CRC over the first `size` bytes of the struct with the crc32 field
@@ -583,34 +574,6 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
     return err;
 }
 
-esp_err_t storage_seed_current_sta(dash_config_v2_t *cfg)
-{
-    if (!cfg) return ESP_ERR_INVALID_ARG;
-
-    wifi_config_t sta = {0};
-    if (esp_wifi_get_config(WIFI_IF_STA, &sta) != ESP_OK ||
-        sta.sta.ssid[0] == '\0') {
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    /* Two cases that both need seeding: never provisioned (no networks at all)
-     * or a placeholder networks[0] with an empty SSID — the latter can happen
-     * after a stale cfg_v2 blob from earlier firmware versions. Otherwise
-     * preserve whatever the user configured. */
-    if (cfg->network_count > 0 && cfg->networks[0].ssid[0] != '\0') {
-        return ESP_OK;
-    }
-
-    if (cfg->network_count == 0) cfg->network_count = 1;
-    dash_wifi_profile_t *net = &cfg->networks[0];
-    if (net->id == 0) net->id = storage_next_profile_id(cfg);
-    net->enabled = true;
-    copy_str(net->ssid, sizeof(net->ssid), (const char *)sta.sta.ssid);
-    copy_str(net->password, sizeof(net->password),
-             (const char *)sta.sta.password);
-    return storage_save_v2(cfg);
-}
-
 void storage_erase(void)
 {
     nvs_handle_t h;
@@ -650,6 +613,73 @@ esp_err_t storage_get_or_init_ap_password(char *out, size_t out_sz)
     out[AP_PWD_LEN] = '\0';
 
     err = nvs_set_str(h, KEY, out);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+/* WiFi regulatory country code. Stored as its own small NVS string key — NOT
+ * part of the cfg_v2 blob — so the portal can change the regulatory domain
+ * without churning or risking the ~7 KB config blob, mirroring how the SoftAP
+ * password is persisted. Accepts the two world-safe "01" sentinel or a
+ * two-uppercase-letter ISO code; anything else is rejected so a crafted POST
+ * cannot push an invalid string into esp_wifi_set_country_code(). */
+#define WIFI_CC_KEY "wifi_cc"
+
+esp_err_t storage_get_wifi_country(char *out, size_t out_sz)
+{
+    if (!out || out_sz < 3) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        size_t len = out_sz;
+        esp_err_t err = nvs_get_str(h, WIFI_CC_KEY, out, &len);
+        nvs_close(h);
+        if (err == ESP_OK && wifi_country_is_supported(out)) return ESP_OK;
+    }
+
+    /* No valid saved choice yet — fall back to the build-stamped default, and to
+     * the world-safe "01" if even that is malformed (guards a bad
+     * CONFIG_DEVDASH_WIFI_COUNTRY from reaching esp_wifi_set_country_code). */
+    const char *def = CONFIG_DEVDASH_WIFI_COUNTRY;
+    if (!wifi_country_is_supported(def)) def = "01";
+    strncpy(out, def, out_sz - 1);
+    out[out_sz - 1] = '\0';
+    return ESP_OK;
+}
+
+bool storage_wifi_country_is_saved(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
+    char buf[4] = {0};
+    size_t len = sizeof(buf);
+    esp_err_t err = nvs_get_str(h, WIFI_CC_KEY, buf, &len);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+esp_err_t storage_clear_wifi_country(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_erase_key(h, WIFI_CC_KEY);
+    /* Absent key is success: the post-condition (no saved override) holds. */
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+esp_err_t storage_set_wifi_country(const char *cc)
+{
+    if (!wifi_country_is_supported(cc)) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, WIFI_CC_KEY, cc);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;

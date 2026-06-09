@@ -48,6 +48,14 @@ CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 # NVS encryption off (home LAN use case)
 CONFIG_NVS_ENCRYPTION=n
 
+# SoftAP compatibility (ESP32-S3): Espressif's Wi-Fi FAQ recommends disabling
+# AMPDU RX/TX to fix ESP32-S2/S3 SoftAP incompatibility with phones/PCs (a
+# started-but-undetectable SoftAP). Paired with dropping the AP to 11b/g (no
+# 11n/AMPDU) in run_provisioning_window. Negligible throughput impact for this
+# low-bandwidth dashboard. See ESP-IDF issue #13508.
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+
 # HTTPD / provisioning portal
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
