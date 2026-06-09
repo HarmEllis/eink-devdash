@@ -5,17 +5,28 @@ import {
   buildLoginArgs,
   buildRelayDashboardUrl,
   chooseAuthMode,
+  chooseIdentityMode,
+  classifyEnvIdentity,
   formatEnvBlock,
   formatProvisioningSummary,
   generateIdentity,
   generateToken,
   identityFromEnv,
   mergeEnv,
+  normalizeIdentityOverride,
+  normalizeReuseAnswer,
+  normalizeYesNo,
   parseWorkerUrl,
   relayEnvUpdates,
   workerIdentitySecret,
   workerSecretName,
 } from '../scripts/setup-helpers.mjs'
+
+const COMPLETE_ENV = [
+  'DEVICE_UUID=11111111-1111-4111-8111-111111111111',
+  'DEVICE_TOKEN=tok',
+  'RELAY_PUBLISH_KEY=pub',
+].join('\n')
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -111,6 +122,80 @@ test('identityFromEnv rejects a partial existing identity', () => {
 
 test('identityFromEnv ignores a direct-only API token', () => {
   expect(identityFromEnv('DEVICE_TOKEN=direct-api-token\n')).toBeNull()
+})
+
+test('classifyEnvIdentity distinguishes none/complete/partial', () => {
+  expect(classifyEnvIdentity('')).toBe('none')
+  // A lone direct-API token is not a relay identity.
+  expect(classifyEnvIdentity('DEVICE_TOKEN=direct-api-token\n')).toBe('none')
+  expect(classifyEnvIdentity(COMPLETE_ENV)).toBe('complete')
+  // Missing RELAY_PUBLISH_KEY.
+  expect(classifyEnvIdentity('DEVICE_UUID=11111111-1111-4111-8111-111111111111\n')).toBe('partial')
+  // All three present but the UUID is invalid.
+  expect(classifyEnvIdentity([
+    'DEVICE_UUID=not-a-uuid',
+    'DEVICE_TOKEN=tok',
+    'RELAY_PUBLISH_KEY=pub',
+  ].join('\n'))).toBe('partial')
+})
+
+test('normalizeIdentityOverride accepts reuse/new, rejects junk', () => {
+  expect(normalizeIdentityOverride(undefined)).toBeUndefined()
+  expect(normalizeIdentityOverride('')).toBeUndefined()
+  expect(normalizeIdentityOverride(' Reuse ')).toBe('reuse')
+  expect(normalizeIdentityOverride('NEW')).toBe('new')
+  expect(() => normalizeIdentityOverride('rotate')).toThrow(/must be "reuse" or "new"/)
+})
+
+test('chooseIdentityMode: no identity always generates', () => {
+  expect(chooseIdentityMode({ existing: 'none', override: undefined, isInteractive: true })).toBe('new')
+  expect(chooseIdentityMode({ existing: 'none', override: undefined, isInteractive: false })).toBe('new')
+})
+
+test('chooseIdentityMode: complete identity prompts on a TTY, reuses without one', () => {
+  expect(chooseIdentityMode({ existing: 'complete', override: undefined, isInteractive: true }))
+    .toBe('prompt-reuse')
+  expect(chooseIdentityMode({ existing: 'complete', override: undefined, isInteractive: false }))
+    .toBe('reuse')
+})
+
+test('chooseIdentityMode: explicit override wins over prompting', () => {
+  expect(chooseIdentityMode({ existing: 'complete', override: 'new', isInteractive: true })).toBe('new')
+  expect(chooseIdentityMode({ existing: 'complete', override: 'reuse', isInteractive: false })).toBe('reuse')
+})
+
+test('chooseIdentityMode: reuse override without a complete identity throws', () => {
+  expect(() => chooseIdentityMode({ existing: 'none', override: 'reuse', isInteractive: false }))
+    .toThrow(/no complete identity/)
+  expect(() => chooseIdentityMode({ existing: 'partial', override: 'reuse', isInteractive: true }))
+    .toThrow(/no complete identity/)
+})
+
+test('chooseIdentityMode: partial offers new on a TTY, fails loudly otherwise', () => {
+  expect(chooseIdentityMode({ existing: 'partial', override: undefined, isInteractive: true }))
+    .toBe('prompt-new')
+  expect(() => chooseIdentityMode({ existing: 'partial', override: undefined, isInteractive: false }))
+    .toThrow(/incomplete relay identity/)
+})
+
+test('normalizeReuseAnswer: bare Enter reuses, recognizes r/n synonyms', () => {
+  for (const yes of ['', 'r', 'reuse', 'R', ' yes ', 'y']) {
+    expect(normalizeReuseAnswer(yes)).toBe('reuse')
+  }
+  for (const no of ['n', 'new', 'NO']) {
+    expect(normalizeReuseAnswer(no)).toBe('new')
+  }
+  expect(normalizeReuseAnswer('maybe')).toBeNull()
+})
+
+test('normalizeYesNo: bare Enter is yes, recognizes y/n synonyms', () => {
+  for (const yes of ['', 'y', 'Yes', ' y ']) {
+    expect(normalizeYesNo(yes)).toBe('yes')
+  }
+  for (const no of ['n', 'NO', ' no ']) {
+    expect(normalizeYesNo(no)).toBe('no')
+  }
+  expect(normalizeYesNo('huh')).toBeNull()
 })
 
 test('worker identity uses one isolated secret binding per uuid', () => {
