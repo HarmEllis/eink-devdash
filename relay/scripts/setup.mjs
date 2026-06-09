@@ -15,23 +15,33 @@
 //   RELAY_SETUP_CALLBACK_HOST  wrangler login --callback-host (e.g. 0.0.0.0)
 //   RELAY_SETUP_CALLBACK_PORT  wrangler login --callback-port
 //   RELAY_SETUP_PRINT_ENV=1    also echo the full .env block to stdout
+//   RELAY_SETUP_IDENTITY      'reuse' or 'new' — non-interactive control when the
+//                             target .env already holds a device identity. With a
+//                             TTY and no value set, setup asks; 'reuse' requires a
+//                             complete identity (else it errors).
 
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { constants as fsConstants, existsSync } from 'node:fs'
 import { access, chmod, lstat, open, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 
 import {
   buildLoginArgs,
   buildRelayDashboardUrl,
   chooseAuthMode,
+  chooseIdentityMode,
+  classifyEnvIdentity,
   formatEnvBlock,
   formatProvisioningSummary,
   generateIdentity,
   identityFromEnv,
   mergeEnv,
+  normalizeIdentityOverride,
+  normalizeReuseAnswer,
+  normalizeYesNo,
   parseWorkerUrl,
   relayEnvUpdates,
   workerIdentitySecret,
@@ -289,19 +299,84 @@ async function printProvisioning(identity, workerUrl) {
   console.log(divider + '\n')
 }
 
+/** Read one line from the TTY, always closing the readline interface. */
+async function ask(question) {
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    return await rl.question(question)
+  } finally {
+    rl.close()
+  }
+}
+
+/** Ask whether to reuse the existing identity or mint a new one. Returns true to reuse. */
+async function promptReuseOrNew(existingIdentity) {
+  console.log(
+    `\nExisting device identity found (DEVICE_UUID ${existingIdentity.deviceUuid}).\n`
+    + '  [R] reuse  — keep this machine\'s current device working\n'
+    + '  [n] new    — generate a fresh identity for THIS .env only.\n'
+    + '               Other devices/identities on your account are untouched;\n'
+    + '               this machine\'s old device must then be re-provisioned.',
+  )
+  for (;;) {
+    const answer = normalizeReuseAnswer(await ask('Choose [R/n]: '))
+    if (answer) return answer === 'reuse'
+    console.log('  Please answer "r" (reuse) or "n" (new).')
+  }
+}
+
+/** A partial identity can't be reused; offer to generate a fresh one. Returns true to proceed. */
+async function promptGenerateNew() {
+  console.log(
+    '\nThe target .env has an INCOMPLETE relay identity '
+    + '(need DEVICE_UUID, DEVICE_TOKEN, and RELAY_PUBLISH_KEY together).',
+  )
+  for (;;) {
+    const answer = normalizeYesNo(await ask('Generate a fresh identity for this .env? [Y/n]: '))
+    if (answer) return answer === 'yes'
+    console.log('  Please answer "y" (yes) or "n" (no).')
+  }
+}
+
 async function main() {
   await ensureWranglerInstalled()
   await ensureAuthenticated()
   const existingEnv = await preflightEnvOut()
 
-  let identity
+  let override
   try {
-    identity = identityFromEnv(existingEnv)
+    override = normalizeIdentityOverride(process.env.RELAY_SETUP_IDENTITY)
   } catch (error) {
     fail(error.message)
   }
-  if (identity) {
+
+  const status = classifyEnvIdentity(existingEnv)
+  const existingIdentity = status === 'complete' ? identityFromEnv(existingEnv) : null
+
+  let mode
+  try {
+    mode = chooseIdentityMode({
+      existing: status,
+      override,
+      isInteractive: process.stdin.isTTY === true,
+    })
+  } catch (error) {
+    fail(error.message)
+  }
+
+  if (mode === 'prompt-reuse') {
+    mode = (await promptReuseOrNew(existingIdentity)) ? 'reuse' : 'new'
+  } else if (mode === 'prompt-new') {
+    if (!(await promptGenerateNew())) {
+      fail('Setup needs a complete or fresh identity. Fix the .env and re-run.')
+    }
+    mode = 'new'
+  }
+
+  let identity
+  if (mode === 'reuse') {
     step('Reusing this machine\'s existing device identity...')
+    identity = existingIdentity
   } else {
     step('Generating a fresh device identity...')
     identity = generateIdentity()

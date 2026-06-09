@@ -203,9 +203,28 @@ cd relay
 npm run qr
 ```
 
-Re-running `npm run setup` on the same machine reuses the identity in its local
-`.env`. Each identity is stored in one UUID-scoped Worker secret, so adding or
-updating one machine does not modify another machine's credentials.
+Re-running `npm run setup` when the local `.env` already holds a complete
+identity **asks** whether to reuse it or generate a new one:
+
+- **Reuse** (the default on a bare Enter) keeps this machine's current device
+  working — setup just re-pushes the same UUID-scoped secret and redeploys.
+- **New** mints a fresh identity for *this* `.env` only. Each identity lives in
+  its own UUID-scoped Worker secret, so this never touches another machine's or
+  device's credentials. But because the API publisher dials out under exactly
+  one UUID, choosing "new" means this machine's **old device must be
+  re-provisioned** with the new URL/token. The old Worker secret stays
+  authorized but unused; delete it with
+  `wrangler secret delete DEVICE_IDENTITY_<oldUUID>` once you no longer need it.
+
+To add **another** device without touching any existing one, run setup against a
+fresh, empty output (a new machine, or a clean `relay-out/` for the Docker
+image): with no identity present it generates a new one and adds it alongside
+the others.
+
+Set `RELAY_SETUP_IDENTITY=reuse` or `RELAY_SETUP_IDENTITY=new` to answer
+non-interactively (CI, or `docker run` without `-it`). `reuse` errors out if the
+target `.env` has no complete identity, so a missing or mis-mounted file fails
+loudly instead of silently creating an extra identity.
 
 ### Setup without cloning (Docker)
 
@@ -252,8 +271,11 @@ Notes:
 - If your Cloudflare account has no `workers.dev` subdomain yet, register one
   once in the dashboard (Workers & Pages → set up a subdomain) before running;
   `wrangler deploy` cannot create it from this non-interactive container.
-- `-it` is needed for the browser-login flow and to render the provisioning QR
-  codes; it does not answer the deploy step (its stdin is ignored).
+- `-it` is needed for the browser-login flow, to render the provisioning QR
+  codes, and for the reuse/new identity prompt when the mounted `.env` already
+  holds an identity. Without `-it`, set `RELAY_SETUP_IDENTITY=reuse|new` to
+  choose non-interactively (the default is reuse for a complete `.env`). It does
+  not answer the deploy step (its stdin is ignored).
 - Add `-e RELAY_SETUP_PRINT_ENV=1` to also echo the `.env` block (which includes
   `RELAY_PUBLISH_KEY`) to the terminal — handy when you cannot mount a volume.
   The device token and admin key are printed in the summary regardless.

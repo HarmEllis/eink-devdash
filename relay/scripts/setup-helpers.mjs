@@ -115,6 +115,77 @@ export function identityFromEnv(existing) {
   }
 }
 
+/**
+ * Classify the relay identity an existing .env holds, without throwing — the
+ * decision-layer counterpart to identityFromEnv (which extracts/validates):
+ * - 'none'      no relay identity (a lone DEVICE_TOKEN is a direct-API token).
+ * - 'complete'  DEVICE_UUID (valid) + DEVICE_TOKEN + RELAY_PUBLISH_KEY all present.
+ * - 'partial'   some-but-not-all of those, or an invalid DEVICE_UUID.
+ */
+export function classifyEnvIdentity(existing) {
+  const env = parseEnvValues(existing)
+  if (!env.DEVICE_UUID && !env.RELAY_PUBLISH_KEY) return 'none'
+  const complete = Boolean(env.DEVICE_UUID) && Boolean(env.DEVICE_TOKEN)
+    && Boolean(env.RELAY_PUBLISH_KEY) && UUID_RE.test(env.DEVICE_UUID)
+  return complete ? 'complete' : 'partial'
+}
+
+/** Normalize RELAY_SETUP_IDENTITY: 'reuse' | 'new' | undefined; else throws. */
+export function normalizeIdentityOverride(raw) {
+  if (raw == null || raw === '') return undefined
+  const value = String(raw).trim().toLowerCase()
+  if (value === 'reuse' || value === 'new') return value
+  throw new Error(`RELAY_SETUP_IDENTITY must be "reuse" or "new" (got "${raw}").`)
+}
+
+/**
+ * Decide how setup handles this machine's device identity. `existing` is the
+ * classifyEnvIdentity result ('none' | 'complete' | 'partial'). Returns one of
+ * 'reuse' | 'new' | 'prompt-reuse' | 'prompt-new'. Throws when an explicit
+ * RELAY_SETUP_IDENTITY=reuse has nothing complete to reuse, or when a partial
+ * identity is hit non-interactively with no override — both must fail loudly
+ * rather than silently minting a new identity.
+ */
+export function chooseIdentityMode({ existing, override, isInteractive }) {
+  if (override === 'reuse') {
+    if (existing !== 'complete') {
+      throw new Error(
+        `RELAY_SETUP_IDENTITY=reuse, but the target .env has no complete identity `
+        + `(found: ${existing}). Check the file / mount, or unset the override.`,
+      )
+    }
+    return 'reuse'
+  }
+  if (override === 'new') return 'new'
+  if (existing === 'none') return 'new'
+  if (existing === 'complete') return isInteractive ? 'prompt-reuse' : 'reuse'
+  // existing === 'partial'
+  if (isInteractive) return 'prompt-new'
+  throw new Error(
+    'The target .env has an incomplete relay identity (need DEVICE_UUID, '
+    + 'DEVICE_TOKEN, and RELAY_PUBLISH_KEY together). Fix or clear it, set '
+    + 'RELAY_SETUP_IDENTITY=new to replace it, or run with a TTY to choose.',
+  )
+}
+
+/** Parse a reuse/new prompt answer. Bare Enter => 'reuse'. null => re-ask. */
+export function normalizeReuseAnswer(raw) {
+  const value = String(raw ?? '').trim().toLowerCase()
+  if (value === '' || value === 'r' || value === 'reuse' || value === 'y' || value === 'yes') {
+    return 'reuse'
+  }
+  if (value === 'n' || value === 'new' || value === 'no') return 'new'
+  return null
+}
+
+/** Parse a yes/no prompt answer. Bare Enter => 'yes'. null => re-ask. */
+export function normalizeYesNo(raw) {
+  const value = String(raw ?? '').trim().toLowerCase()
+  if (value === '' || value === 'y' || value === 'yes') return 'yes'
+  if (value === 'n' || value === 'no') return 'no'
+  return null
+}
+
 export function workerSecretName(deviceUuid) {
   if (!UUID_RE.test(deviceUuid)) throw new Error('Cannot build secret names for an invalid UUID.')
   const suffix = deviceUuid.replace(/-/g, '').toUpperCase()
