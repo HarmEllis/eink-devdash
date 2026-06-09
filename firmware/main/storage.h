@@ -6,9 +6,9 @@
 #include "eink_weact29.h"
 
 #define NVS_NAMESPACE "devdash"
-#define NVS_SCHEMA_VERSION 5
+#define NVS_SCHEMA_VERSION 6
 
-#define DASH_CFG_V2_VERSION 5
+#define DASH_CFG_V2_VERSION 6
 #define MAX_WIFI_NETWORKS 5
 #define MAX_APIS_PER_NETWORK 5
 #define DASH_SSID_MAX 32
@@ -29,12 +29,31 @@
 #define DASH_QUIET_MIN_OF_DAY_MAX 1439
 
 /*
- * Hard ceiling for the cfg_v2 NVS blob. NVS supports blobs up to ~97% of
- * the partition size, but a single fat blob means losing every network on
- * any corrupted save. If the static assertions below ever fire, switch to
- * per-network blobs instead of widening this cap.
+ * Since config version 6 the persisted layout is PER-NETWORK blobs: a small
+ * `cfg_meta` header blob plus one `cfg_net{i}` blob per saved WiFi network
+ * (profile + its APIs + its quiet hours). storage_save_v2 writes changed
+ * blobs ONE AT A TIME, so a re-save only needs old+new coexistence for a
+ * single network blob (~2.9 KB) instead of the whole config (~14.4 KB with
+ * the old single ~7.2 KB blob) — the fix for ESP_ERR_NVS_NOT_ENOUGH_SPACE
+ * on portal re-saves. A corrupted blob now costs one network, not all of
+ * them.
+ *
+ * Free-space requirement (enforced by static asserts in storage.c and a
+ * runtime guard in storage_save_v2): with the maximum config saved
+ * (MAX_WIFI_NETWORKS networks × MAX_APIS_PER_NETWORK APIs), the 24 KB `nvs`
+ * partition (5 usable data pages of 126 × 32 B entries after the reserved
+ * GC page) must retain at least DASH_NVS_MIN_FREE_ENTRIES free entries so
+ * one network blob can ALWAYS be rewritten. If the asserts fire after a
+ * caps/size change, shrink the caps — do NOT move or grow the partition
+ * (partition-table changes do not propagate via OTA).
  */
-#define DASH_CFG_V2_MAX_BYTES 8192
+#define DASH_NET_BLOB_MAX_BYTES 1536
+/* Worst-case NVS entry cost of an N-byte blob: ceil(N/32) data entries plus
+   blob-index + chunk overhead. */
+#define DASH_NVS_BLOB_ENTRIES(n) (((n) + 31u) / 32u + 3u)
+/* Headroom that must stay free with the max config saved: one network-blob
+   rewrite (new copy while the old still exists) + meta rewrite + slack. */
+#define DASH_NVS_MIN_FREE_ENTRIES 64
 
 typedef struct {
     uint32_t id;
@@ -49,9 +68,23 @@ typedef struct {
     char ssid[DASH_SSID_MAX + 1];
     char password[DASH_WIFI_PASSWORD_MAX + 1];
     uint8_t api_count;
+    /* Per-network "quiet hours": a local-time window during which the device
+       skips the WiFi + API + e-paper refresh cycle and just deep-sleeps.
+       quiet_enabled is 0/1; quiet_start_min/quiet_end_min are minutes since
+       local midnight in [0, DASH_QUIET_MIN_OF_DAY_MAX]. A window with
+       start == end is treated as disabled. (v5 stored these as trailing
+       parallel arrays for single-blob layout compatibility; since v6 each
+       network blob owns its quiet fields.) */
+    uint8_t quiet_enabled;
+    uint16_t quiet_start_min;
+    uint16_t quiet_end_min;
     dash_api_profile_t apis[MAX_APIS_PER_NETWORK];
 } dash_wifi_profile_t;
 
+/* In-RAM aggregate config. Since v6 this is NOT the persisted layout — see
+   the per-network blob note above; the exact v2-v5 single-blob layouts live
+   as private legacy structs in storage.c for migration only. write_counter
+   mirrors the meta blob; per-blob CRCs are storage-internal. */
 typedef struct {
     uint16_t version;
     uint8_t max_wifi_networks;
@@ -61,41 +94,23 @@ typedef struct {
     int8_t last_success_network_idx;
     int8_t last_success_api_idx;
     uint32_t write_counter;
-    uint32_t crc32;
-    dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
-    /* Added in v3. Storage layout is layered so v2 blobs migrate cleanly:
-       fields above are byte-identical with the v2 struct; panel_variant
-       only exists in v3. Stored as raw uint8_t and cast to
-       eink_panel_variant_t on read after cfg_v2_is_valid() accepts the
-       value. */
+    /* Stored as raw uint8_t and cast to eink_panel_variant_t on read after
+       validation accepts the value. */
     uint8_t panel_variant;
-    /* Added in v4. Like panel_variant, this is appended as a trailing field; it
-       lands in the existing 4-byte-alignment tail padding after panel_variant,
-       so sizeof(v4) == sizeof(v3) and the load path must distinguish v3 from v4
-       by the `version` field, NOT by blob length. BW per-region partial cap,
-       clamped to [DASH_MAX_PARTIALS_MIN, DASH_MAX_PARTIALS_MAX]. */
+    /* BW per-region partial cap, clamped to
+       [DASH_MAX_PARTIALS_MIN, DASH_MAX_PARTIALS_MAX]. */
     uint8_t max_partials;
-    /* Added in v5. Per-network "quiet hours": a local-time window during which
-       the device skips the WiFi + API + e-paper refresh cycle and just deep-
-       sleeps. Stored as TRAILING parallel arrays indexed by network slot (NOT
-       inside dash_wifi_profile_t) so the networks[] offset stays byte-identical
-       with v2/v3/v4 — the same migration invariant the static assertions pin
-       down. Unlike panel_variant/max_partials these do NOT fit in tail padding,
-       so sizeof(v5) > sizeof(v4); the load path distinguishes v5 from v3/v4 by
-       blob length. quiet_enabled[i] is 0/1; quiet_start_min[i]/quiet_end_min[i]
-       are minutes since local midnight in [0, DASH_QUIET_MIN_OF_DAY_MAX]. A
-       window with start == end is treated as disabled. */
-    uint8_t  quiet_enabled[MAX_WIFI_NETWORKS];
-    uint16_t quiet_start_min[MAX_WIFI_NETWORKS];
-    uint16_t quiet_end_min[MAX_WIFI_NETWORKS];
+    dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
 } dash_config_v2_t;
 
 void storage_init(void);
-/* Returns true when a v2, v3, or v4 blob was successfully loaded from NVS,
-   false when the caller is looking at storage_cfg_v2_defaults() (either
-   no blob exists, or the stored blob failed length/CRC/value validation).
-   Existing callers may safely ignore the return value; passing it on is
-   how callers distinguish a real persisted config from defaults. */
+/* Returns true when a persisted config was successfully loaded from NVS —
+   either the v6 per-network blobs, or a legacy v2-v5 single blob (which is
+   then migrated to v6 in place). Returns false when the caller is looking
+   at storage_cfg_v2_defaults() (nothing stored, or what is stored failed
+   length/CRC/value validation). Existing callers may safely ignore the
+   return value; passing it on is how callers distinguish a real persisted
+   config from defaults. */
 bool storage_load_v2(dash_config_v2_t *cfg);
 esp_err_t storage_save_v2(dash_config_v2_t *cfg);
 void storage_erase(void);

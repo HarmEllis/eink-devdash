@@ -285,11 +285,11 @@ void app_main(void)
         int now_min = 0;
         if (qidx >= 0 && qidx < cfg.network_count &&
             cfg.networks[qidx].enabled && cfg.networks[qidx].ssid[0] != '\0' &&
-            cfg.quiet_enabled[qidx] &&
+            cfg.networks[qidx].quiet_enabled &&
             timekeep_now_minute_of_day(&now_min) &&
-            timekeep_minute_in_window(now_min, cfg.quiet_start_min[qidx],
-                                      cfg.quiet_end_min[qidx])) {
-            int end_min = cfg.quiet_end_min[qidx];
+            timekeep_minute_in_window(now_min, cfg.networks[qidx].quiet_start_min,
+                                      cfg.networks[qidx].quiet_end_min)) {
+            int end_min = cfg.networks[qidx].quiet_end_min;
             int until = timekeep_minutes_until(now_min, end_min);
             if (!s_quiet_footer_shown) {
                 char wake_hhmm[9];
