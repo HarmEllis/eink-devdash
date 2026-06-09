@@ -6,17 +6,23 @@ const UUID_COALESCE = '22222222-2222-4222-8222-222222222222'
 const UUID_LEGACY = '33333333-3333-4333-8333-333333333333'
 const UUID_FAILOVER = '44444444-4444-4444-8444-444444444444'
 const UUID_ERROR = '55555555-5555-4555-8555-555555555555'
+const UUID_DYNAMIC = '66666666-6666-4666-8666-666666666666'
+const UUID_DYNAMIC_TWO = '77777777-7777-4777-8777-777777777777'
 const PUBLISH_AUTH = { authorization: 'Bearer publish-test' }
 const DEVICE_AUTH = { authorization: 'Bearer device-test' }
 const ADMIN_AUTH = { authorization: 'Bearer admin-test' }
+const DEVICE_ONE_AUTH = { authorization: 'Bearer device-one' }
+const PUBLISH_ONE_AUTH = { authorization: 'Bearer publish-one' }
+const ADMIN_ONE_AUTH = { authorization: 'Bearer admin-one' }
+const PUBLISH_TWO_AUTH = { authorization: 'Bearer publish-two' }
 const worker = exports.default as {
   fetch(request: Request | string, init?: RequestInit): Promise<Response>
 }
 
-async function connect(uuid = UUID): Promise<WebSocket> {
+async function connect(uuid = UUID, auth = PUBLISH_AUTH): Promise<WebSocket> {
   const request = new Request(`https://relay.test/connect?uuid=${uuid}`, {
     headers: {
-      ...PUBLISH_AUTH,
+      ...auth,
       upgrade: 'websocket',
     },
   })
@@ -49,6 +55,53 @@ test('rejects unauthenticated publisher websocket', async () => {
     headers: { upgrade: 'websocket' },
   })
   expect(response.status).toBe(401)
+})
+
+test('uses uuid-specific credentials without affecting legacy devices', async () => {
+  const legacyPublisher = await connect(UUID, PUBLISH_AUTH)
+  legacyPublisher.close()
+
+  const devicePublisher = await connect(UUID_DYNAMIC, PUBLISH_ONE_AUTH)
+  devicePublisher.close()
+
+  const wrongPublisher = await worker.fetch(`https://relay.test/connect?uuid=${UUID_DYNAMIC}`, {
+    headers: { ...PUBLISH_AUTH, upgrade: 'websocket' },
+  })
+  expect(wrongPublisher.status).toBe(401)
+
+  const deviceResponse = await worker.fetch(`https://relay.test/d/${UUID_DYNAMIC}`, {
+    headers: DEVICE_ONE_AUTH,
+  })
+  expect(deviceResponse.status).toBe(503)
+
+  const legacyDeviceResponse = await worker.fetch(`https://relay.test/d/${UUID_DYNAMIC}`, {
+    headers: DEVICE_AUTH,
+  })
+  expect(legacyDeviceResponse.status).toBe(401)
+
+  const adminResponse = await worker.fetch(`https://relay.test/admin/stats?uuid=${UUID_DYNAMIC}`, {
+    headers: ADMIN_ONE_AUTH,
+  })
+  expect(adminResponse.status).toBe(200)
+
+  const legacyAdminResponse = await worker.fetch(
+    `https://relay.test/admin/stats?uuid=${UUID_DYNAMIC}`,
+    { headers: ADMIN_AUTH },
+  )
+  expect(legacyAdminResponse.status).toBe(401)
+})
+
+test('keeps multiple uuid-specific publisher identities isolated', async () => {
+  const first = await connect(UUID_DYNAMIC, PUBLISH_ONE_AUTH)
+  const second = await connect(UUID_DYNAMIC_TWO, PUBLISH_TWO_AUTH)
+
+  const crossed = await worker.fetch(`https://relay.test/connect?uuid=${UUID_DYNAMIC_TWO}`, {
+    headers: { ...PUBLISH_ONE_AUTH, upgrade: 'websocket' },
+  })
+  expect(crossed.status).toBe(401)
+
+  first.close()
+  second.close()
 })
 
 test('requests every dashboard response on demand over websocket', async () => {
@@ -284,7 +337,7 @@ test('admin stats reports on-demand response and fetch counters', async () => {
 })
 
 test('unknown uuid without configured token is unauthorized', async () => {
-  const response = await worker.fetch('https://relay.test/d/66666666-6666-4666-8666-666666666666', {
+  const response = await worker.fetch('https://relay.test/d/88888888-8888-4888-8888-888888888888', {
     headers: DEVICE_AUTH,
   })
   expect(response.status).toBe(401)

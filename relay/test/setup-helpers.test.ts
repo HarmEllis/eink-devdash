@@ -9,9 +9,12 @@ import {
   formatProvisioningSummary,
   generateIdentity,
   generateToken,
+  identityFromEnv,
   mergeEnv,
   parseWorkerUrl,
   relayEnvUpdates,
+  workerIdentitySecret,
+  workerSecretName,
 } from '../scripts/setup-helpers.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -73,11 +76,59 @@ test('mergeEnv creates content from empty input', () => {
   expect(mergeEnv('', { DEVICE_TOKEN: 'x' })).toBe('DEVICE_TOKEN=x\n')
 })
 
+test('identityFromEnv reuses a complete identity and admin key', () => {
+  expect(identityFromEnv([
+    `DEVICE_UUID=11111111-1111-4111-8111-111111111111`,
+    'DEVICE_TOKEN=tok',
+    'RELAY_PUBLISH_KEY=pub',
+    'RELAY_ADMIN_KEY=adm',
+  ].join('\n'))).toEqual({
+    deviceUuid: '11111111-1111-4111-8111-111111111111',
+    deviceToken: 'tok',
+    relayPublishKey: 'pub',
+    adminKey: 'adm',
+  })
+})
+
+test('identityFromEnv upgrades a legacy identity with a new admin key', () => {
+  const identity = identityFromEnv([
+    `DEVICE_UUID=11111111-1111-4111-8111-111111111111`,
+    'DEVICE_TOKEN=tok',
+    'RELAY_PUBLISH_KEY=pub',
+  ].join('\n'))
+  expect(identity).toMatchObject({
+    deviceUuid: '11111111-1111-4111-8111-111111111111',
+    deviceToken: 'tok',
+    relayPublishKey: 'pub',
+  })
+  expect(identity?.adminKey).toHaveLength(43)
+})
+
+test('identityFromEnv rejects a partial existing identity', () => {
+  expect(() => identityFromEnv('DEVICE_UUID=11111111-1111-4111-8111-111111111111\n'))
+    .toThrow(/incomplete relay identity/)
+})
+
+test('identityFromEnv ignores a direct-only API token', () => {
+  expect(identityFromEnv('DEVICE_TOKEN=direct-api-token\n')).toBeNull()
+})
+
+test('worker identity uses one isolated secret binding per uuid', () => {
+  expect(workerSecretName('11111111-1111-4111-8111-111111111111'))
+    .toBe('DEVICE_IDENTITY_11111111111141118111111111111111')
+  expect(workerIdentitySecret({
+    deviceToken: 'tok',
+    relayPublishKey: 'pub',
+    adminKey: 'adm',
+  })).toBe('{"deviceToken":"tok","publishKey":"pub","adminKey":"adm"}')
+})
+
 test('relayEnvUpdates includes DEVICE_TOKEN so the API can start', () => {
   const updates = relayEnvUpdates({
     deviceUuid: 'uuid',
     deviceToken: 'tok',
     relayPublishKey: 'pub',
+    adminKey: 'adm',
     workerUrl: 'https://relay.example.workers.dev',
   })
   expect(updates).toEqual({
@@ -86,6 +137,7 @@ test('relayEnvUpdates includes DEVICE_TOKEN so the API can start', () => {
     RELAY_ENABLED: 'true',
     RELAY_URL: 'https://relay.example.workers.dev',
     RELAY_PUBLISH_KEY: 'pub',
+    RELAY_ADMIN_KEY: 'adm',
   })
 })
 
@@ -125,7 +177,7 @@ test('formatProvisioningSummary shows the URL, token, and admin curl', () => {
 
 test('formatEnvBlock emits all relay keys as KEY=VALUE lines', () => {
   const block = formatEnvBlock(
-    { deviceUuid: 'uuid', deviceToken: 'tok', relayPublishKey: 'pub' },
+    { deviceUuid: 'uuid', deviceToken: 'tok', relayPublishKey: 'pub', adminKey: 'adm' },
     'https://relay.example.workers.dev',
   )
   expect(block).toContain('DEVICE_TOKEN=tok')
@@ -133,6 +185,7 @@ test('formatEnvBlock emits all relay keys as KEY=VALUE lines', () => {
   expect(block).toContain('RELAY_ENABLED=true')
   expect(block).toContain('RELAY_URL=https://relay.example.workers.dev')
   expect(block).toContain('RELAY_PUBLISH_KEY=pub')
+  expect(block).toContain('RELAY_ADMIN_KEY=adm')
 })
 
 test('chooseAuthMode prefers a token, then a TTY, else unavailable', () => {

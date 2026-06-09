@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers'
 
 export interface Env {
   DASHBOARD_RELAY: DurableObjectNamespace<DashboardRelay>
+  [key: string]: unknown
   RELAY_PUBLISH_KEY?: string
   ADMIN_KEY?: string
   DEVICE_TOKENS?: string
@@ -69,6 +70,33 @@ const MAX_FRAME_BYTES = 16 * 1024
 const MAX_CAPABILITIES = 8
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+function uuidSecretSuffix(uuid: string): string {
+  return uuid.replace(/-/g, '').toUpperCase()
+}
+
+type DeviceIdentity = {
+  deviceToken?: string
+  publishKey?: string
+  adminKey?: string
+}
+
+function perDeviceIdentity(env: Env, uuid: string): DeviceIdentity | null {
+  const value = env[`DEVICE_IDENTITY_${uuidSecretSuffix(uuid)}`]
+  if (typeof value !== 'string' || !value) return null
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const identity = parsed as Record<string, unknown>
+    return {
+      deviceToken: typeof identity.deviceToken === 'string' ? identity.deviceToken : undefined,
+      publishKey: typeof identity.publishKey === 'string' ? identity.publishKey : undefined,
+      adminKey: typeof identity.adminKey === 'string' ? identity.adminKey : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
@@ -132,7 +160,17 @@ function parseDeviceTokens(env: Env): Record<string, string> {
 }
 
 function knownUuids(env: Env): string[] {
-  return Object.keys(parseDeviceTokens(env)).filter((uuid) => UUID_RE.test(uuid))
+  const configured = Object.keys(parseDeviceTokens(env)).filter((uuid) => UUID_RE.test(uuid))
+  const dynamic = Object.keys(env).flatMap((key) => {
+    const match = /^DEVICE_IDENTITY_([0-9A-F]{32})$/.exec(key)
+    if (!match) return []
+    const compact = match[1].toLowerCase()
+    return [
+      `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-`
+      + `${compact.slice(16, 20)}-${compact.slice(20)}`,
+    ]
+  })
+  return [...new Set([...configured, ...dynamic])]
 }
 
 function relayStub(env: Env, uuid: string): DurableObjectStub<DashboardRelay> {
@@ -143,11 +181,13 @@ function connectRequest(request: Request, env: Env, url: URL): Response | Promis
   if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
     return textResponse('Expected WebSocket upgrade', 426)
   }
-  if (!authorized(request, env.RELAY_PUBLISH_KEY)) {
-    return jsonResponse({ error: 'Unauthorized' }, { status: 401 })
-  }
   const uuid = url.searchParams.get('uuid') ?? ''
   if (!UUID_RE.test(uuid)) return jsonResponse({ error: 'Invalid uuid' }, { status: 400 })
+  const identity = perDeviceIdentity(env, uuid)
+  const publishKey = identity ? identity.publishKey : env.RELAY_PUBLISH_KEY
+  if (!authorized(request, publishKey)) {
+    return jsonResponse({ error: 'Unauthorized' }, { status: 401 })
+  }
   return relayStub(env, uuid).fetch(request)
 }
 
@@ -156,15 +196,22 @@ function dashboardRequest(request: Request, env: Env, uuid: string): Promise<Res
   const headers = new Headers(request.headers)
   headers.delete('x-relay-device-token')
   headers.delete('x-relay-uuid')
-  const token = parseDeviceTokens(env)[uuid]
+  const identity = perDeviceIdentity(env, uuid)
+  const token = identity ? identity.deviceToken : parseDeviceTokens(env)[uuid]
   if (token) headers.set('x-relay-device-token', token)
   headers.set('x-relay-uuid', uuid)
   return relayStub(env, uuid).fetch(new Request(request, { headers }))
 }
 
 async function adminStats(request: Request, env: Env, url: URL): Promise<Response> {
-  if (!authorized(request, env.ADMIN_KEY)) return jsonResponse({ error: 'Unauthorized' }, { status: 401 })
   const requestedUuid = url.searchParams.get('uuid')
+  const identity = requestedUuid && UUID_RE.test(requestedUuid)
+    ? perDeviceIdentity(env, requestedUuid)
+    : null
+  const adminKey = requestedUuid && UUID_RE.test(requestedUuid) && identity
+    ? identity.adminKey
+    : env.ADMIN_KEY
+  if (!authorized(request, adminKey)) return jsonResponse({ error: 'Unauthorized' }, { status: 401 })
   const uuids = requestedUuid ? [requestedUuid] : knownUuids(env)
   const devices = await Promise.all(uuids.map(async (uuid) => {
     if (!UUID_RE.test(uuid)) return null
@@ -177,10 +224,12 @@ async function adminStats(request: Request, env: Env, url: URL): Promise<Respons
 }
 
 async function cacheBypassProbe(request: Request, env: Env, url: URL): Promise<Response> {
-  if (!authorized(request, env.ADMIN_KEY)) return jsonResponse({ error: 'Unauthorized' }, { status: 401 })
   const uuid = url.searchParams.get('uuid') ?? ''
   if (!UUID_RE.test(uuid)) return jsonResponse({ error: 'Invalid uuid' }, { status: 400 })
-  const token = parseDeviceTokens(env)[uuid]
+  const identity = perDeviceIdentity(env, uuid)
+  const adminKey = identity ? identity.adminKey : env.ADMIN_KEY
+  if (!authorized(request, adminKey)) return jsonResponse({ error: 'Unauthorized' }, { status: 401 })
+  const token = identity ? identity.deviceToken : parseDeviceTokens(env)[uuid]
   if (!token) return jsonResponse({ error: 'Unknown uuid' }, { status: 404 })
   const target = new URL(`/d/${uuid}/ota/manifest`, url)
   const first = await fetch(target, { headers: { authorization: `Bearer ${token}` } })

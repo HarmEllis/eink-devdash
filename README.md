@@ -190,12 +190,22 @@ cd ..
 docker compose up -d
 ```
 
-The setup command authenticates Wrangler when needed, generates the relay
-credentials, deploys the Worker, updates the root `.env`, and prints QR codes
-for the device's API URL and token fields.
+The setup command authenticates Wrangler when needed, creates a relay identity
+for the current machine, deploys the Worker, adds UUID-scoped credentials,
+updates the local root `.env`, and prints QR codes for the device's API URL and
+token fields. Running setup from another machine adds another independent
+identity to the same Worker and does not replace existing identities.
 
-Re-running `npm run setup` rotates the generated identity and credentials.
-Reconfigure the device afterwards.
+To show the QR codes again without rotating credentials:
+
+```bash
+cd relay
+npm run qr
+```
+
+Re-running `npm run setup` on the same machine reuses the identity in its local
+`.env`. Each identity is stored in one UUID-scoped Worker secret, so adding or
+updating one machine does not modify another machine's credentials.
 
 ### Setup without cloning (Docker)
 
@@ -238,7 +248,7 @@ docker run --rm -it -p 8976:8976 \
 Notes:
 
 - Use a dedicated output dir (`relay-out/`), not a directory that already holds
-  an unrelated `.env` — the setup rotates relay credentials in that file.
+  an unrelated `.env`. Setup merges the current machine's relay values into it.
 - If your Cloudflare account has no `workers.dev` subdomain yet, register one
   once in the dashboard (Workers & Pages → set up a subdomain) before running;
   `wrangler deploy` cannot create it from this non-interactive container.
@@ -252,6 +262,16 @@ The image produces `relay-out/.env`. To run the publisher without cloning the
 repo, fetch the maintained Compose file and point it at that env file (this
 keeps the host UID/GID mapping, Codex/Claude mounts, and restart policy in sync
 rather than hand-rolling a long `docker run`):
+
+To show the provisioning QR codes again without rotating credentials:
+
+```bash
+docker run --rm -it \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/relay-out":/out \
+  --entrypoint npm \
+  ghcr.io/harmellis/eink-devdash-relay-setup:latest run qr
+```
 
 ```bash
 curl -O https://raw.githubusercontent.com/HarmEllis/eink-devdash/main/docker-compose.yml
@@ -278,10 +298,10 @@ with an empty token are skipped.
 
 ### Relay operations and security
 
-Check relay status with the `ADMIN_KEY` printed during setup:
+Check relay status with the per-device `RELAY_ADMIN_KEY` written during setup:
 
 ```bash
-curl -H "Authorization: Bearer <ADMIN_KEY>" \
+curl -H "Authorization: Bearer <RELAY_ADMIN_KEY>" \
   "https://<worker>.workers.dev/admin/stats?uuid=<DEVICE_UUID>"
 ```
 
@@ -289,14 +309,15 @@ Cloudflare caching must remain disabled for `/d/*`, especially OTA manifests.
 Verify the deployed behavior with:
 
 ```bash
-curl -H "Authorization: Bearer <ADMIN_KEY>" \
+curl -H "Authorization: Bearer <RELAY_ADMIN_KEY>" \
   "https://<worker>.workers.dev/admin/cache-bypass-probe?uuid=<DEVICE_UUID>"
 ```
 
 The relay encrypts traffic in transit, but it is not end-to-end encrypted:
 Cloudflare terminates TLS and can access the dashboard payload. The generated
 `.env` stores bearer credentials in plaintext and should remain private.
-Rotate `DEVICE_TOKEN` and `RELAY_PUBLISH_KEY` after suspected exposure.
+After suspected exposure, replace the local identity and delete its old
+`DEVICE_IDENTITY_<UUID_WITHOUT_HYPHENS>` Worker secret with Wrangler.
 
 The firmware accepts only canonical GitHub release URLs for relay-provided OTA
 updates and rejects downgrades. It does not independently verify a firmware
