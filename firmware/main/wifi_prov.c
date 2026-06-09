@@ -1,6 +1,7 @@
 #include "wifi_prov.h"
 #include "captive_dns.h"
 #include "boot_button.h"
+#include "display.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -100,14 +101,15 @@ typedef struct {
     bool       pv_present; /* True iff a valid `pv` field was in the form. */
     int        mp;         /* BW per-region partial cap (max_partials). */
     bool       mp_present; /* True iff an `mp` field was in the form. */
+    char       country[4]; /* WiFi regulatory country code (`cc`). */
+    bool       cc_present; /* True iff a `cc` field was in the form. */
 } portal_form_t;
 
-/* Connection is driven explicitly by wifi_roam_connect (esp_wifi_connect on
- * the SSID we pick after scanning) and by Improv when the optional USB
- * provisioning path is used.
- * We intentionally do NOT auto-connect on STA_START or auto-retry on
- * STA_DISCONNECTED here: doing so kicks off a connect with whatever credentials
- * are still in WiFi NVS and blocks the scan path with
+/* Connection is driven explicitly by wifi_roam_connect (esp_wifi_connect on the
+ * SSID we pick after scanning), using credentials from cfg_v2 — the app owns
+ * storage. We intentionally do NOT auto-connect on STA_START or auto-retry on
+ * STA_DISCONNECTED here: doing so kicks off a connect with whatever config the
+ * driver currently holds and blocks the scan path with
  * "STA is connecting, scan are not allowed!". */
 
 esp_err_t wifi_net_init(void)
@@ -122,6 +124,41 @@ esp_err_t wifi_net_init(void)
 
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
+
+    /* Set the regulatory domain so channels 1-13 are usable with active scan.
+     * The ESP32 default ("01"/world-safe) makes channels 12-13 passive-only, so
+     * an active scan cannot reliably find an AP on channel 13 — a router on
+     * auto-channel that lands on 13 then appears unreachable (auth errors). The
+     * country is the portal-chosen value (persisted in NVS), falling back to the
+     * build-stamped default. Must run after esp_wifi_init(). */
+    char country[4];
+    storage_get_wifi_country(country, sizeof(country));
+    /* Only call the setter when the active domain actually differs:
+     * esp_wifi_set_country_code() persists the country to flash under
+     * WIFI_STORAGE_FLASH, and wifi_net_init() runs on every deep-sleep refresh
+     * wake — an unconditional call would put an NVS write on the refresh hot
+     * path (the wear/fragmentation issue this firmware avoids elsewhere). */
+    wifi_country_t active = {0};
+    /* Re-apply when the active code differs OR the policy is not AUTO: we always
+     * want WIFI_COUNTRY_POLICY_AUTO (802.11d) from set_country_code(.., true), so
+     * a stale MANUAL policy from an older build / another setter is repaired
+     * once, while matching code+policy still skips the write on normal wakes. */
+    bool need_set = esp_wifi_get_country(&active) != ESP_OK ||
+                    strncmp(active.cc, country, 2) != 0 ||
+                    active.policy != WIFI_COUNTRY_POLICY_AUTO;
+    if (need_set) {
+        ESP_LOGI(TAG, "Setting WiFi country code: %s", country);
+        /* NON-fatal: an unsupported code (crafted POST, stale value, or a bad
+         * CONFIG default) makes esp_wifi_set_country_code() return
+         * ESP_ERR_INVALID_ARG. ESP_ERROR_CHECK would abort on every boot —
+         * before the portal is reachable — bricking the device. Log and
+         * continue on the driver's default domain instead. */
+        esp_err_t cc_err = esp_wifi_set_country_code(country, true);
+        if (cc_err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_wifi_set_country_code(%s) failed: %s — using driver default",
+                     country, esp_err_to_name(cc_err));
+        }
+    }
 
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -277,6 +314,11 @@ static void apply_field(portal_form_t *form,
         form_decode(buf, sizeof(buf), val, vlen);
         form->mp = atoi(buf);   /* range-validated at apply time */
         form->mp_present = true;
+        return;
+    }
+    if (klen == 2 && key[0] == 'c' && key[1] == 'c') {
+        form_decode(form->country, sizeof(form->country), val, vlen);
+        form->cc_present = true;   /* validated at save time */
         return;
     }
     if (klen < 4 || key[0] != 'w') return;
@@ -772,6 +814,66 @@ static void render_network(httpd_req_t *req, int n,
     CHUNK(req, "</ul></div></div></article>");
 }
 
+/* Curated WiFi-region picker (UX shortlist, not the full allow-list). "01"
+ * (worldwide) is always first as the legal everywhere-safe fallback; the rest
+ * are common single-region codes. A user whose exact country is absent can stay
+ * on "01" (channels 1-11 work globally) or keep an off-list-but-supported code,
+ * which round-trips via render_region_block's fallback <option>. Every code here
+ * must pass wifi_country_is_supported (the complete ESP-IDF allow-list). */
+static const struct { const char *code; const char *name; } COUNTRY_OPTIONS[] = {
+    {"01", "Worldwide (safe default)"},
+    {"AU", "Australia"}, {"AT", "Austria"},   {"BE", "Belgium"},
+    {"BR", "Brazil"},    {"CA", "Canada"},    {"CH", "Switzerland"},
+    {"CN", "China"},     {"CZ", "Czechia"},   {"DE", "Germany"},
+    {"DK", "Denmark"},   {"ES", "Spain"},     {"FI", "Finland"},
+    {"FR", "France"},    {"GB", "United Kingdom"}, {"IE", "Ireland"},
+    {"IN", "India"},     {"IT", "Italy"},     {"JP", "Japan"},
+    {"NL", "Netherlands"}, {"NO", "Norway"},  {"NZ", "New Zealand"},
+    {"PL", "Poland"},    {"PT", "Portugal"},  {"SE", "Sweden"},
+    {"US", "United States"},
+};
+
+/* Render the WiFi-region <section>. Closes the preceding WiFi-networks section
+ * and opens its own block; the caller emits the Display section next. `current`
+ * is the saved/effective country code (already validated). */
+static void render_region_block(httpd_req_t *req, const char *current)
+{
+    CHUNK(req,
+        "</section>"
+        "<section class=\"block\" id=\"region-block\">"
+        "<h2>WiFi region</h2>"
+        "<div class=\"blockhint\">Sets the regulatory domain. Pick your country "
+        "so channels 12-13 are usable; leave on Worldwide if unsure.</div>"
+        "<div style=\"background:#fff;border:1px solid #e3e5e8;border-radius:12px;"
+        "padding:12px\">"
+        "<label class=\"field\" style=\"margin:0\"><span class=\"lab\">Country</span>"
+        "<select name=\"cc\" style=\"width:100%;min-height:44px;padding:10px 12px;"
+        "font:inherit;font-size:15px;color:#1c1f24;background:#fff;"
+        "border:1px solid #c6cad0;border-radius:8px\">");
+
+    char buf[128];
+    bool matched = false;
+    for (size_t i = 0; i < sizeof(COUNTRY_OPTIONS) / sizeof(COUNTRY_OPTIONS[0]); i++) {
+        bool sel = strcmp(COUNTRY_OPTIONS[i].code, current) == 0;
+        if (sel) matched = true;
+        snprintf(buf, sizeof(buf), "<option value=\"%s\"%s>%s &mdash; %s</option>",
+                 COUNTRY_OPTIONS[i].code, sel ? " selected" : "",
+                 COUNTRY_OPTIONS[i].code, COUNTRY_OPTIONS[i].name);
+        CHUNK(req, buf);
+    }
+    /* A saved code outside the curated list (e.g. set via an older build) still
+     * needs to round-trip, so surface it as a selected entry rather than
+     * silently resetting it on the next save. */
+    if (!matched) {
+        char cur_esc[8];
+        html_escape(current, cur_esc, sizeof(cur_esc));
+        snprintf(buf, sizeof(buf), "<option value=\"%s\" selected>%s</option>",
+                 cur_esc, cur_esc);
+        CHUNK(req, buf);
+    }
+    CHUNK(req, "</select></label></div></section>");
+}
+
 static void render_portal_page_from_cfg(httpd_req_t *req,
                                         const dash_config_v2_t *cfg,
                                         const char *error)
@@ -825,6 +927,11 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
         render_network(req, n, net, q_on, q_start, q_end);
     }
 
+    /* WiFi region picker (closes the WiFi-networks section, opens its own). */
+    char country[4];
+    storage_get_wifi_country(country, sizeof(country));
+    render_region_block(req, country);
+
     int iv = cfg->refresh_min ? cfg->refresh_min : 5;
     /* Expose the 1-minute input server-side for every saved BW panel so the
        option does not depend on captive-portal JavaScript. Save validation
@@ -832,7 +939,6 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
     int iv_min = dashboard_refresh_input_minimum(
         cfg->panel_variant == EINK_PANEL_WEACT_29_BW);
     snprintf(page_buf, sizeof(page_buf),
-        "</section>"
         "<section class=\"block\" id=\"display-block\">"
         "<h2>Display</h2>"
         "<div class=\"interval-grid\">"
@@ -1192,6 +1298,10 @@ static esp_err_t handler_save(httpd_req_t *req)
         reason = "Refresh interval must be 3-60 minutes, or 1-60 minutes "
                  "with the BW panel and at least 2 partial refreshes.";
     }
+    if (!reason && form->cc_present &&
+        !wifi_country_is_supported(form->country)) {
+        reason = "Pick a supported WiFi country (or Worldwide).";
+    }
     for (int n = 0; n < MAX_WIFI_NETWORKS && !reason; n++) {
         const net_form_t *nf = &form->nets[n];
         if (!nf->enabled) continue;
@@ -1245,9 +1355,60 @@ static esp_err_t handler_save(httpd_req_t *req)
     }
     storage_load_v2(prev);
     apply_form_to_cfg(form, prev, cfg);
+
+    /* Persist the WiFi region first: it is a tiny, separate NVS key and the
+     * cheap write, so committing it before the ~7 KB config blob means a
+     * full-NVS failure surfaces here rather than after the config "succeeded".
+     * Fail closed — keep the portal open instead of restarting with the chosen
+     * regulatory domain unapplied (a wrong domain can hide a ch12/13 network).
+     *
+     * Only write when the code actually changes from the current effective value
+     * (avoids an NVS update on an unchanged save, and never pins the build
+     * default as an explicit key). Record whether an explicit key existed so a
+     * later config-blob failure can roll back to the EXACT prior state — restore
+     * the old value, or erase the key when none existed — keeping the region key
+     * and the config blob consistent without a cross-blob NVS transaction. */
+    bool cc_written = false;
+    bool cc_was_saved = false;
+    char prev_country[4] = {0};
+    if (form->cc_present) {
+        storage_get_wifi_country(prev_country, sizeof(prev_country));
+        if (strncmp(prev_country, form->country, 2) != 0) {
+            cc_was_saved = storage_wifi_country_is_saved();
+            esp_err_t cc_err = storage_set_wifi_country(form->country);
+            if (cc_err != ESP_OK) {
+                free(prev); free(cfg);
+                ESP_LOGE(TAG, "storage_set_wifi_country(%s) failed: 0x%x (%s)",
+                         form->country, cc_err, esp_err_to_name(cc_err));
+                char rsn[180];
+                snprintf(rsn, sizeof(rsn),
+                         "Could not save the WiFi region to device storage: %s (0x%x). "
+                         "The flash may be full — try again, or erase the device.",
+                         esp_err_to_name(cc_err), cc_err);
+                render_save_error(req, form, rsn, "500 Internal Server Error");
+                free(form);
+                return ESP_OK;
+            }
+            cc_written = true;
+        }
+    }
+
     esp_err_t err = storage_save_v2(cfg);
     free(prev); free(cfg);
     if (err != ESP_OK) {
+        /* Roll back the region so a failed config save leaves NOTHING applied —
+         * otherwise the next reboot would adopt the new domain while all other
+         * submitted edits are lost. Restore the exact prior state. Best-effort:
+         * a rollback that also fails is logged but cannot worsen the
+         * already-reported error. */
+        if (cc_written) {
+            esp_err_t r = cc_was_saved ? storage_set_wifi_country(prev_country)
+                                       : storage_clear_wifi_country();
+            if (r != ESP_OK) {
+                ESP_LOGE(TAG, "WiFi region rollback failed: %s",
+                         esp_err_to_name(r));
+            }
+        }
         ESP_LOGE(TAG, "storage_save_v2 failed: 0x%x (%s)",
                  err, esp_err_to_name(err));
         /* Surface the exact NVS error as an inline banner on the re-rendered
@@ -1402,8 +1563,11 @@ static esp_err_t run_provisioning_window(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20));
+    /* 11b/g only (no 11n) for the SoftAP: removes 11n/AMPDU from the AP path,
+     * the documented workaround for ESP32-S3 SoftAPs that log as started but
+     * are undetectable by phones/PCs (ESP-IDF issue #13508). */
     ESP_ERROR_CHECK(esp_wifi_set_protocol(
-        WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
+        WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G));
     ESP_ERROR_CHECK(esp_wifi_start());
 
     captive_dns_start();
@@ -1425,14 +1589,82 @@ static esp_err_t run_provisioning_window(void)
              active_config.ap.channel, active_config.ap.beacon_interval,
              tx_power);
 
-    /* Wait up to the configured timeout for the user to save credentials.
-     * A successful POST schedules esp_restart(), so this wait normally does
-     * not return; BIT_PROV_DONE remains available for non-restart test paths. */
-    TickType_t ticks = CONFIG_DEVDASH_PROV_TIMEOUT_S > 0
-        ? pdMS_TO_TICKS(CONFIG_DEVDASH_PROV_TIMEOUT_S * 1000)
-        : portMAX_DELAY;
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_events, BIT_PROV_DONE,
-                                           pdTRUE, pdFALSE, ticks);
+    /* Wait for the user to save credentials (BIT_PROV_DONE; a successful POST
+     * schedules esp_restart()), honouring the configured timeout, while also
+     * polling the BOOT button for the device-side reset gesture. No boot-button
+     * monitor task runs during provisioning (it starts only on the STA path,
+     * after this branch), so a long-press here is unambiguous.
+     *
+     * The gesture is two-tier, mirroring an erase-flash without the web flasher:
+     *   1. A long-press forgets the saved Wi-Fi networks (display/panel settings
+     *      are kept) and shows the confirm screen.
+     *   2. A second BOOT press within 10 s escalates to a full factory reset —
+     *      the entire NVS partition is erased on the next boot (armed via the
+     *      RTC flag in boot_button, applied before nvs_flash_init in app_main).
+     * If no second press arrives, only the Wi-Fi wipe takes effect on restart. */
+    const TickType_t poll = pdMS_TO_TICKS(250);
+    const int64_t deadline_us = CONFIG_DEVDASH_PROV_TIMEOUT_S > 0
+        ? esp_timer_get_time() + (int64_t)CONFIG_DEVDASH_PROV_TIMEOUT_S * 1000000
+        : 0; /* 0 = no deadline */
+    EventBits_t bits = 0;
+    for (;;) {
+        bits = xEventGroupWaitBits(s_wifi_events, BIT_PROV_DONE,
+                                   pdTRUE, pdFALSE, poll);
+        if (bits & BIT_PROV_DONE) break;
+        if (boot_button_is_pressed() &&
+            boot_button_wait_longpress(CONFIG_DEVDASH_BOOT_LONGPRESS_MS)) {
+            boot_button_wait_release();
+            ESP_LOGW(TAG, "Setup-screen long-press: forgetting Wi-Fi networks");
+
+            /* Tier 1: clear the saved Wi-Fi credentials, preserving the rest of
+             * the config (panel variant, refresh interval, etc.). cfg_v2 is
+             * ~7 KB — heap-allocate to keep it off this task's stack. Failures
+             * are logged, not hidden: a full/failed NVS is exactly when Tier 2
+             * (full erase) is the recovery, and the confirm screen already
+             * points there ("BOOT again = WIPE ALL"), so fall through. */
+            bool wiped = false;
+            dash_config_v2_t *cfg = calloc(1, sizeof(*cfg));
+            if (cfg) {
+                storage_load_v2(cfg);
+                cfg->network_count = 0;
+                memset(cfg->networks, 0, sizeof(cfg->networks));
+                esp_err_t serr = storage_save_v2(cfg);
+                free(cfg);
+                if (serr == ESP_OK) {
+                    wiped = true;
+                } else {
+                    ESP_LOGE(TAG, "Wi-Fi wipe save failed: %s — press BOOT again "
+                             "for a full factory erase", esp_err_to_name(serr));
+                }
+            } else {
+                ESP_LOGE(TAG, "Wi-Fi wipe: cfg alloc failed — press BOOT again "
+                         "for a full factory erase");
+            }
+
+            /* Tier 2: offer a full factory wipe. The screen reflects whether the
+             * Tier-1 wipe committed (so a failure is not shown as success), and
+             * always offers the full erase — the recovery when Tier 1 could not
+             * persist. Watch for a second BOOT press within a short window. */
+            display_show_factory_confirm(wiped);
+            const int64_t confirm_deadline =
+                esp_timer_get_time() + 10 * 1000000; /* 10 s */
+            bool factory = false;
+            while (esp_timer_get_time() < confirm_deadline) {
+                if (boot_button_is_pressed()) {
+                    boot_button_wait_release();
+                    factory = true;
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+            if (factory) {
+                ESP_LOGW(TAG, "Factory reset confirmed via BOOT press");
+                boot_button_request_factory_reset();
+            }
+            esp_restart();
+        }
+        if (deadline_us != 0 && esp_timer_get_time() >= deadline_us) break;
+    }
     if (server) httpd_stop(server);
     captive_dns_stop();
     esp_wifi_stop();

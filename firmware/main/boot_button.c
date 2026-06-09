@@ -11,10 +11,12 @@
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 #define BOOT_POLL_INTERVAL_MS   50
 #define BOOT_FORCE_PROV_MAGIC   0xB001F0F0u
+#define BOOT_FACTORY_RESET_MAGIC 0xFAC70123u
 
 static const char *TAG = "boot_button";
 
 static RTC_NOINIT_ATTR uint32_t s_force_prov_magic;
+static RTC_NOINIT_ATTR uint32_t s_factory_reset_magic;
 static bool s_initialised   = false;
 static bool s_monitor_alive = false;
 
@@ -73,6 +75,21 @@ bool boot_button_force_prov_active(void)
 void boot_button_force_prov_clear(void)
 {
     s_force_prov_magic = 0;
+}
+
+void boot_button_request_factory_reset(void)
+{
+    s_factory_reset_magic = BOOT_FACTORY_RESET_MAGIC;
+}
+
+bool boot_button_factory_reset_pending(void)
+{
+    return s_factory_reset_magic == BOOT_FACTORY_RESET_MAGIC;
+}
+
+void boot_button_factory_reset_clear(void)
+{
+    s_factory_reset_magic = 0;
 }
 
 static void boot_button_monitor_task(void *arg)

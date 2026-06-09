@@ -7,6 +7,24 @@ bool clock_should_apply(const char *iso, bool stale)
     return iso != NULL && iso[0] != '\0' && !stale;
 }
 
+bool wifi_country_is_supported(const char *cc)
+{
+    if (!cc || strlen(cc) != 2) return false;
+    /* The complete set esp_wifi_set_country_code() accepts on ESP-IDF 5.3
+     * (esp_wifi.h attention #6), incl. "01" world-safe. Keep in sync if the IDF
+     * version bumps. */
+    static const char *const SUPPORTED[] = {
+        "01", "AT", "AU", "BE", "BG", "BR", "CA", "CH", "CN", "CY", "CZ",
+        "DE", "DK", "EE", "ES", "FI", "FR", "GB", "GR", "HK", "HR", "HU",
+        "IE", "IN", "IS", "IT", "JP", "KR", "LI", "LT", "LU", "LV", "MT",
+        "MX", "NL", "NO", "NZ", "PL", "PT", "RO", "SE", "SI", "SK", "TW", "US",
+    };
+    for (size_t i = 0; i < sizeof(SUPPORTED) / sizeof(SUPPORTED[0]); i++) {
+        if (cc[0] == SUPPORTED[i][0] && cc[1] == SUPPORTED[i][1]) return true;
+    }
+    return false;
+}
+
 bool api_url_is_relay(const char *url)
 {
     if (!url || !url[0]) return false;
