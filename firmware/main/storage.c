@@ -9,9 +9,16 @@
 #include <string.h>
 #include <stdio.h>
 #include <stddef.h>
+#include <stdlib.h>
 
 static const char *TAG = "storage";
+
+/* Legacy single-blob key (config versions 2-5). Only read for migration;
+   erased after a successful v6 save. */
 static const char *CFG_V2_KEY = "cfg_v2";
+/* v6 per-network layout: one small header blob plus one blob per saved
+   network ("cfg_net0".."cfg_net4"). See the layout note in storage.h. */
+static const char *CFG_META_KEY = "cfg_meta";
 
 /* Fail the build closed if the panel SKU was never chosen (Gate 0.B fallback).
    Factory / SKU builds must set CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT to 0 (BWR)
@@ -25,87 +32,189 @@ eink_panel_variant_t storage_default_panel_variant(void)
     return (eink_panel_variant_t)CONFIG_DEVDASH_DEFAULT_PANEL_VARIANT;
 }
 
-/* Legacy struct used to read v0.2.0-era cfg_v2 blobs from NVS. Must mirror
-   the pre-v3 dash_config_v2_t layout exactly. v3 appended uint8_t panel_variant
-   and v4 appended uint8_t max_partials; both are trailing fields, so every
-   prefix offset is byte-identical with this legacy struct — that's the
-   migration invariant the static assertions below pin down. */
-typedef struct {
-    uint16_t version;
-    uint8_t max_wifi_networks;
-    uint8_t max_apis_per_network;
-    uint8_t refresh_min;
-    uint8_t network_count;
-    int8_t last_success_network_idx;
-    int8_t last_success_api_idx;
-    uint32_t write_counter;
-    uint32_t crc32;
-    dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
-} dash_config_v2_legacy_t;
+/* ---------------------------------------------------------------------------
+ * v6 persisted layout: per-network blobs.
+ *
+ * `cfg_meta` carries the header fields and active bank map; each
+ * `cfg_net{i}{a|b}` carries one network profile (with its APIs and quiet
+ * hours) plus its own version and CRC, so a corrupted save costs one network
+ * instead of the whole config. storage_save_v2 writes changed blobs into
+ * inactive banks, preflights space for all pending blobs, and commits meta
+ * last to switch the complete generation live atomically.
+ * ------------------------------------------------------------------------- */
 
-/* Pre-v5 struct (v3 + v4 era). Used to read and migrate old blobs: v3/v4 both
-   stored at this size (max_partials landed in v3's tail padding, so
-   sizeof(v3) == sizeof(v4)). v5 appends the quiet-hours arrays, which do NOT
-   fit in tail padding, so sizeof(dash_config_v2_t) > sizeof(dash_config_v4_t).
-   The prefix up to and including max_partials is byte-identical with v5 — the
-   asserts below pin that invariant so an L4 blob overlays the v5 struct prefix
-   cleanly while the trailing quiet arrays stay zero-seeded (= disabled). */
 typedef struct {
-    uint16_t version;
+    uint16_t version;             /* DASH_CFG_V2_VERSION */
     uint8_t max_wifi_networks;
     uint8_t max_apis_per_network;
     uint8_t refresh_min;
     uint8_t network_count;
-    int8_t last_success_network_idx;
-    int8_t last_success_api_idx;
-    uint32_t write_counter;
-    uint32_t crc32;
-    dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
     uint8_t panel_variant;
     uint8_t max_partials;
-} dash_config_v4_t;
+    uint32_t write_counter;
+    /* Per-slot bank (0='a', 1='b'): which cfg_net{i}{a|b} key holds slot i.
+       storage_save_v2 writes a changed network to the OTHER bank and only
+       then commits this meta blob, so the whole save becomes live atomically
+       with the meta write — a save that fails partway leaves the old meta,
+       and therefore the old configuration, fully intact. */
+    uint8_t net_bank[MAX_WIFI_NETWORKS];
+    uint8_t reserved[3];          /* zero */
+    uint32_t crc32;               /* over this struct with crc32 zeroed */
+} dash_meta_blob_t;
+
+typedef struct {
+    uint16_t version;             /* DASH_CFG_V2_VERSION */
+    uint16_t reserved;            /* zero */
+    uint32_t crc32;               /* over this struct with crc32 zeroed */
+    dash_wifi_profile_t net;
+} dash_net_blob_t;
+
+/* ---------------------------------------------------------------------------
+ * Legacy v2-v5 single-blob layouts. Read-only: used to load and migrate old
+ * configs. dash_wifi_profile_legacy_t must mirror the pre-v6 profile layout
+ * exactly (no quiet fields — v5 kept those in trailing parallel arrays so
+ * the networks[] offset stayed byte-identical with v2).
+ * ------------------------------------------------------------------------- */
+
+typedef struct {
+    uint32_t id;
+    bool enabled;
+    char ssid[DASH_SSID_MAX + 1];
+    char password[DASH_WIFI_PASSWORD_MAX + 1];
+    uint8_t api_count;
+    dash_api_profile_t apis[MAX_APIS_PER_NETWORK];
+} dash_wifi_profile_legacy_t;
+
+/* v0.2.0-era blob (version 2): header + networks only. */
+typedef struct {
+    uint16_t version;
+    uint8_t max_wifi_networks;
+    uint8_t max_apis_per_network;
+    uint8_t refresh_min;
+    uint8_t network_count;
+    int8_t last_success_network_idx;
+    int8_t last_success_api_idx;
+    uint32_t write_counter;
+    uint32_t crc32;
+    dash_wifi_profile_legacy_t networks[MAX_WIFI_NETWORKS];
+} dash_config_v2_legacy_t;
+
+/* v3/v4-era blob. v3 appended panel_variant; v4's max_partials landed in
+   v3's 4-byte tail padding, so sizeof(v3) == sizeof(v4) and the two are
+   discriminated by the `version` field, not blob length. */
+typedef struct {
+    uint16_t version;
+    uint8_t max_wifi_networks;
+    uint8_t max_apis_per_network;
+    uint8_t refresh_min;
+    uint8_t network_count;
+    int8_t last_success_network_idx;
+    int8_t last_success_api_idx;
+    uint32_t write_counter;
+    uint32_t crc32;
+    dash_wifi_profile_legacy_t networks[MAX_WIFI_NETWORKS];
+    uint8_t panel_variant;
+    uint8_t max_partials;
+} dash_config_v4_legacy_t;
+
+/* v5 blob: v4 plus trailing parallel quiet-hours arrays (slot-indexed).
+   Largest legacy layout — the migration scratch buffer is this type. */
+typedef struct {
+    uint16_t version;
+    uint8_t max_wifi_networks;
+    uint8_t max_apis_per_network;
+    uint8_t refresh_min;
+    uint8_t network_count;
+    int8_t last_success_network_idx;
+    int8_t last_success_api_idx;
+    uint32_t write_counter;
+    uint32_t crc32;
+    dash_wifi_profile_legacy_t networks[MAX_WIFI_NETWORKS];
+    uint8_t panel_variant;
+    uint8_t max_partials;
+    uint8_t  quiet_enabled[MAX_WIFI_NETWORKS];
+    uint16_t quiet_start_min[MAX_WIFI_NETWORKS];
+    uint16_t quiet_end_min[MAX_WIFI_NETWORKS];
+} dash_config_v5_legacy_t;
+
+/* Legacy layout invariants: every version shares the byte-identical prefix
+   up to networks[], so one scratch struct (v5, the largest) reads them all
+   and the CRC helper can address crc32 at a single offset. */
+_Static_assert(offsetof(dash_config_v5_legacy_t, crc32) ==
+               offsetof(dash_config_v2_legacy_t, crc32),
+               "legacy crc32 offset must match across versions");
+_Static_assert(offsetof(dash_config_v5_legacy_t, networks) ==
+               offsetof(dash_config_v2_legacy_t, networks),
+               "legacy networks offset must match across versions");
+_Static_assert(offsetof(dash_config_v5_legacy_t, crc32) ==
+               offsetof(dash_config_v4_legacy_t, crc32),
+               "legacy crc32 offset must match across versions");
+_Static_assert(offsetof(dash_config_v5_legacy_t, networks) ==
+               offsetof(dash_config_v4_legacy_t, networks),
+               "legacy networks offset must match across versions");
+_Static_assert(offsetof(dash_config_v5_legacy_t, panel_variant) ==
+               offsetof(dash_config_v4_legacy_t, panel_variant),
+               "legacy panel_variant offset must match v4/v5");
+_Static_assert(offsetof(dash_config_v5_legacy_t, max_partials) ==
+               offsetof(dash_config_v4_legacy_t, max_partials),
+               "legacy max_partials offset must match v4/v5");
+_Static_assert(sizeof(dash_config_v5_legacy_t) > sizeof(dash_config_v4_legacy_t),
+               "v5 blob must be longer than v4 (length discriminates them)");
+_Static_assert(sizeof(dash_config_v4_legacy_t) > sizeof(dash_config_v2_legacy_t),
+               "v4 blob must be longer than legacy v2 (length discriminates them)");
+
+/* ---------------------------------------------------------------------------
+ * NVS budget. The 24 KB `nvs` partition has 6 × 4 KB pages; NVS reserves one
+ * for GC, and each remaining page holds 126 × 32 B entries. The maximum
+ * config's absolute peak (old+new banks for all 5 networks plus old+new
+ * meta) and the misc keys (ap_pwd, wifi_cc, namespace bookkeeping) must fit.
+ * If these fire after a caps/size change, shrink the caps — do NOT move or
+ * grow the partition (table changes do not propagate via OTA).
+ * ------------------------------------------------------------------------- */
+#define NVS_DATA_PAGES        5   /* 0x6000 / 0x1000 minus the reserved GC page */
+#define NVS_ENTRIES_PER_PAGE  126
+#define NVS_MISC_ENTRIES      32  /* ap_pwd, wifi_cc, bookkeeping, slack */
 
 _Static_assert(sizeof(dash_api_profile_t) <= 272,
                "dash_api_profile_t grew unexpectedly — recompute blob budget");
 _Static_assert(sizeof(dash_wifi_profile_t) <= 1464,
                "dash_wifi_profile_t grew unexpectedly — recompute blob budget");
-_Static_assert(sizeof(dash_config_v2_t) <= DASH_CFG_V2_MAX_BYTES,
-               "cfg_v2 exceeds DASH_CFG_V2_MAX_BYTES — switch to per-network blobs");
-_Static_assert(offsetof(dash_config_v2_t, crc32) ==
-               offsetof(dash_config_v2_legacy_t, crc32),
-               "v3 crc32 offset must match v2 — migration invariant");
-_Static_assert(offsetof(dash_config_v2_t, networks) ==
-               offsetof(dash_config_v2_legacy_t, networks),
-               "v3 networks offset must match v2 — migration invariant");
-_Static_assert(sizeof(dash_config_v2_t) > sizeof(dash_config_v2_legacy_t),
-               "v3/v4/v5 struct must be larger than legacy v2 (added trailing fields)");
-/* NOTE: max_partials landed in v3's 4-byte tail padding after panel_variant, so
-   sizeof(v4) == sizeof(v3); both read as dash_config_v4_t and are discriminated
-   by the `version` field, not blob length. v5 appends the quiet-hours arrays,
-   which do NOT fit in padding, so sizeof(v5) > sizeof(v4): the load path tells
-   v5 from v3/v4 by blob length, then v3 from v4 by `version`. */
-_Static_assert(offsetof(dash_config_v2_t, networks) ==
-               offsetof(dash_config_v4_t, networks),
-               "v5 networks offset must match v4 — migration invariant");
-_Static_assert(offsetof(dash_config_v2_t, crc32) ==
-               offsetof(dash_config_v4_t, crc32),
-               "v5 crc32 offset must match v4 — migration invariant");
-_Static_assert(offsetof(dash_config_v2_t, panel_variant) ==
-               offsetof(dash_config_v4_t, panel_variant),
-               "v5 panel_variant offset must match v4 — migration invariant");
-_Static_assert(offsetof(dash_config_v2_t, max_partials) ==
-               offsetof(dash_config_v4_t, max_partials),
-               "v5 max_partials offset must match v4 — migration invariant");
-_Static_assert(sizeof(dash_config_v2_t) > sizeof(dash_config_v4_t),
-               "v5 struct must be larger than v4 (quiet arrays exceed tail padding)");
-_Static_assert(sizeof(dash_config_v4_t) > sizeof(dash_config_v2_legacy_t),
-               "v4 struct must be larger than legacy v2 (panel_variant/max_partials)");
-/* Caps×counts budget: keeps the comfort margin obvious if caps move. */
-_Static_assert((size_t)DASH_API_URL_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS +
-               (size_t)DASH_DEVICE_TOKEN_MAX * MAX_APIS_PER_NETWORK * MAX_WIFI_NETWORKS <=
-               DASH_CFG_V2_MAX_BYTES - 512,
-               "URL/token caps × networks × APIs leave <512 B for headers — "
-               "lower caps or switch to per-network blobs");
+_Static_assert(sizeof(dash_net_blob_t) <= DASH_NET_BLOB_MAX_BYTES,
+               "network blob exceeds DASH_NET_BLOB_MAX_BYTES — shrink caps");
+_Static_assert(sizeof(dash_meta_blob_t) <= 32,
+               "meta blob grew unexpectedly — recompute blob budget");
+/* Absolute worst case: every slot momentarily occupies BOTH banks (all five
+   networks changed in one save, old generation not yet released) plus
+   old+new meta coexistence. Even that must fit, so a save can never run the
+   partition out of space with only this firmware's keys present. */
+_Static_assert(2u * MAX_WIFI_NETWORKS *
+               DASH_NVS_BLOB_ENTRIES(sizeof(dash_net_blob_t)) +
+               2u * DASH_NVS_BLOB_ENTRIES(sizeof(dash_meta_blob_t)) +
+               NVS_MISC_ENTRIES <=
+               NVS_DATA_PAGES * NVS_ENTRIES_PER_PAGE,
+               "double-bank worst case exceeds the nvs partition budget — "
+               "shrink URL/token/network caps");
+
+/* CRC32 over `size` bytes of `buf` with the 4-byte CRC field at `crc_off`
+   treated as zero — piecewise, so no struct copy lands on the stack. */
+static uint32_t crc_with_hole(const void *buf, size_t size, size_t crc_off)
+{
+    const uint8_t *bytes = (const uint8_t *)buf;
+    static const uint8_t zero_crc[4] = {0};
+    uint32_t crc = esp_rom_crc32_le(UINT32_MAX, bytes, crc_off);
+    crc = esp_rom_crc32_le(crc, zero_crc, sizeof(zero_crc));
+    crc = esp_rom_crc32_le(crc, bytes + crc_off + sizeof(zero_crc),
+                           size - crc_off - sizeof(zero_crc));
+    return crc;
+}
+
+/* Legacy blob CRC: same "crc32 field zeroed" scheme, evaluated over the
+   stored blob size of the version at hand (the prefix offsets are shared,
+   asserted above). */
+static uint32_t legacy_crc(const dash_config_v5_legacy_t *cfg, size_t size)
+{
+    return crc_with_hole(cfg, size, offsetof(dash_config_v5_legacy_t, crc32));
+}
 
 static uint8_t clamp_refresh(uint8_t value, uint8_t panel_variant,
                              uint8_t max_partials)
@@ -124,58 +233,80 @@ static uint8_t clamp_max_partials(uint8_t value)
     return value;
 }
 
-/* Piecewise CRC over the first `size` bytes of the struct with the crc32 field
-   treated as zero, matching the original "copy struct, zero crc32 field, CRC the
-   whole thing" semantics — without a 7 KiB stack copy that would overflow the
-   default main task stack. crc_off is identical across v2/v3/v4/v5 (shared
-   prefix, asserted above), so the same routine validates every version by
-   passing its stored blob size. */
-static uint32_t cfg_crc_sized(const dash_config_v2_t *cfg, size_t size)
-{
-    const uint8_t *bytes = (const uint8_t *)cfg;
-    const size_t crc_off = offsetof(dash_config_v2_t, crc32);
-    static const uint8_t zero_crc[sizeof(((dash_config_v2_t *)0)->crc32)] = {0};
-    uint32_t crc = esp_rom_crc32_le(UINT32_MAX, bytes, crc_off);
-    crc = esp_rom_crc32_le(crc, zero_crc, sizeof(zero_crc));
-    crc = esp_rom_crc32_le(crc, bytes + crc_off + sizeof(zero_crc),
-                           size - crc_off - sizeof(zero_crc));
-    return crc;
-}
-
-/* Current (v5) CRC over the full struct. */
-static uint32_t cfg_crc(const dash_config_v2_t *cfg)
-{
-    return cfg_crc_sized(cfg, sizeof(dash_config_v2_t));
-}
-
-/* CRC over the pre-v5 (v3/v4) blob size — both stored at sizeof(dash_config_v4_t)
-   because the prefix is byte-identical (asserted above). */
-static uint32_t cfg_crc_v4(const dash_config_v2_t *cfg)
-{
-    return cfg_crc_sized(cfg, sizeof(dash_config_v4_t));
-}
-
-/* CRC over the legacy v2 blob size (no panel_variant / max_partials). */
-static uint32_t cfg_crc_legacy(const dash_config_v2_t *cfg)
-{
-    return cfg_crc_sized(cfg, sizeof(dash_config_v2_legacy_t));
-}
-
 static bool panel_variant_is_known(uint8_t v)
 {
     return v == EINK_PANEL_WEACT_29_BWR || v == EINK_PANEL_WEACT_29_BW;
 }
 
-/* Current-version (v5) blob acceptance. Validates the quiet-hours arrays in
-   addition to the v4 fields; the whole-struct cfg_crc covers the trailing
-   arrays. */
-static bool cfg_v5_is_valid(const dash_config_v2_t *cfg)
+static void net_key(char *buf, size_t sz, unsigned idx, unsigned bank)
+{
+    snprintf(buf, sz, "cfg_net%u%c", idx, bank ? 'b' : 'a');
+}
+
+static void build_net_blob(dash_net_blob_t *blob,
+                           const dash_wifi_profile_t *net)
+{
+    memset(blob, 0, sizeof(*blob));
+    blob->version = DASH_CFG_V2_VERSION;
+    blob->net = *net;
+    blob->crc32 = crc_with_hole(blob, sizeof(*blob),
+                                offsetof(dash_net_blob_t, crc32));
+}
+
+/* ---- v6 blob acceptance ------------------------------------------------- */
+
+static bool meta_is_valid(const dash_meta_blob_t *m)
+{
+    if (!m) return false;
+    if (m->version != DASH_CFG_V2_VERSION) return false;
+    if (m->max_wifi_networks != MAX_WIFI_NETWORKS) return false;
+    if (m->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
+    if (m->network_count > MAX_WIFI_NETWORKS) return false;
+    if (!panel_variant_is_known(m->panel_variant)) return false;
+    if (m->max_partials < DASH_MAX_PARTIALS_MIN ||
+        m->max_partials > DASH_MAX_PARTIALS_MAX) return false;
+    if (!dashboard_refresh_config_is_valid(
+            m->refresh_min,
+            m->panel_variant == EINK_PANEL_WEACT_29_BW,
+            m->max_partials)) return false;
+    for (uint8_t i = 0; i < MAX_WIFI_NETWORKS; i++) {
+        if (m->net_bank[i] > 1) return false;
+    }
+    return m->crc32 == crc_with_hole(m, sizeof(*m),
+                                     offsetof(dash_meta_blob_t, crc32));
+}
+
+static bool net_blob_is_valid(const dash_net_blob_t *b)
+{
+    if (!b) return false;
+    if (b->version != DASH_CFG_V2_VERSION) return false;
+    if (b->net.api_count > MAX_APIS_PER_NETWORK) return false;
+    if (b->net.quiet_enabled > 1) return false;
+    if (b->net.quiet_start_min > DASH_QUIET_MIN_OF_DAY_MAX) return false;
+    if (b->net.quiet_end_min > DASH_QUIET_MIN_OF_DAY_MAX) return false;
+    return b->crc32 == crc_with_hole(b, sizeof(*b),
+                                     offsetof(dash_net_blob_t, crc32));
+}
+
+/* ---- Legacy blob acceptance (migration read path) ----------------------- */
+
+static bool legacy_common_is_valid(const dash_config_v5_legacy_t *cfg,
+                                   uint16_t expect_version)
 {
     if (!cfg) return false;
-    if (cfg->version != DASH_CFG_V2_VERSION) return false;
+    if (cfg->version != expect_version) return false;
     if (cfg->max_wifi_networks != MAX_WIFI_NETWORKS) return false;
     if (cfg->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
     if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
+    for (uint8_t i = 0; i < cfg->network_count; i++) {
+        if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
+    }
+    return true;
+}
+
+static bool legacy_v5_is_valid(const dash_config_v5_legacy_t *cfg)
+{
+    if (!legacy_common_is_valid(cfg, 5)) return false;
     if (!panel_variant_is_known(cfg->panel_variant)) return false;
     if (cfg->max_partials < DASH_MAX_PARTIALS_MIN ||
         cfg->max_partials > DASH_MAX_PARTIALS_MAX) return false;
@@ -183,76 +314,46 @@ static bool cfg_v5_is_valid(const dash_config_v2_t *cfg)
             cfg->refresh_min,
             cfg->panel_variant == EINK_PANEL_WEACT_29_BW,
             cfg->max_partials)) return false;
-    for (uint8_t i = 0; i < cfg->network_count; i++) {
-        if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
-    }
     for (uint8_t i = 0; i < MAX_WIFI_NETWORKS; i++) {
         if (cfg->quiet_enabled[i] > 1) return false;
         if (cfg->quiet_start_min[i] > DASH_QUIET_MIN_OF_DAY_MAX) return false;
         if (cfg->quiet_end_min[i] > DASH_QUIET_MIN_OF_DAY_MAX) return false;
     }
-    return cfg->crc32 == cfg_crc(cfg);
+    return cfg->crc32 == legacy_crc(cfg, sizeof(dash_config_v5_legacy_t));
 }
 
-/* v4 blob acceptance for in-place v4->v5 migration. v4 stored at
-   sizeof(dash_config_v4_t) (< sizeof v5), so its CRC covers only that prefix;
-   validate with cfg_crc_v4. The migration zero-seeds the quiet arrays. */
-static bool cfg_v4_is_valid(const dash_config_v2_t *cfg)
+static bool legacy_v4_is_valid(const dash_config_v5_legacy_t *cfg)
 {
-    if (!cfg) return false;
-    if (cfg->version != 4) return false;
-    if (cfg->max_wifi_networks != MAX_WIFI_NETWORKS) return false;
-    if (cfg->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
-    if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
+    if (!legacy_common_is_valid(cfg, 4)) return false;
     if (cfg->refresh_min < 3 || cfg->refresh_min > 60) return false;
     if (!panel_variant_is_known(cfg->panel_variant)) return false;
     if (cfg->max_partials < DASH_MAX_PARTIALS_MIN ||
         cfg->max_partials > DASH_MAX_PARTIALS_MAX) return false;
-    for (uint8_t i = 0; i < cfg->network_count; i++) {
-        if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
-    }
-    return cfg->crc32 == cfg_crc_v4(cfg);
+    return cfg->crc32 == legacy_crc(cfg, sizeof(dash_config_v4_legacy_t));
 }
 
-/* v3 blob acceptance for in-place v3->v5 migration. sizeof(v3) == sizeof(v4),
-   so a v3 blob arrives at the v4 length but carries version==3 with the
-   max_partials position holding whatever tail-padding byte v3 wrote (the v3 CRC
-   covered it, but v3 never required it to be any particular value). We validate
-   with cfg_crc_v4 (the v3/v4 size) and do NOT inspect the max_partials byte —
-   the migration overwrites it with the default regardless. */
-static bool cfg_v3_is_valid(const dash_config_v2_t *cfg)
+/* v3 arrives at the v4 length (shared size, see the struct note). Do NOT
+   inspect the max_partials byte — v3 never required it to hold any
+   particular value; the migration overwrites it with the default. */
+static bool legacy_v3_is_valid(const dash_config_v5_legacy_t *cfg)
 {
-    if (!cfg) return false;
-    if (cfg->version != 3) return false;
-    if (cfg->max_wifi_networks != MAX_WIFI_NETWORKS) return false;
-    if (cfg->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
-    if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
+    if (!legacy_common_is_valid(cfg, 3)) return false;
     if (cfg->refresh_min < 3 || cfg->refresh_min > 60) return false;
     if (!panel_variant_is_known(cfg->panel_variant)) return false;
-    for (uint8_t i = 0; i < cfg->network_count; i++) {
-        if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
-    }
-    return cfg->crc32 == cfg_crc_v4(cfg);
+    return cfg->crc32 == legacy_crc(cfg, sizeof(dash_config_v4_legacy_t));
 }
 
-static bool cfg_v2_legacy_is_valid(const dash_config_v2_t *cfg)
+static bool legacy_v2_is_valid(const dash_config_v5_legacy_t *cfg)
 {
-    if (!cfg) return false;
-    if (cfg->version != 2) return false;
-    if (cfg->max_wifi_networks != MAX_WIFI_NETWORKS) return false;
-    if (cfg->max_apis_per_network != MAX_APIS_PER_NETWORK) return false;
-    if (cfg->network_count > MAX_WIFI_NETWORKS) return false;
+    if (!legacy_common_is_valid(cfg, 2)) return false;
     if (cfg->refresh_min < 3 || cfg->refresh_min > 60) return false;
-    for (uint8_t i = 0; i < cfg->network_count; i++) {
-        if (cfg->networks[i].api_count > MAX_APIS_PER_NETWORK) return false;
-    }
-    return cfg->crc32 == cfg_crc_legacy(cfg);
+    return cfg->crc32 == legacy_crc(cfg, sizeof(dash_config_v2_legacy_t));
 }
 
-/* Reconnect hints kept in RTC memory instead of the NVS blob — see the
-   storage.h header for the full rationale (NVS churn / fragmentation). These
-   survive deep sleep and esp_restart; on a cold boot they start at -1 ("no
-   hint"), which makes the device fall back to a normal scan. Even if a given
+/* Reconnect hints kept in RTC memory instead of NVS — see the storage.h
+   header for the full rationale (NVS churn / fragmentation). These survive
+   deep sleep and esp_restart; on a cold boot they start at -1 ("no hint"),
+   which makes the device fall back to a normal scan. Even if a given
    chip/reset path were to zero-init these instead of honoring the -1, idx 0 is
    a valid in-range network, so the worst case is "try network 0 first" — a
    benign reconnect order, and storage_apply_last_success clamps it anyway. */
@@ -358,31 +459,24 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
         }
         memset(&net->apis[net->api_count], 0,
                sizeof(net->apis[0]) * (MAX_APIS_PER_NETWORK - net->api_count));
+
+        /* Quiet hours: clamp times to a valid minute-of-day, coerce enabled
+           to 0/1, and treat start == end as disabled. */
+        if (net->quiet_start_min > DASH_QUIET_MIN_OF_DAY_MAX) {
+            net->quiet_start_min = DASH_QUIET_MIN_OF_DAY_MAX;
+        }
+        if (net->quiet_end_min > DASH_QUIET_MIN_OF_DAY_MAX) {
+            net->quiet_end_min = DASH_QUIET_MIN_OF_DAY_MAX;
+        }
+        net->quiet_enabled = net->quiet_enabled ? 1 : 0;
+        if (net->quiet_start_min == net->quiet_end_min) {
+            net->quiet_enabled = 0;
+        }
     }
+    /* Zero the trailing slots that have no network, so the per-slot blob
+       compare in storage_save_v2 sees stable bytes. */
     memset(&cfg->networks[cfg->network_count], 0,
            sizeof(cfg->networks[0]) * (MAX_WIFI_NETWORKS - cfg->network_count));
-
-    /* Quiet-hours arrays are slot-indexed, parallel to networks[]. Clamp times
-       to a valid minute-of-day, coerce enabled to 0/1, treat start==end as
-       disabled, and zero the trailing slots that have no network. */
-    for (uint8_t i = 0; i < MAX_WIFI_NETWORKS; i++) {
-        if (i >= cfg->network_count) {
-            cfg->quiet_enabled[i] = 0;
-            cfg->quiet_start_min[i] = 0;
-            cfg->quiet_end_min[i] = 0;
-            continue;
-        }
-        if (cfg->quiet_start_min[i] > DASH_QUIET_MIN_OF_DAY_MAX) {
-            cfg->quiet_start_min[i] = DASH_QUIET_MIN_OF_DAY_MAX;
-        }
-        if (cfg->quiet_end_min[i] > DASH_QUIET_MIN_OF_DAY_MAX) {
-            cfg->quiet_end_min[i] = DASH_QUIET_MIN_OF_DAY_MAX;
-        }
-        cfg->quiet_enabled[i] = cfg->quiet_enabled[i] ? 1 : 0;
-        if (cfg->quiet_start_min[i] == cfg->quiet_end_min[i]) {
-            cfg->quiet_enabled[i] = 0;
-        }
-    }
 
     if (cfg->last_success_network_idx >= (int8_t)cfg->network_count) {
         cfg->last_success_network_idx = -1;
@@ -395,7 +489,6 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
             cfg->last_success_api_idx = -1;
         }
     }
-    cfg->crc32 = cfg_crc(cfg);
 }
 
 uint32_t storage_next_profile_id(const dash_config_v2_t *cfg)
@@ -425,10 +518,105 @@ void storage_mask_token(const char *token, char *out, size_t out_sz)
 void storage_init(void)
 {
     /* nvs_flash_init() is called in app_main before storage_init */
-    ESP_LOGI(TAG, "cfg_v2 blob: %u bytes (%u%% of %u B budget)",
-             (unsigned)sizeof(dash_config_v2_t),
-             (unsigned)((sizeof(dash_config_v2_t) * 100u) / DASH_CFG_V2_MAX_BYTES),
-             (unsigned)DASH_CFG_V2_MAX_BYTES);
+    ESP_LOGI(TAG, "cfg storage: per-network blobs (net %u B, meta %u B)",
+             (unsigned)sizeof(dash_net_blob_t),
+             (unsigned)sizeof(dash_meta_blob_t));
+}
+
+/* Load the v6 per-network layout. Returns true when the meta blob validates;
+   individual network blobs that are missing or corrupt are logged and
+   dropped (the surviving networks compact down), which is the
+   blast-radius win of the per-network split. */
+static bool load_v6(nvs_handle_t h, dash_config_v2_t *cfg)
+{
+    dash_meta_blob_t meta = {0};
+    size_t len = sizeof(meta);
+    esp_err_t err = nvs_get_blob(h, CFG_META_KEY, &meta, &len);
+    if (err != ESP_OK || len != sizeof(meta) || !meta_is_valid(&meta)) {
+        ESP_LOGW(TAG, "Ignoring invalid cfg_meta blob");
+        return false;
+    }
+
+    cfg->refresh_min = meta.refresh_min;
+    cfg->panel_variant = meta.panel_variant;
+    cfg->max_partials = meta.max_partials;
+    cfg->write_counter = meta.write_counter;
+
+    dash_net_blob_t *blob = calloc(1, sizeof(*blob));
+    if (!blob) return false;
+    uint8_t out = 0;
+    for (uint8_t i = 0; i < meta.network_count; i++) {
+        char key[16];
+        net_key(key, sizeof(key), i, meta.net_bank[i]);
+        size_t blen = sizeof(*blob);
+        memset(blob, 0, sizeof(*blob));
+        err = nvs_get_blob(h, key, blob, &blen);
+        if (err != ESP_OK || blen != sizeof(*blob) || !net_blob_is_valid(blob)) {
+            ESP_LOGW(TAG, "Dropping missing/invalid network blob %s", key);
+            continue;
+        }
+        cfg->networks[out++] = blob->net;
+    }
+    free(blob);
+    cfg->network_count = out;
+    if (out != meta.network_count) {
+        /* Slots were dropped and the array compacted, so the positional RTC
+           reconnect hints may now point at a DIFFERENT network (wrong quiet
+           hours / API preference). Reset both to "no hint" = normal scan. */
+        storage_note_last_success(-1, -1);
+    }
+    return true;
+}
+
+/* Copy a validated legacy blob into the current in-RAM layout. The scratch
+   struct is zero-filled before the NVS read, so for pre-v5 blobs the quiet
+   arrays (and for pre-v3 the panel/partials bytes) read back as zero; the
+   caller fixes up the per-version defaults afterwards. */
+static void legacy_to_cfg(const dash_config_v5_legacy_t *old,
+                          dash_config_v2_t *cfg)
+{
+    storage_cfg_v2_defaults(cfg);
+    cfg->refresh_min = old->refresh_min;
+    cfg->network_count = old->network_count;
+    cfg->last_success_network_idx = old->last_success_network_idx;
+    cfg->last_success_api_idx = old->last_success_api_idx;
+    cfg->write_counter = old->write_counter;
+    cfg->panel_variant = old->panel_variant;
+    cfg->max_partials = old->max_partials;
+    for (uint8_t i = 0; i < old->network_count; i++) {
+        const dash_wifi_profile_legacy_t *src = &old->networks[i];
+        dash_wifi_profile_t *dst = &cfg->networks[i];
+        dst->id = src->id;
+        dst->enabled = src->enabled;
+        memcpy(dst->ssid, src->ssid, sizeof(dst->ssid));
+        memcpy(dst->password, src->password, sizeof(dst->password));
+        dst->api_count = src->api_count;
+        memcpy(dst->apis, src->apis, sizeof(dst->apis));
+        dst->quiet_enabled = old->quiet_enabled[i];
+        dst->quiet_start_min = old->quiet_start_min[i];
+        dst->quiet_end_min = old->quiet_end_min[i];
+    }
+}
+
+/* One-time cleanup after a successful legacy → v6 migration. The legacy
+   cfg_v2 key is already erased by the successful storage_save_v2; what
+   remains is the WiFi driver's nvs.net80211 namespace — dead weight in the
+   same 24 KB partition now that the driver runs with WIFI_STORAGE_RAM (see
+   wifi_net_init): the app owns all credentials in cfg and reconfigures the
+   driver from it on every boot. Erasing it reclaims its entries for the
+   per-network blobs. */
+static void migrate_cleanup_wifi_namespace(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("nvs.net80211", NVS_READWRITE, &h) != ESP_OK) return;
+    esp_err_t err = nvs_erase_all(h);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Erased stale nvs.net80211 namespace");
+    } else {
+        ESP_LOGW(TAG, "nvs.net80211 cleanup failed: %s", esp_err_to_name(err));
+    }
 }
 
 bool storage_load_v2(dash_config_v2_t *cfg)
@@ -441,6 +629,19 @@ bool storage_load_v2(dash_config_v2_t *cfg)
         return false;
     }
 
+    /* v6 path: presence of the meta blob is authoritative — once it exists,
+       the legacy key (if any survived a failed cleanup) is never consulted
+       again. */
+    size_t meta_len = 0;
+    if (nvs_get_blob(h, CFG_META_KEY, NULL, &meta_len) == ESP_OK) {
+        bool ok = load_v6(h, cfg);
+        nvs_close(h);
+        if (!ok) storage_cfg_v2_defaults(cfg);
+        storage_cfg_v2_normalize(cfg);
+        return ok;
+    }
+
+    /* No meta blob: look for a legacy v2-v5 single blob and migrate it. */
     size_t blob_len = 0;
     esp_err_t err = nvs_get_blob(h, CFG_V2_KEY, NULL, &blob_len);
     if (err != ESP_OK) {
@@ -449,111 +650,99 @@ bool storage_load_v2(dash_config_v2_t *cfg)
         return false;
     }
 
-    if (blob_len == sizeof(dash_config_v2_t)) {     /* genuine v5 blob */
-        size_t len = sizeof(*cfg);
-        err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
+    /* The scratch struct is the largest legacy layout; ~7.3 KB, so it lives
+       on the heap — never on the caller's stack. */
+    dash_config_v5_legacy_t *old = calloc(1, sizeof(*old));
+    if (!old) {
         nvs_close(h);
-        if (err == ESP_OK && len == sizeof(*cfg) && cfg_v5_is_valid(cfg)) {
-            storage_cfg_v2_normalize(cfg);
-            return true;
-        }
-        if (err == ESP_OK) ESP_LOGW(TAG, "Ignoring invalid cfg_v2 v5 blob");
-        storage_cfg_v2_defaults(cfg);
         storage_cfg_v2_normalize(cfg);
         return false;
     }
 
-    if (blob_len == sizeof(dash_config_v4_t)) {
-        /* Pre-v5 blob. sizeof(v3) == sizeof(v4): both arrive here, discriminated
-           by version. Zero the v5 struct first so the trailing quiet arrays (and
-           their padding) start clean before we overlay the L4 prefix — the
-           migration leaves quiet hours disabled. */
-        memset(cfg, 0, sizeof(*cfg));
+    bool ok = false;
+    uint16_t from_version = 0;
+    if (blob_len == sizeof(dash_config_v5_legacy_t) ||
+        blob_len == sizeof(dash_config_v4_legacy_t) ||
+        blob_len == sizeof(dash_config_v2_legacy_t)) {
         size_t len = blob_len;
-        err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
-        nvs_close(h);
+        err = nvs_get_blob(h, CFG_V2_KEY, old, &len);
         if (err == ESP_OK && len == blob_len) {
-            if (cfg_v4_is_valid(cfg)) {            /* v4 blob -> migrate to v5 */
-                ESP_LOGW(TAG, "cfg_v2 v4: migrating to v5");
-                cfg->version = DASH_CFG_V2_VERSION;
-                esp_err_t save_err = storage_save_v2(cfg);
-                if (save_err != ESP_OK) {
-                    ESP_LOGW(TAG, "v4→v5 migration save failed (err=0x%x); "
-                                  "using in-memory cfg", save_err);
-                    storage_cfg_v2_normalize(cfg);
-                }
-                return true;
-            }
-            if (cfg_v3_is_valid(cfg)) {            /* v3 blob -> migrate to v5 */
-                ESP_LOGW(TAG, "cfg_v2 v3: migrating to v5");
-                cfg->version = DASH_CFG_V2_VERSION;
-                /* Overwrite the old v3 tail-padding byte with the default. */
+            if (blob_len == sizeof(dash_config_v5_legacy_t) &&
+                legacy_v5_is_valid(old)) {
+                legacy_to_cfg(old, cfg);
+                ok = true;
+            } else if (blob_len == sizeof(dash_config_v4_legacy_t) &&
+                       legacy_v4_is_valid(old)) {
+                legacy_to_cfg(old, cfg);
+                ok = true;
+            } else if (blob_len == sizeof(dash_config_v4_legacy_t) &&
+                       legacy_v3_is_valid(old)) {
+                legacy_to_cfg(old, cfg);
+                /* v3's max_partials position held an arbitrary tail-padding
+                   byte; overwrite it with the default. */
                 cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
-                esp_err_t save_err = storage_save_v2(cfg);
-                if (save_err != ESP_OK) {
-                    ESP_LOGW(TAG, "v3→v5 migration save failed (err=0x%x); "
-                                  "using in-memory cfg", save_err);
-                    storage_cfg_v2_normalize(cfg);
-                }
-                return true;
+                ok = true;
+            } else if (blob_len == sizeof(dash_config_v2_legacy_t) &&
+                       legacy_v2_is_valid(old)) {
+                legacy_to_cfg(old, cfg);
+                /* Legacy v2 blobs carry neither field. Seed the SKU default
+                   panel variant (so an upgraded BW-SKU device resolves to BW,
+                   not a hardcoded BWR) and the default partial cap. */
+                cfg->panel_variant = storage_default_panel_variant();
+                cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
+                ok = true;
             }
+            from_version = old->version;
         }
-        if (err == ESP_OK) ESP_LOGW(TAG, "Ignoring invalid cfg_v2 v3/v4 blob");
+    } else {
+        ESP_LOGW(TAG, "Unknown cfg_v2 blob length %u; resetting to defaults",
+                 (unsigned)blob_len);
+    }
+    free(old);
+    nvs_close(h);
+
+    if (!ok) {
+        ESP_LOGW(TAG, "Ignoring invalid legacy cfg_v2 blob");
         storage_cfg_v2_defaults(cfg);
         storage_cfg_v2_normalize(cfg);
         return false;
     }
 
-    if (blob_len == sizeof(dash_config_v2_legacy_t)) {
-        /* Re-zero the v5 struct so the trailing fields (panel_variant,
-           max_partials, quiet arrays) start clean before we overlay the legacy
-           blob's bytes onto the prefix. */
-        memset(cfg, 0, sizeof(*cfg));
-        size_t len = blob_len;
-        err = nvs_get_blob(h, CFG_V2_KEY, cfg, &len);
-        nvs_close(h);
-        if (err != ESP_OK || len != blob_len || !cfg_v2_legacy_is_valid(cfg)) {
-            if (err == ESP_OK) ESP_LOGW(TAG, "Ignoring invalid legacy cfg_v2 blob");
-            storage_cfg_v2_defaults(cfg);
-            storage_cfg_v2_normalize(cfg);
-            return false;
+    ESP_LOGW(TAG, "cfg_v2 v%u: migrating to per-network blobs (v%u)",
+             from_version, DASH_CFG_V2_VERSION);
+    /* storage_save_v2 writes the v6 blobs and erases the legacy key once the
+       new layout is fully committed. The old ~7.2 KB blob and the new blobs
+       must briefly coexist; on a fragmented partition that can fail with
+       NOT_ENOUGH_SPACE, so fall back to erasing the old blob first (the
+       config is safe in RAM) and retry once. The fallback has a power-loss
+       window — accepted, because without it the migration cannot proceed at
+       all on exactly the partitions this change is rescuing. */
+    esp_err_t save_err = storage_save_v2(cfg);
+    if (save_err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+        ESP_LOGW(TAG, "Migration save needs space: erasing legacy blob first");
+        nvs_handle_t hw;
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &hw) == ESP_OK) {
+            if (nvs_erase_key(hw, CFG_V2_KEY) == ESP_OK) nvs_commit(hw);
+            nvs_close(hw);
         }
-        ESP_LOGW(TAG, "cfg_v2_legacy: migrating to v5");
-        cfg->version = DASH_CFG_V2_VERSION;
-        /* Legacy v2 blobs carry none of the trailing fields. Seed the SKU
-           default panel variant (so an upgraded BW-SKU device resolves to BW,
-           not a hardcoded BWR) and the default partial cap; quiet arrays stay
-           zeroed (disabled). */
-        cfg->panel_variant = storage_default_panel_variant();
-        cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
-        cfg->max_wifi_networks = MAX_WIFI_NETWORKS;
-        cfg->max_apis_per_network = MAX_APIS_PER_NETWORK;
-        /* Persist the migrated config so subsequent boots take the fast
-           sizeof(v5) path. A transient NVS error is non-fatal: log and
-           continue with the in-memory migrated cfg — the next boot retries
-           the migration rather than dropping the user's WiFi/API entries. */
-        esp_err_t save_err = storage_save_v2(cfg);
-        if (save_err != ESP_OK) {
-            ESP_LOGW(TAG, "v2→v5 migration save failed (err=0x%x); using in-memory cfg",
-                     save_err);
-            storage_cfg_v2_normalize(cfg);
-        }
-        return true;
+        save_err = storage_save_v2(cfg);
     }
-
-    nvs_close(h);
-    ESP_LOGW(TAG, "Unknown cfg_v2 blob length %u; resetting to defaults",
-             (unsigned)blob_len);
-    storage_cfg_v2_defaults(cfg);
-    storage_cfg_v2_normalize(cfg);
-    return false;
+    if (save_err == ESP_OK) {
+        migrate_cleanup_wifi_namespace();
+    } else {
+        ESP_LOGW(TAG, "v%u→v%u migration save failed (err=0x%x); "
+                 "using in-memory cfg", from_version, DASH_CFG_V2_VERSION,
+                 save_err);
+        storage_cfg_v2_normalize(cfg);
+    }
+    return true;
 }
 
 esp_err_t storage_save_v2(dash_config_v2_t *cfg)
 {
-    /* Normalize and update header fields in place. The previous version made
-     * a 7 KiB stack copy to keep the API const-correct, but that doubled the
-     * call's stack footprint and pushed the main task past the WDT. */
+    /* Normalize in place. The previous version made a 7 KiB stack copy to
+     * keep the API const-correct, but that doubled the call's stack
+     * footprint and pushed the main task past the WDT. */
     storage_cfg_v2_normalize(cfg);
 
     /* Portal edits can add/remove/reorder networks, which normalize() may have
@@ -566,10 +755,173 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    cfg->write_counter++;
-    cfg->crc32 = cfg_crc(cfg);
-    err = nvs_set_blob(h, CFG_V2_KEY, cfg, sizeof(*cfg));
-    if (err == ESP_OK) err = nvs_commit(h);
+
+    /* Candidate + stored scratch blobs (~1.5 KB each) — heap, never on the
+       caller's stack. */
+    dash_net_blob_t *cand = calloc(1, sizeof(*cand));
+    dash_net_blob_t *stored = calloc(1, sizeof(*stored));
+    if (!cand || !stored) {
+        free(cand);
+        free(stored);
+        nvs_close(h);
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Atomic-switch write order. The stored meta references one bank key per
+       live slot; everything it references is left untouched until the new
+       meta commits:
+       1. erase ORPHAN keys only (banks no stored meta references — leftovers
+          of a previously failed save). This runs BEFORE the capacity guard
+          so a failed attempt's stranded blobs are reclaimed, not counted
+          against the next try,
+       2. preflight: decide per slot whether it needs a write (and into which
+          bank) without writing, then require available_entries to cover ALL
+          pending blob writes plus the meta — the alternate banks of every
+          changed slot coexist with their old copies until the meta commit,
+       3. changed networks ONE AT A TIME into the slot's OTHER bank, skipping
+          unchanged ones,
+       4. meta last: committing it switches the whole save live atomically.
+          A failure (or power cut) before that leaves the old meta and thus
+          the old configuration fully intact — a failed portal save really
+          means "nothing applied",
+       5. only after the new meta is live: release the old generation
+          (switched banks, dropped slots, the legacy cfg_v2 key). */
+    dash_meta_blob_t prev = {0};
+    size_t mlen = sizeof(prev);
+    bool have_prev = nvs_get_blob(h, CFG_META_KEY, &prev, &mlen) == ESP_OK &&
+                     mlen == sizeof(prev) && meta_is_valid(&prev);
+
+    char key[16];
+
+    for (uint8_t i = 0; i < MAX_WIFI_NETWORKS && err == ESP_OK; i++) {
+        for (uint8_t b = 0; b < 2; b++) {
+            bool referenced = have_prev && i < prev.network_count &&
+                              prev.net_bank[i] == b;
+            if (referenced) continue;
+            net_key(key, sizeof(key), i, b);
+            esp_err_t eerr = nvs_erase_key(h, key);
+            if (eerr == ESP_OK) err = nvs_commit(h);
+            else if (eerr != ESP_ERR_NVS_NOT_FOUND) err = eerr;
+        }
+    }
+
+    /* Preflight: compare each candidate against the slot's live bank. */
+    bool write_slot[MAX_WIFI_NETWORKS] = {false};
+    uint8_t new_bank[MAX_WIFI_NETWORKS] = {0};
+    size_t pending_writes = 0;
+    for (uint8_t i = 0; i < cfg->network_count && err == ESP_OK; i++) {
+        build_net_blob(cand, &cfg->networks[i]);
+        bool slot_live = have_prev && i < prev.network_count;
+        if (slot_live) {
+            net_key(key, sizeof(key), i, prev.net_bank[i]);
+            size_t blen = sizeof(*stored);
+            memset(stored, 0, sizeof(*stored));
+            esp_err_t gerr = nvs_get_blob(h, key, stored, &blen);
+            if (gerr == ESP_OK && blen == sizeof(*stored) &&
+                memcmp(stored, cand, sizeof(*cand)) == 0) {
+                new_bank[i] = prev.net_bank[i];
+                continue; /* unchanged — no rewrite, no wear */
+            }
+        }
+        new_bank[i] = slot_live ? (prev.net_bank[i] ^ 1u) : 0;
+        write_slot[i] = true;
+        pending_writes++;
+    }
+
+    bool blobs_changed = pending_writes > 0;
+    bool meta_differs = !have_prev ||
+        prev.refresh_min != cfg->refresh_min ||
+        prev.network_count != cfg->network_count ||
+        prev.panel_variant != cfg->panel_variant ||
+        prev.max_partials != cfg->max_partials;
+    bool need_meta = blobs_changed || meta_differs;
+
+    /* Capacity guard: the exact entry cost of this save (defense-in-depth;
+       the double-bank static assert makes this unreachable with only this
+       firmware's keys present). available_entries excludes the reserved GC
+       page, unlike free_entries. */
+    nvs_stats_t stats;
+    if (err == ESP_OK && need_meta &&
+        nvs_get_stats(NULL, &stats) == ESP_OK) {
+        size_t need =
+            pending_writes * DASH_NVS_BLOB_ENTRIES(sizeof(dash_net_blob_t)) +
+            DASH_NVS_BLOB_ENTRIES(sizeof(dash_meta_blob_t)) + 4 /* slack */;
+        if (stats.available_entries < need) {
+            ESP_LOGE(TAG, "NVS nearly full (%u used, %u available of %u "
+                     "entries) — refusing save; need %u available",
+                     (unsigned)stats.used_entries,
+                     (unsigned)stats.available_entries,
+                     (unsigned)stats.total_entries, (unsigned)need);
+            free(cand);
+            free(stored);
+            nvs_close(h);
+            return ESP_ERR_NVS_NOT_ENOUGH_SPACE;
+        }
+    }
+
+    for (uint8_t i = 0; i < cfg->network_count && err == ESP_OK; i++) {
+        if (!write_slot[i]) continue;
+        build_net_blob(cand, &cfg->networks[i]);
+        net_key(key, sizeof(key), i, new_bank[i]);
+        err = nvs_set_blob(h, key, cand, sizeof(*cand));
+        if (err == ESP_OK) err = nvs_commit(h);
+    }
+
+    bool meta_written = false;
+    if (err == ESP_OK && need_meta) {
+        dash_meta_blob_t meta = {0};
+        meta.version = DASH_CFG_V2_VERSION;
+        meta.max_wifi_networks = MAX_WIFI_NETWORKS;
+        meta.max_apis_per_network = MAX_APIS_PER_NETWORK;
+        meta.refresh_min = cfg->refresh_min;
+        meta.network_count = cfg->network_count;
+        meta.panel_variant = cfg->panel_variant;
+        meta.max_partials = cfg->max_partials;
+        memcpy(meta.net_bank, new_bank, sizeof(meta.net_bank));
+        meta.write_counter =
+            (have_prev ? prev.write_counter : cfg->write_counter) + 1;
+        meta.crc32 = crc_with_hole(&meta, sizeof(meta),
+                                   offsetof(dash_meta_blob_t, crc32));
+        err = nvs_set_blob(h, CFG_META_KEY, &meta, sizeof(meta));
+        if (err == ESP_OK) err = nvs_commit(h);
+        if (err == ESP_OK) {
+            cfg->write_counter = meta.write_counter;
+            meta_written = true;
+        }
+    }
+    /* A fully unchanged save writes nothing at all (the pre-v6 code rewrote
+       the whole 7.2 KB blob even for a no-op portal save). */
+
+    if (err == ESP_OK && meta_written && have_prev) {
+        /* New meta is live; release the old generation's keys. Best-effort:
+           a leftover is an orphan the next save's cleanup pass reclaims. */
+        for (uint8_t i = 0; i < prev.network_count; i++) {
+            bool dropped = i >= cfg->network_count;
+            bool switched = !dropped && new_bank[i] != prev.net_bank[i];
+            if (!dropped && !switched) continue;
+            net_key(key, sizeof(key), i, prev.net_bank[i]);
+            esp_err_t eerr = nvs_erase_key(h, key);
+            if (eerr == ESP_OK) nvs_commit(h);
+            else if (eerr != ESP_ERR_NVS_NOT_FOUND)
+                ESP_LOGW(TAG, "old-generation blob %s erase failed: %s",
+                         key, esp_err_to_name(eerr));
+        }
+    }
+
+    if (err == ESP_OK) {
+        /* The v6 layout is fully committed; the legacy blob (if any) is now
+           redundant. NOT_FOUND is the normal steady state. */
+        esp_err_t eerr = nvs_erase_key(h, CFG_V2_KEY);
+        if (eerr == ESP_OK) {
+            nvs_commit(h);
+        } else if (eerr != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "legacy cfg_v2 erase failed: %s",
+                     esp_err_to_name(eerr));
+        }
+    }
+
+    free(cand);
+    free(stored);
     nvs_close(h);
     return err;
 }
@@ -619,9 +971,9 @@ esp_err_t storage_get_or_init_ap_password(char *out, size_t out_sz)
 }
 
 /* WiFi regulatory country code. Stored as its own small NVS string key — NOT
- * part of the cfg_v2 blob — so the portal can change the regulatory domain
- * without churning or risking the ~7 KB config blob, mirroring how the SoftAP
- * password is persisted. Accepts the two world-safe "01" sentinel or a
+ * part of the config blobs — so the portal can change the regulatory domain
+ * without churning the config writes, mirroring how the SoftAP password is
+ * persisted. Accepts the two world-safe "01" sentinel or a
  * two-uppercase-letter ISO code; anything else is rejected so a crafted POST
  * cannot push an invalid string into esp_wifi_set_country_code(). */
 #define WIFI_CC_KEY "wifi_cc"

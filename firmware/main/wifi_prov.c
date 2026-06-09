@@ -125,6 +125,16 @@ esp_err_t wifi_net_init(void)
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
 
+    /* RAM-only driver storage, set FIRST — before any WiFi setter that could
+     * persist configuration (esp_wifi_set_country_code below writes flash
+     * under the default WIFI_STORAGE_FLASH). The app owns all credentials in
+     * the NVS config and reconfigures the driver from it on every boot/wake
+     * (wifi_roam also runs with WIFI_STORAGE_RAM). FLASH storage would let
+     * the driver mirror state into the nvs.net80211 namespace — dead weight
+     * in the same 24 KB partition the per-network config blobs need headroom
+     * in; the v5→v6 migration erases that namespace once to reclaim it. */
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
     /* Set the regulatory domain so channels 1-13 are usable with active scan.
      * The ESP32 default ("01"/world-safe) makes channels 12-13 passive-only, so
      * an active scan cannot reliably find an AP on channel 13 — a router on
@@ -133,11 +143,10 @@ esp_err_t wifi_net_init(void)
      * build-stamped default. Must run after esp_wifi_init(). */
     char country[4];
     storage_get_wifi_country(country, sizeof(country));
-    /* Only call the setter when the active domain actually differs:
-     * esp_wifi_set_country_code() persists the country to flash under
-     * WIFI_STORAGE_FLASH, and wifi_net_init() runs on every deep-sleep refresh
-     * wake — an unconditional call would put an NVS write on the refresh hot
-     * path (the wear/fragmentation issue this firmware avoids elsewhere). */
+    /* Only call the setter when the active domain actually differs. With
+     * WIFI_STORAGE_RAM (set above) the call no longer touches flash, but it
+     * is still driver work on every deep-sleep refresh wake, so keep
+     * skipping the no-op case. */
     wifi_country_t active = {0};
     /* Re-apply when the active code differs OR the policy is not AUTO: we always
      * want WIFI_COUNTRY_POLICY_AUTO (802.11d) from set_country_code(.., true), so
@@ -160,7 +169,6 @@ esp_err_t wifi_net_init(void)
         }
     }
 
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     return ESP_OK;
 }
@@ -921,9 +929,9 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
     for (int n = 0; n < MAX_WIFI_NETWORKS; n++) {
         const dash_wifi_profile_t *net =
             (n < cfg->network_count) ? &cfg->networks[n] : NULL;
-        bool q_on   = (n < cfg->network_count) && cfg->quiet_enabled[n];
-        int  q_start = (n < cfg->network_count) ? cfg->quiet_start_min[n] : 0;
-        int  q_end   = (n < cfg->network_count) ? cfg->quiet_end_min[n] : 0;
+        bool q_on   = net && net->quiet_enabled;
+        int  q_start = net ? net->quiet_start_min : 0;
+        int  q_end   = net ? net->quiet_end_min : 0;
         render_network(req, n, net, q_on, q_start, q_end);
     }
 
@@ -1197,10 +1205,10 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
         bool q_times_ok = nf->q_start_present && nf->q_end_present &&
                           nf->q_start >= 0 && nf->q_end >= 0 &&
                           nf->q_start != nf->q_end;
-        cfg->quiet_enabled[out_n]   = (nf->q_on && q_times_ok) ? 1 : 0;
-        cfg->quiet_start_min[out_n] =
+        nw->quiet_enabled = (nf->q_on && q_times_ok) ? 1 : 0;
+        nw->quiet_start_min =
             (nf->q_start_present && nf->q_start >= 0) ? (uint16_t)nf->q_start : 0;
-        cfg->quiet_end_min[out_n] =
+        nw->quiet_end_min =
             (nf->q_end_present && nf->q_end >= 0) ? (uint16_t)nf->q_end : 0;
 
         out_n++;

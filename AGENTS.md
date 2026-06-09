@@ -105,13 +105,28 @@ a built-in ESP-IDF component and is pulled in only via `CMakeLists.txt`
 
 ## NVS writes and RTC memory
 
-Keep NVS writes rare. The `nvs` partition is only 24 KB (6 pages) and is shared
-with the WiFi driver's stored credentials; the `cfg_v2` blob alone is ~7 KB, so
-each rewrite needs the old + new copy to coexist. Writing it on a hot path
-fragments the partition (leading to `ESP_ERR_NVS_NOT_ENOUGH_SPACE` on a later
-save) and wears the flash. NVS is for things that **must** survive a cold boot /
-power loss: WiFi + API config, panel variant, the AP password, and the
-per-network quiet hours.
+Keep NVS writes rare. The `nvs` partition is only 24 KB (6 × 4 KB pages, one
+reserved for GC) and must never move or grow — partition-table changes do not
+propagate via OTA. Writing on a hot path fragments the partition (leading to
+`ESP_ERR_NVS_NOT_ENOUGH_SPACE` on a later save) and wears the flash. NVS is
+for things that **must** survive a cold boot / power loss: WiFi + API config,
+panel variant, the AP password, and the per-network quiet hours.
+
+Since config version 6 the config is stored as **per-network blobs**: a small
+`cfg_meta` header plus one `cfg_net{i}{a|b}` blob (~1.5 KB) per saved WiFi
+network. `storage_save_v2` writes changed blobs one at a time (skipping
+unchanged ones) into the slot's other bank key and commits the meta blob
+last, which switches the save live atomically — a failed save leaves the old
+config fully intact. The historical failure mode (rewriting one ~7 KB blob,
+needing ~14 KB free) is gone. Before writing, the save path erases orphaned
+inactive banks, identifies every changed network, and checks
+`nvs_get_stats().available_entries` against the combined entry cost of all
+pending network blobs plus the meta update. Static asserts also pin the
+absolute worst case (every slot double-banked, plus old+new meta) inside the
+partition. If they fire after growing a cap or struct, shrink the caps, don't
+touch the partition. The WiFi driver runs with `WIFI_STORAGE_RAM` everywhere
+(set before any driver call that could persist state); its `nvs.net80211`
+namespace is dead weight and is erased once by the v5→v6 migration.
 
 For state that only needs to survive **deep-sleep timer wakes** — not a power
 loss — use `RTC_DATA_ATTR` (RTC slow memory) instead. It is zero-initialized on
