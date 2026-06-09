@@ -3,11 +3,11 @@
 ## Goal
 
 Replace the single ~7.2 KB `cfg_v2` NVS blob with one small blob per WiFi
-network plus a tiny meta blob, and write changed blobs **one at a time** so a
-re-save only ever needs free-space headroom for ONE network blob (a WiFi
-profile with its 5 APIs), not for the whole config. Document and enforce that
-headroom so `ESP_ERR_NVS_NOT_ENOUGH_SPACE` on a portal re-save (seen on
-v0.5.0+PR#27) cannot recur with the maximum 5×5 config.
+network plus a tiny meta blob. Write changed profiles into alternate bank
+keys and atomically switch the active bank map with a final meta commit.
+Preflight the combined entry cost of all changed profiles so
+`ESP_ERR_NVS_NOT_ENOUGH_SPACE` on a portal re-save (seen on v0.5.0+PR#27)
+cannot recur with the maximum 5×5 config.
 
 ## Background (verified in code)
 
@@ -60,31 +60,28 @@ Struct changes in `storage.h`:
 1. Normalize the cfg; sync the RTC last-success hints (unchanged semantics,
    storage.c:557-564).
 2. Open NVS read-write; allocate two ~1.5 KB heap scratch buffers (candidate
-   blob + stored blob — never on the caller's stack). Runtime guard:
-   `nvs_get_stats()`; if `available_entries < DASH_NVS_MIN_FREE_ENTRIES`
-   (worst-case single network blob + meta + slack; `available_entries`
-   excludes the reserved GC page, unlike `free_entries` — Codex round 1
-   [MAJOR] #2), fail early with `ESP_ERR_NVS_NOT_ENOUGH_SPACE` so the portal
-   shows the existing clear error up front. Defense-in-depth: statically
-   this cannot happen with only this firmware's keys present.
+   blob + stored blob — never on the caller's stack).
 3. **Erase orphans only**: bank keys the stored meta does not reference
    (leftovers of a previously failed save). Everything the old meta
-   references stays untouched until step 5 commits.
-4. **Per-network, sequentially**: for each `i < network_count`, build the
-   candidate blob, read the stored blob in the slot's live bank and
-   `memcmp`. Identical → skip (no flash write, no wear; bank kept).
-   Different/new → `nvs_set_blob` + `nvs_commit` into the slot's OTHER bank,
-   then move to the next. Peak coexistence per step is old+new of a single
-   ~1.44 KB blob (~2.9 KB), regardless of how many networks changed; even
-   the absolute worst case (all 5 slots double-banked) fits the partition by
-   static assert.
-5. **Meta last — the atomic switch**: if anything changed, write `cfg_meta`
+   references stays untouched until step 6 commits. This cleanup runs before
+   the capacity guard so blobs stranded by a failed attempt cannot block its
+   retry.
+4. **Preflight**: build and compare every candidate against its live bank,
+   recording all slots that need a write. Use `nvs_get_stats()` and require
+   `available_entries` to cover the combined NVS entry cost of every pending
+   network blob plus the meta update and slack. `available_entries` excludes
+   the reserved GC page, unlike `free_entries`. Fail before writing with
+   `ESP_ERR_NVS_NOT_ENOUGH_SPACE` when the complete atomic save cannot fit.
+5. **Per-network, sequentially**: write each changed/new candidate into its
+   slot's OTHER bank, committing one key at a time. Unchanged slots keep
+   their current bank and incur no flash write.
+6. **Meta last — the atomic switch**: if anything changed, write `cfg_meta`
    (new bank map, `write_counter + 1`). Only this commit makes the new
    generation live; a failure or power cut before it leaves the old config
    fully intact, so a failed portal save genuinely means "nothing applied".
    A fully unchanged save writes nothing at all (today it rewrites 7.2 KB
    even for a no-op).
-6. **Release the old generation** (best-effort, after the meta is live):
+7. **Release the old generation** (best-effort, after the meta is live):
    erase switched banks, dropped slots, and the legacy `cfg_v2` key; any
    leftover is an orphan that step 3 of the next save reclaims.
 
@@ -134,19 +131,18 @@ Definitions (storage.h):
 - `DASH_NET_BLOB_MAX_BYTES 1536` — hard ceiling for one network blob.
 - An N-byte blob costs `ceil(N/32) + 3` entries worst case (blob index +
   chunk overhead). One network blob ≤ 51 entries; meta ≤ 4.
-- `DASH_NVS_MIN_FREE_ENTRIES 64` — headroom that must remain free with the
-  maximum config saved: one network blob re-write (old+new coexistence is
-  per-blob thanks to the sequential save) + meta + slack.
+- The runtime preflight calculates the exact requirement for the current
+  save: all changed alternate-bank blobs plus the meta update and slack.
 
 Static asserts (storage.c):
 
 - `sizeof(dash_net_blob_t) <= DASH_NET_BLOB_MAX_BYTES`,
   `sizeof(dash_meta_blob_t) <= 32`.
-- Worst-case occupancy fits with headroom:
-  `5 × entries(net) + entries(meta) + MISC + DASH_NVS_MIN_FREE_ENTRIES
+- Absolute worst-case occupancy fits:
+  `2 × 5 × entries(net) + 2 × entries(meta) + MISC
    <= 5 pages × 126 entries`, where MISC = 32 entries reserved for
-  `ap_pwd`, `wifi_cc`, namespace bookkeeping, and slack.
-  (Numerically: 5×51 + 4 + 32 + 64 = 355 ≤ 630 — comfortable.)
+  `ap_pwd`, `wifi_cc`, namespace bookkeeping, and slack. This models every
+  network slot double-banked until the atomic meta switch, plus old+new meta.
 
 AGENTS.md "NVS writes and RTC memory" gets updated: per-network blobs, the
 headroom rule, and the instruction to recompute the asserts when caps grow.

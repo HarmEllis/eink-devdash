@@ -117,17 +117,16 @@ Since config version 6 the config is stored as **per-network blobs**: a small
 network. `storage_save_v2` writes changed blobs one at a time (skipping
 unchanged ones) into the slot's other bank key and commits the meta blob
 last, which switches the save live atomically — a failed save leaves the old
-config fully intact, and a re-save only ever needs old+new coexistence for a
-single network blob. The historical failure mode (rewriting one ~7 KB blob,
-needing ~14 KB free) is gone. The free-space rule: with the maximum config
-saved (5 networks × 5 APIs), at least `DASH_NVS_MIN_FREE_ENTRIES` (64
-entries = 2 KB) must remain available so one network blob can always be
-rewritten; static asserts in `storage.c` even pin the absolute worst case
-(every slot double-banked) inside the partition. If they fire after growing
-a cap or struct, shrink the caps, don't touch the partition. The WiFi driver
-runs with `WIFI_STORAGE_RAM` everywhere (set before any driver call that
-could persist state); its `nvs.net80211` namespace is dead weight and is
-erased once by the v5→v6 migration.
+config fully intact. The historical failure mode (rewriting one ~7 KB blob,
+needing ~14 KB free) is gone. Before writing, the save path erases orphaned
+inactive banks, identifies every changed network, and checks
+`nvs_get_stats().available_entries` against the combined entry cost of all
+pending network blobs plus the meta update. Static asserts also pin the
+absolute worst case (every slot double-banked, plus old+new meta) inside the
+partition. If they fire after growing a cap or struct, shrink the caps, don't
+touch the partition. The WiFi driver runs with `WIFI_STORAGE_RAM` everywhere
+(set before any driver call that could persist state); its `nvs.net80211`
+namespace is dead weight and is erased once by the v5→v6 migration.
 
 For state that only needs to survive **deep-sleep timer wakes** — not a power
 loss — use `RTC_DATA_ATTR` (RTC slow memory) instead. It is zero-initialized on

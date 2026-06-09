@@ -34,29 +34,31 @@
  * network (profile + its APIs + its quiet hours). storage_save_v2 writes
  * changed blobs ONE AT A TIME — each into the slot's other bank key — and
  * commits the meta blob last, which switches the whole save live
- * atomically. A re-save therefore only needs old+new coexistence for a
- * single network blob (~2.9 KB) instead of the whole config (~14.4 KB with
- * the old single ~7.2 KB blob) — the fix for ESP_ERR_NVS_NOT_ENOUGH_SPACE
- * on portal re-saves — and a save that fails partway leaves the previous
- * configuration fully intact. A corrupted blob now costs one network, not
- * all of them.
+ * atomically. Each changed slot adds one ~1.5 KB alternate blob instead of
+ * rewriting a monolithic ~7.2 KB config blob; the preflight reserves the
+ * combined cost of all changed slots before writing. This fixes
+ * ESP_ERR_NVS_NOT_ENOUGH_SPACE on portal re-saves, and a save that fails
+ * partway leaves the previous configuration fully intact. A corrupted blob
+ * now costs one network, not all of them.
  *
- * Free-space requirement (enforced by static asserts in storage.c and a
- * runtime guard in storage_save_v2): with the maximum config saved
- * (MAX_WIFI_NETWORKS networks × MAX_APIS_PER_NETWORK APIs), the 24 KB `nvs`
- * partition (5 usable data pages of 126 × 32 B entries after the reserved
- * GC page) must retain at least DASH_NVS_MIN_FREE_ENTRIES free entries so
- * one network blob can ALWAYS be rewritten. If the asserts fire after a
- * caps/size change, shrink the caps — do NOT move or grow the partition
- * (partition-table changes do not propagate via OTA).
+ * Free-space model (enforced by a static assert in storage.c and a runtime
+ * preflight guard in storage_save_v2): a save holds old+new copies of every
+ * CHANGED network blob until the meta commit switches the new generation
+ * live, so the absolute worst case is every slot double-banked plus old+new
+ * meta coexistence. That peak, plus the misc keys (ap_pwd, wifi_cc), must
+ * fit the 24 KB `nvs` partition (5 usable data pages of 126 × 32 B entries
+ * after the reserved GC page) — the static assert pins it. The runtime
+ * guard computes the exact entry cost of the pending save (changed blobs +
+ * meta) and compares it against nvs_get_stats() available_entries AFTER
+ * orphan cleanup, failing early with a clear error instead of starting a
+ * doomed sequence. If the assert fires after a caps/size change, shrink the
+ * caps — do NOT move or grow the partition (partition-table changes do not
+ * propagate via OTA).
  */
 #define DASH_NET_BLOB_MAX_BYTES 1536
 /* Worst-case NVS entry cost of an N-byte blob: ceil(N/32) data entries plus
    blob-index + chunk overhead. */
 #define DASH_NVS_BLOB_ENTRIES(n) (((n) + 31u) / 32u + 3u)
-/* Headroom that must stay free with the max config saved: one network-blob
-   rewrite (new copy while the old still exists) + meta rewrite + slack. */
-#define DASH_NVS_MIN_FREE_ENTRIES 64
 
 typedef struct {
     uint32_t id;

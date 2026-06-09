@@ -35,12 +35,12 @@ eink_panel_variant_t storage_default_panel_variant(void)
 /* ---------------------------------------------------------------------------
  * v6 persisted layout: per-network blobs.
  *
- * `cfg_meta` carries the header fields; each `cfg_net{i}` carries one
- * network profile (with its APIs and quiet hours) plus its own version and
- * CRC, so a corrupted save costs one network instead of the whole config.
- * storage_save_v2 writes changed blobs one at a time, so the free-space
- * requirement for a re-save is old+new coexistence of a SINGLE network blob
- * (~2.9 KB), not the whole config (~14.4 KB with the pre-v6 single blob).
+ * `cfg_meta` carries the header fields and active bank map; each
+ * `cfg_net{i}{a|b}` carries one network profile (with its APIs and quiet
+ * hours) plus its own version and CRC, so a corrupted save costs one network
+ * instead of the whole config. storage_save_v2 writes changed blobs into
+ * inactive banks, preflights space for all pending blobs, and commits meta
+ * last to switch the complete generation live atomically.
  * ------------------------------------------------------------------------- */
 
 typedef struct {
@@ -166,11 +166,10 @@ _Static_assert(sizeof(dash_config_v4_legacy_t) > sizeof(dash_config_v2_legacy_t)
 /* ---------------------------------------------------------------------------
  * NVS budget. The 24 KB `nvs` partition has 6 × 4 KB pages; NVS reserves one
  * for GC, and each remaining page holds 126 × 32 B entries. The maximum
- * config (meta + 5 network blobs) plus the misc keys (ap_pwd, wifi_cc,
- * namespace bookkeeping) must leave DASH_NVS_MIN_FREE_ENTRIES free so one
- * network blob can always be rewritten (new copy while the old one still
- * exists). If these fire after a caps/size change, shrink the caps — do NOT
- * move or grow the partition (table changes do not propagate via OTA).
+ * config's absolute peak (old+new banks for all 5 networks plus old+new
+ * meta) and the misc keys (ap_pwd, wifi_cc, namespace bookkeeping) must fit.
+ * If these fire after a caps/size change, shrink the caps — do NOT move or
+ * grow the partition (table changes do not propagate via OTA).
  * ------------------------------------------------------------------------- */
 #define NVS_DATA_PAGES        5   /* 0x6000 / 0x1000 minus the reserved GC page */
 #define NVS_ENTRIES_PER_PAGE  126
@@ -195,10 +194,6 @@ _Static_assert(2u * MAX_WIFI_NETWORKS *
                NVS_DATA_PAGES * NVS_ENTRIES_PER_PAGE,
                "double-bank worst case exceeds the nvs partition budget — "
                "shrink URL/token/network caps");
-_Static_assert(DASH_NVS_MIN_FREE_ENTRIES >=
-               DASH_NVS_BLOB_ENTRIES(DASH_NET_BLOB_MAX_BYTES) +
-               DASH_NVS_BLOB_ENTRIES(sizeof(dash_meta_blob_t)) + 8,
-               "headroom must cover one network blob rewrite + meta + slack");
 
 /* CRC32 over `size` bytes of `buf` with the 4-byte CRC field at `crc_off`
    treated as zero — piecewise, so no struct copy lands on the stack. */
@@ -246,6 +241,16 @@ static bool panel_variant_is_known(uint8_t v)
 static void net_key(char *buf, size_t sz, unsigned idx, unsigned bank)
 {
     snprintf(buf, sz, "cfg_net%u%c", idx, bank ? 'b' : 'a');
+}
+
+static void build_net_blob(dash_net_blob_t *blob,
+                           const dash_wifi_profile_t *net)
+{
+    memset(blob, 0, sizeof(*blob));
+    blob->version = DASH_CFG_V2_VERSION;
+    blob->net = *net;
+    blob->crc32 = crc_with_hole(blob, sizeof(*blob),
+                                offsetof(dash_net_blob_t, crc32));
 }
 
 /* ---- v6 blob acceptance ------------------------------------------------- */
@@ -513,11 +518,9 @@ void storage_mask_token(const char *token, char *out, size_t out_sz)
 void storage_init(void)
 {
     /* nvs_flash_init() is called in app_main before storage_init */
-    ESP_LOGI(TAG, "cfg storage: per-network blobs (net %u B, meta %u B, "
-             "headroom %u entries)",
+    ESP_LOGI(TAG, "cfg storage: per-network blobs (net %u B, meta %u B)",
              (unsigned)sizeof(dash_net_blob_t),
-             (unsigned)sizeof(dash_meta_blob_t),
-             (unsigned)DASH_NVS_MIN_FREE_ENTRIES);
+             (unsigned)sizeof(dash_meta_blob_t));
 }
 
 /* Load the v6 per-network layout. Returns true when the meta blob validates;
@@ -764,48 +767,30 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
         return ESP_ERR_NO_MEM;
     }
 
-    /* Runtime guard (defense-in-depth; statically the budget asserts make
-       this unreachable with only this firmware's keys present): refuse to
-       start a write sequence when fewer than DASH_NVS_MIN_FREE_ENTRIES are
-       available for data, so the portal shows a clear error up front.
-       available_entries excludes the reserved GC page, unlike free_entries.
-       Should a later write in the sequence still hit NOT_ENOUGH_SPACE, the
-       meta switch below guarantees the old config stays fully intact. */
-    nvs_stats_t stats;
-    if (nvs_get_stats(NULL, &stats) == ESP_OK &&
-        stats.available_entries < DASH_NVS_MIN_FREE_ENTRIES) {
-        ESP_LOGE(TAG, "NVS nearly full (%u used, %u available of %u entries) "
-                 "— refusing save; need %u available",
-                 (unsigned)stats.used_entries,
-                 (unsigned)stats.available_entries,
-                 (unsigned)stats.total_entries,
-                 (unsigned)DASH_NVS_MIN_FREE_ENTRIES);
-        free(cand);
-        free(stored);
-        nvs_close(h);
-        return ESP_ERR_NVS_NOT_ENOUGH_SPACE;
-    }
-
     /* Atomic-switch write order. The stored meta references one bank key per
        live slot; everything it references is left untouched until the new
        meta commits:
        1. erase ORPHAN keys only (banks no stored meta references — leftovers
-          of a previously failed save), freeing entries before any write,
-       2. changed networks ONE AT A TIME into the slot's OTHER bank, skipping
-          unchanged ones — peak old+new coexistence per step is a single
-          ~1.5 KB blob no matter how many networks changed,
-       3. meta last: committing it switches the whole save live atomically.
+          of a previously failed save). This runs BEFORE the capacity guard
+          so a failed attempt's stranded blobs are reclaimed, not counted
+          against the next try,
+       2. preflight: decide per slot whether it needs a write (and into which
+          bank) without writing, then require available_entries to cover ALL
+          pending blob writes plus the meta — the alternate banks of every
+          changed slot coexist with their old copies until the meta commit,
+       3. changed networks ONE AT A TIME into the slot's OTHER bank, skipping
+          unchanged ones,
+       4. meta last: committing it switches the whole save live atomically.
           A failure (or power cut) before that leaves the old meta and thus
           the old configuration fully intact — a failed portal save really
           means "nothing applied",
-       4. only after the new meta is live: release the old generation
+       5. only after the new meta is live: release the old generation
           (switched banks, dropped slots, the legacy cfg_v2 key). */
     dash_meta_blob_t prev = {0};
     size_t mlen = sizeof(prev);
     bool have_prev = nvs_get_blob(h, CFG_META_KEY, &prev, &mlen) == ESP_OK &&
                      mlen == sizeof(prev) && meta_is_valid(&prev);
 
-    bool changed = false;
     char key[16];
 
     for (uint8_t i = 0; i < MAX_WIFI_NETWORKS && err == ESP_OK; i++) {
@@ -820,13 +805,12 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
         }
     }
 
+    /* Preflight: compare each candidate against the slot's live bank. */
+    bool write_slot[MAX_WIFI_NETWORKS] = {false};
     uint8_t new_bank[MAX_WIFI_NETWORKS] = {0};
+    size_t pending_writes = 0;
     for (uint8_t i = 0; i < cfg->network_count && err == ESP_OK; i++) {
-        memset(cand, 0, sizeof(*cand));
-        cand->version = DASH_CFG_V2_VERSION;
-        cand->net = cfg->networks[i];
-        cand->crc32 = crc_with_hole(cand, sizeof(*cand),
-                                    offsetof(dash_net_blob_t, crc32));
+        build_net_blob(cand, &cfg->networks[i]);
         bool slot_live = have_prev && i < prev.network_count;
         if (slot_live) {
             net_key(key, sizeof(key), i, prev.net_bank[i]);
@@ -840,14 +824,51 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
             }
         }
         new_bank[i] = slot_live ? (prev.net_bank[i] ^ 1u) : 0;
+        write_slot[i] = true;
+        pending_writes++;
+    }
+
+    bool blobs_changed = pending_writes > 0;
+    bool meta_differs = !have_prev ||
+        prev.refresh_min != cfg->refresh_min ||
+        prev.network_count != cfg->network_count ||
+        prev.panel_variant != cfg->panel_variant ||
+        prev.max_partials != cfg->max_partials;
+    bool need_meta = blobs_changed || meta_differs;
+
+    /* Capacity guard: the exact entry cost of this save (defense-in-depth;
+       the double-bank static assert makes this unreachable with only this
+       firmware's keys present). available_entries excludes the reserved GC
+       page, unlike free_entries. */
+    nvs_stats_t stats;
+    if (err == ESP_OK && need_meta &&
+        nvs_get_stats(NULL, &stats) == ESP_OK) {
+        size_t need =
+            pending_writes * DASH_NVS_BLOB_ENTRIES(sizeof(dash_net_blob_t)) +
+            DASH_NVS_BLOB_ENTRIES(sizeof(dash_meta_blob_t)) + 4 /* slack */;
+        if (stats.available_entries < need) {
+            ESP_LOGE(TAG, "NVS nearly full (%u used, %u available of %u "
+                     "entries) — refusing save; need %u available",
+                     (unsigned)stats.used_entries,
+                     (unsigned)stats.available_entries,
+                     (unsigned)stats.total_entries, (unsigned)need);
+            free(cand);
+            free(stored);
+            nvs_close(h);
+            return ESP_ERR_NVS_NOT_ENOUGH_SPACE;
+        }
+    }
+
+    for (uint8_t i = 0; i < cfg->network_count && err == ESP_OK; i++) {
+        if (!write_slot[i]) continue;
+        build_net_blob(cand, &cfg->networks[i]);
         net_key(key, sizeof(key), i, new_bank[i]);
         err = nvs_set_blob(h, key, cand, sizeof(*cand));
         if (err == ESP_OK) err = nvs_commit(h);
-        if (err == ESP_OK) changed = true;
     }
 
     bool meta_written = false;
-    if (err == ESP_OK) {
+    if (err == ESP_OK && need_meta) {
         dash_meta_blob_t meta = {0};
         meta.version = DASH_CFG_V2_VERSION;
         meta.max_wifi_networks = MAX_WIFI_NETWORKS;
@@ -857,27 +878,19 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
         meta.panel_variant = cfg->panel_variant;
         meta.max_partials = cfg->max_partials;
         memcpy(meta.net_bank, new_bank, sizeof(meta.net_bank));
-
-        bool meta_differs = !have_prev ||
-            prev.refresh_min != meta.refresh_min ||
-            prev.network_count != meta.network_count ||
-            prev.panel_variant != meta.panel_variant ||
-            prev.max_partials != meta.max_partials;
-        if (changed || meta_differs) {
-            meta.write_counter =
-                (have_prev ? prev.write_counter : cfg->write_counter) + 1;
-            meta.crc32 = crc_with_hole(&meta, sizeof(meta),
-                                       offsetof(dash_meta_blob_t, crc32));
-            err = nvs_set_blob(h, CFG_META_KEY, &meta, sizeof(meta));
-            if (err == ESP_OK) err = nvs_commit(h);
-            if (err == ESP_OK) {
-                cfg->write_counter = meta.write_counter;
-                meta_written = true;
-            }
+        meta.write_counter =
+            (have_prev ? prev.write_counter : cfg->write_counter) + 1;
+        meta.crc32 = crc_with_hole(&meta, sizeof(meta),
+                                   offsetof(dash_meta_blob_t, crc32));
+        err = nvs_set_blob(h, CFG_META_KEY, &meta, sizeof(meta));
+        if (err == ESP_OK) err = nvs_commit(h);
+        if (err == ESP_OK) {
+            cfg->write_counter = meta.write_counter;
+            meta_written = true;
         }
-        /* A fully unchanged save writes nothing at all (the pre-v6 code
-           rewrote the whole 7.2 KB blob even for a no-op portal save). */
     }
+    /* A fully unchanged save writes nothing at all (the pre-v6 code rewrote
+       the whole 7.2 KB blob even for a no-op portal save). */
 
     if (err == ESP_OK && meta_written && have_prev) {
         /* New meta is live; release the old generation's keys. Best-effort:
