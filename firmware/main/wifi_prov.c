@@ -517,6 +517,10 @@ static const char V4_STYLE[] =
 "border-radius:8px;font-size:15px;background:#fff;color:#1c1f24}"
 ".api-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}"
 ".api-head .title{font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#6b7280}"
+".api-hint{margin:0 0 8px;color:#6b7280;font-size:12px}"
+".movebtn{background:#f1f2f4;border:1px solid #cbd0d6;border-radius:8px;width:34px;"
+"min-height:34px;padding:0;font-size:11px;line-height:1;cursor:pointer;color:#1c1f24;flex:0 0 auto}"
+".movebtn:disabled{opacity:.35;cursor:default}"
 ".api-list{list-style:none;margin:0;padding:0}"
 ".api-list>li{background:#fafbfc;border:1px dashed #cbd0d6;border-radius:10px;margin-bottom:8px}"
 ".api-list>li .api-body{padding:0 12px 12px}"
@@ -563,12 +567,30 @@ static const char V4_JS[] =
 "var n=card.getAttribute('data-net');var c=card.querySelector('[data-api-count=\"'+n+'\"]');"
 "if(c)c.textContent=card.querySelectorAll('.api-on:checked').length+' / 5 active';"
 "});}"
+"function rowOn(li){var c=li.querySelector('.api-on');return!!(c&&c.checked);}"
+"function apiSibling(li,dir){var p=dir==='up'?'previousElementSibling':'nextElementSibling';"
+"for(var s=li[p];s;s=s[p]){if(rowOn(s))return s;}return null;}"
+"function swapRows(a,b){var p=a.parentNode,an=a.nextSibling,bn=b.nextSibling;"
+"if(an===b){p.insertBefore(b,a);}else if(bn===a){p.insertBefore(a,b);}"
+"else{p.insertBefore(a,bn);p.insertBefore(b,an);}}"
+"function reindexApis(card){var n=card.getAttribute('data-net');"
+"card.querySelectorAll('li[data-api]').forEach(function(li,k){"
+"li.setAttribute('data-api',n+'-'+k);"
+"li.querySelectorAll('[name]').forEach(function(i){i.name=i.name.replace(/^w\\d+_a\\d+_/,'w'+n+'_a'+k+'_');});"
+"li.querySelectorAll('[data-target]').forEach(function(i){"
+"i.setAttribute('data-target',i.getAttribute('data-target').replace(/^w\\d+_a\\d+_/,'w'+n+'_a'+k+'_'));});"
+"var t=li.querySelector('.toggle');if(t)t.setAttribute('aria-label','enable API slot '+(k+1));"
+"var o=li.querySelector('.order');if(o)o.textContent=k+1;"
+"});}"
+"function updateMoveBtns(){document.querySelectorAll('li[data-api]').forEach(function(li){"
+"var on=rowOn(li);li.querySelectorAll('.movebtn').forEach(function(b){"
+"b.disabled=!on||!apiSibling(li,b.getAttribute('data-move'));});});}"
 "document.addEventListener('change',function(e){"
 "var t=e.target;"
 "if(t.matches('.card-on,.api-on')){"
 "if(t.classList.contains('api-on'))tgl(t,'.api-list>li','disabled');"
 "else tgl(t,'.card','disabled');"
-"updateCounts();"
+"updateCounts();updateMoveBtns();"
 "}"
 "if(t.matches('input[data-act=\"clearpw\"],input[data-act=\"cleartok\"]')){"
 "var i=document.querySelector('input[name=\"'+t.getAttribute('data-target')+'\"]');"
@@ -581,6 +603,18 @@ static const char V4_JS[] =
 "inp.type=inp.type==='password'?'text':'password';"
 "e.target.textContent=inp.type==='password'?'show':'hide';"
 "}"
+"if(e.target.matches('.movebtn')){"
+"var li=e.target.closest('li[data-api]');"
+"if(li&&rowOn(li)){"
+"var dir=e.target.getAttribute('data-move');"
+"var sib=apiSibling(li,dir);"
+"if(sib){"
+"swapRows(li,sib);"
+"reindexApis(li.closest('article.card'));"
+"updateMoveBtns();"
+"var f=e.target.disabled?li.querySelector('.movebtn:not([disabled])'):e.target;"
+"if(f)f.focus();"
+"}}}"
 "});"
 "function syncRange(a,b){a.addEventListener('input',function(){b.value=a.value});"
 "b.addEventListener('input',function(){a.value=b.value});}"
@@ -604,6 +638,8 @@ static const char V4_JS[] =
 "else tgl(t,'.card','disabled');"
 "});"
 "updateCounts();"
+"document.querySelectorAll('.movebtn').forEach(function(b){b.hidden=false;});"
+"updateMoveBtns();"
 "var f=document.getElementById('cfg');if(f)f.addEventListener('submit',function(e){"
 "var bad=[];document.querySelectorAll('.has-error').forEach(function(x){x.classList.remove('has-error')});"
 "document.querySelectorAll('input.invalid').forEach(function(x){x.classList.remove('invalid')});"
@@ -663,13 +699,24 @@ static void render_api(httpd_req_t *req, int n, int k,
         "<span class=\"pill saved\">saved</span>"
         "<span class=\"pill empty\">empty</span>"
         "<span class=\"pill error\">error</span>"
-        "<span class=\"pill off\">off</span>"
-        "<input type=\"hidden\" name=\"w%d_a%d_i\" value=\"%lu\">"
-        "</div><div class=\"api-body\">",
+        "<span class=\"pill off\">off</span>",
         n, k, saved ? 1 : 0,
         k + 1,
         n, k, en ? " checked" : "",
-        k + 1,
+        k + 1);
+    CHUNK(req, buf);
+
+    /* Reorder arrows are JS-only: server-rendered hidden, unhidden on load.
+       Rendered disabled too — rows whose toggle is off are dropped on save,
+       so moving them would be a silent no-op; V4_JS keeps the disabled state
+       in sync with the toggles and the row position. */
+    snprintf(buf, sizeof(buf),
+        "<button type=\"button\" class=\"movebtn\" data-move=\"up\" "
+        "aria-label=\"move API up\" hidden disabled>&#9650;</button>"
+        "<button type=\"button\" class=\"movebtn\" data-move=\"down\" "
+        "aria-label=\"move API down\" hidden disabled>&#9660;</button>"
+        "<input type=\"hidden\" name=\"w%d_a%d_i\" value=\"%lu\">"
+        "</div><div class=\"api-body\">",
         n, k, (unsigned long)(api ? api->id : 0));
     CHUNK(req, buf);
 
@@ -803,7 +850,11 @@ static void render_network(httpd_req_t *req, int n,
         "<div class=\"api-section\"><div class=\"api-head\">"
         "<span class=\"title\">API endpoints</span>"
         "<span class=\"count\" data-api-count=\"%d\">%d / 5 active</span>"
-        "</div><ul class=\"api-list\">",
+        "</div>"
+        "<p class=\"api-hint\">Tried top-first on a fresh start; once one "
+        "works, the device keeps using it until it fails. Reorder with the "
+        "arrows.</p>"
+        "<ul class=\"api-list\">",
         n, active_apis);
     CHUNK(req, buf);
     for (int k = 0; k < MAX_APIS_PER_NETWORK; k++) {
@@ -914,7 +965,7 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
         "<section class=\"block\" id=\"wifi-block\">"
         "<h2>WiFi networks <span class=\"count\" id=\"wifi-count\">%d / 5 active</span></h2>"
         "<div class=\"blockhint\">All 5 slots are reserved. Toggle a slot on to "
-        "fill it in; the device tries enabled networks in order, top first.</div>",
+        "fill it in; the device connects to the strongest visible network.</div>",
         active_networks);
     CHUNK(req, page_buf);
 
