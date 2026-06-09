@@ -52,6 +52,13 @@ typedef struct {
     uint8_t panel_variant;
     uint8_t max_partials;
     uint32_t write_counter;
+    /* Per-slot bank (0='a', 1='b'): which cfg_net{i}{a|b} key holds slot i.
+       storage_save_v2 writes a changed network to the OTHER bank and only
+       then commits this meta blob, so the whole save becomes live atomically
+       with the meta write — a save that fails partway leaves the old meta,
+       and therefore the old configuration, fully intact. */
+    uint8_t net_bank[MAX_WIFI_NETWORKS];
+    uint8_t reserved[3];          /* zero */
     uint32_t crc32;               /* over this struct with crc32 zeroed */
 } dash_meta_blob_t;
 
@@ -177,12 +184,16 @@ _Static_assert(sizeof(dash_net_blob_t) <= DASH_NET_BLOB_MAX_BYTES,
                "network blob exceeds DASH_NET_BLOB_MAX_BYTES — shrink caps");
 _Static_assert(sizeof(dash_meta_blob_t) <= 32,
                "meta blob grew unexpectedly — recompute blob budget");
-_Static_assert(MAX_WIFI_NETWORKS *
+/* Absolute worst case: every slot momentarily occupies BOTH banks (all five
+   networks changed in one save, old generation not yet released) plus
+   old+new meta coexistence. Even that must fit, so a save can never run the
+   partition out of space with only this firmware's keys present. */
+_Static_assert(2u * MAX_WIFI_NETWORKS *
                DASH_NVS_BLOB_ENTRIES(sizeof(dash_net_blob_t)) +
-               DASH_NVS_BLOB_ENTRIES(sizeof(dash_meta_blob_t)) +
-               NVS_MISC_ENTRIES + DASH_NVS_MIN_FREE_ENTRIES <=
+               2u * DASH_NVS_BLOB_ENTRIES(sizeof(dash_meta_blob_t)) +
+               NVS_MISC_ENTRIES <=
                NVS_DATA_PAGES * NVS_ENTRIES_PER_PAGE,
-               "max config + headroom exceeds the nvs partition budget — "
+               "double-bank worst case exceeds the nvs partition budget — "
                "shrink URL/token/network caps");
 _Static_assert(DASH_NVS_MIN_FREE_ENTRIES >=
                DASH_NVS_BLOB_ENTRIES(DASH_NET_BLOB_MAX_BYTES) +
@@ -232,9 +243,9 @@ static bool panel_variant_is_known(uint8_t v)
     return v == EINK_PANEL_WEACT_29_BWR || v == EINK_PANEL_WEACT_29_BW;
 }
 
-static void net_key(char *buf, size_t sz, unsigned idx)
+static void net_key(char *buf, size_t sz, unsigned idx, unsigned bank)
 {
-    snprintf(buf, sz, "cfg_net%u", idx);
+    snprintf(buf, sz, "cfg_net%u%c", idx, bank ? 'b' : 'a');
 }
 
 /* ---- v6 blob acceptance ------------------------------------------------- */
@@ -253,6 +264,9 @@ static bool meta_is_valid(const dash_meta_blob_t *m)
             m->refresh_min,
             m->panel_variant == EINK_PANEL_WEACT_29_BW,
             m->max_partials)) return false;
+    for (uint8_t i = 0; i < MAX_WIFI_NETWORKS; i++) {
+        if (m->net_bank[i] > 1) return false;
+    }
     return m->crc32 == crc_with_hole(m, sizeof(*m),
                                      offsetof(dash_meta_blob_t, crc32));
 }
@@ -530,7 +544,7 @@ static bool load_v6(nvs_handle_t h, dash_config_v2_t *cfg)
     uint8_t out = 0;
     for (uint8_t i = 0; i < meta.network_count; i++) {
         char key[16];
-        net_key(key, sizeof(key), i);
+        net_key(key, sizeof(key), i, meta.net_bank[i]);
         size_t blen = sizeof(*blob);
         memset(blob, 0, sizeof(*blob));
         err = nvs_get_blob(h, key, blob, &blen);
@@ -542,6 +556,12 @@ static bool load_v6(nvs_handle_t h, dash_config_v2_t *cfg)
     }
     free(blob);
     cfg->network_count = out;
+    if (out != meta.network_count) {
+        /* Slots were dropped and the array compacted, so the positional RTC
+           reconnect hints may now point at a DIFFERENT network (wrong quiet
+           hours / API preference). Reset both to "no hint" = normal scan. */
+        storage_note_last_success(-1, -1);
+    }
     return true;
 }
 
@@ -745,71 +765,88 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
     }
 
     /* Runtime guard (defense-in-depth; statically the budget asserts make
-       this unreachable): refuse to start a write sequence when fewer than
-       DASH_NVS_MIN_FREE_ENTRIES are reclaimable, so the portal shows a clear
-       error instead of a half-finished save. total - used counts
-       erased-but-not-yet-GCed entries, which NVS reclaims via the reserved
-       spare page when a write needs them. */
+       this unreachable with only this firmware's keys present): refuse to
+       start a write sequence when fewer than DASH_NVS_MIN_FREE_ENTRIES are
+       available for data, so the portal shows a clear error up front.
+       available_entries excludes the reserved GC page, unlike free_entries.
+       Should a later write in the sequence still hit NOT_ENOUGH_SPACE, the
+       meta switch below guarantees the old config stays fully intact. */
     nvs_stats_t stats;
-    if (nvs_get_stats(NULL, &stats) == ESP_OK) {
-        size_t reclaimable = stats.total_entries - stats.used_entries;
-        if (reclaimable < DASH_NVS_MIN_FREE_ENTRIES) {
-            ESP_LOGE(TAG, "NVS nearly full (%u/%u entries used) — refusing "
-                     "save; need %u free",
-                     (unsigned)stats.used_entries,
-                     (unsigned)stats.total_entries,
-                     (unsigned)DASH_NVS_MIN_FREE_ENTRIES);
-            free(cand);
-            free(stored);
-            nvs_close(h);
-            return ESP_ERR_NVS_NOT_ENOUGH_SPACE;
-        }
+    if (nvs_get_stats(NULL, &stats) == ESP_OK &&
+        stats.available_entries < DASH_NVS_MIN_FREE_ENTRIES) {
+        ESP_LOGE(TAG, "NVS nearly full (%u used, %u available of %u entries) "
+                 "— refusing save; need %u available",
+                 (unsigned)stats.used_entries,
+                 (unsigned)stats.available_entries,
+                 (unsigned)stats.total_entries,
+                 (unsigned)DASH_NVS_MIN_FREE_ENTRIES);
+        free(cand);
+        free(stored);
+        nvs_close(h);
+        return ESP_ERR_NVS_NOT_ENOUGH_SPACE;
     }
 
-    /* Write order:
-       1. erase stale per-network slots (frees entries before any write),
-       2. per-network blobs ONE AT A TIME, skipping unchanged ones — peak
-          old+new coexistence is a single ~1.5 KB blob no matter how many
-          networks changed,
-       3. meta last, so a power cut mid-sequence leaves the old meta
-          pointing at individually-valid blobs (load drops at worst a
-          missing slot),
-       4. legacy cfg_v2 key erase, only after the v6 layout fully landed.
-       A failed step aborts the sequence; since unchanged blobs are skipped,
-       a retry resumes idempotently where it stopped. */
+    /* Atomic-switch write order. The stored meta references one bank key per
+       live slot; everything it references is left untouched until the new
+       meta commits:
+       1. erase ORPHAN keys only (banks no stored meta references — leftovers
+          of a previously failed save), freeing entries before any write,
+       2. changed networks ONE AT A TIME into the slot's OTHER bank, skipping
+          unchanged ones — peak old+new coexistence per step is a single
+          ~1.5 KB blob no matter how many networks changed,
+       3. meta last: committing it switches the whole save live atomically.
+          A failure (or power cut) before that leaves the old meta and thus
+          the old configuration fully intact — a failed portal save really
+          means "nothing applied",
+       4. only after the new meta is live: release the old generation
+          (switched banks, dropped slots, the legacy cfg_v2 key). */
+    dash_meta_blob_t prev = {0};
+    size_t mlen = sizeof(prev);
+    bool have_prev = nvs_get_blob(h, CFG_META_KEY, &prev, &mlen) == ESP_OK &&
+                     mlen == sizeof(prev) && meta_is_valid(&prev);
+
     bool changed = false;
     char key[16];
 
-    for (uint8_t i = cfg->network_count; i < MAX_WIFI_NETWORKS && err == ESP_OK; i++) {
-        net_key(key, sizeof(key), i);
-        esp_err_t eerr = nvs_erase_key(h, key);
-        if (eerr == ESP_OK) {
-            err = nvs_commit(h);
-            changed = true;
-        } else if (eerr != ESP_ERR_NVS_NOT_FOUND) {
-            err = eerr;
+    for (uint8_t i = 0; i < MAX_WIFI_NETWORKS && err == ESP_OK; i++) {
+        for (uint8_t b = 0; b < 2; b++) {
+            bool referenced = have_prev && i < prev.network_count &&
+                              prev.net_bank[i] == b;
+            if (referenced) continue;
+            net_key(key, sizeof(key), i, b);
+            esp_err_t eerr = nvs_erase_key(h, key);
+            if (eerr == ESP_OK) err = nvs_commit(h);
+            else if (eerr != ESP_ERR_NVS_NOT_FOUND) err = eerr;
         }
     }
 
+    uint8_t new_bank[MAX_WIFI_NETWORKS] = {0};
     for (uint8_t i = 0; i < cfg->network_count && err == ESP_OK; i++) {
         memset(cand, 0, sizeof(*cand));
         cand->version = DASH_CFG_V2_VERSION;
         cand->net = cfg->networks[i];
         cand->crc32 = crc_with_hole(cand, sizeof(*cand),
                                     offsetof(dash_net_blob_t, crc32));
-        net_key(key, sizeof(key), i);
-        size_t blen = sizeof(*stored);
-        memset(stored, 0, sizeof(*stored));
-        esp_err_t gerr = nvs_get_blob(h, key, stored, &blen);
-        if (gerr == ESP_OK && blen == sizeof(*stored) &&
-            memcmp(stored, cand, sizeof(*cand)) == 0) {
-            continue; /* unchanged — no rewrite, no wear */
+        bool slot_live = have_prev && i < prev.network_count;
+        if (slot_live) {
+            net_key(key, sizeof(key), i, prev.net_bank[i]);
+            size_t blen = sizeof(*stored);
+            memset(stored, 0, sizeof(*stored));
+            esp_err_t gerr = nvs_get_blob(h, key, stored, &blen);
+            if (gerr == ESP_OK && blen == sizeof(*stored) &&
+                memcmp(stored, cand, sizeof(*cand)) == 0) {
+                new_bank[i] = prev.net_bank[i];
+                continue; /* unchanged — no rewrite, no wear */
+            }
         }
+        new_bank[i] = slot_live ? (prev.net_bank[i] ^ 1u) : 0;
+        net_key(key, sizeof(key), i, new_bank[i]);
         err = nvs_set_blob(h, key, cand, sizeof(*cand));
         if (err == ESP_OK) err = nvs_commit(h);
         if (err == ESP_OK) changed = true;
     }
 
+    bool meta_written = false;
     if (err == ESP_OK) {
         dash_meta_blob_t meta = {0};
         meta.version = DASH_CFG_V2_VERSION;
@@ -819,11 +856,8 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
         meta.network_count = cfg->network_count;
         meta.panel_variant = cfg->panel_variant;
         meta.max_partials = cfg->max_partials;
+        memcpy(meta.net_bank, new_bank, sizeof(meta.net_bank));
 
-        dash_meta_blob_t prev = {0};
-        size_t mlen = sizeof(prev);
-        bool have_prev = nvs_get_blob(h, CFG_META_KEY, &prev, &mlen) == ESP_OK &&
-                         mlen == sizeof(prev) && meta_is_valid(&prev);
         bool meta_differs = !have_prev ||
             prev.refresh_min != meta.refresh_min ||
             prev.network_count != meta.network_count ||
@@ -836,10 +870,29 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
                                        offsetof(dash_meta_blob_t, crc32));
             err = nvs_set_blob(h, CFG_META_KEY, &meta, sizeof(meta));
             if (err == ESP_OK) err = nvs_commit(h);
-            if (err == ESP_OK) cfg->write_counter = meta.write_counter;
+            if (err == ESP_OK) {
+                cfg->write_counter = meta.write_counter;
+                meta_written = true;
+            }
         }
         /* A fully unchanged save writes nothing at all (the pre-v6 code
            rewrote the whole 7.2 KB blob even for a no-op portal save). */
+    }
+
+    if (err == ESP_OK && meta_written && have_prev) {
+        /* New meta is live; release the old generation's keys. Best-effort:
+           a leftover is an orphan the next save's cleanup pass reclaims. */
+        for (uint8_t i = 0; i < prev.network_count; i++) {
+            bool dropped = i >= cfg->network_count;
+            bool switched = !dropped && new_bank[i] != prev.net_bank[i];
+            if (!dropped && !switched) continue;
+            net_key(key, sizeof(key), i, prev.net_bank[i]);
+            esp_err_t eerr = nvs_erase_key(h, key);
+            if (eerr == ESP_OK) nvs_commit(h);
+            else if (eerr != ESP_ERR_NVS_NOT_FOUND)
+                ESP_LOGW(TAG, "old-generation blob %s erase failed: %s",
+                         key, esp_err_to_name(eerr));
+        }
     }
 
     if (err == ESP_OK) {

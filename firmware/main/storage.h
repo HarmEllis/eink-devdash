@@ -30,13 +30,16 @@
 
 /*
  * Since config version 6 the persisted layout is PER-NETWORK blobs: a small
- * `cfg_meta` header blob plus one `cfg_net{i}` blob per saved WiFi network
- * (profile + its APIs + its quiet hours). storage_save_v2 writes changed
- * blobs ONE AT A TIME, so a re-save only needs old+new coexistence for a
+ * `cfg_meta` header blob plus one `cfg_net{i}{a|b}` blob per saved WiFi
+ * network (profile + its APIs + its quiet hours). storage_save_v2 writes
+ * changed blobs ONE AT A TIME — each into the slot's other bank key — and
+ * commits the meta blob last, which switches the whole save live
+ * atomically. A re-save therefore only needs old+new coexistence for a
  * single network blob (~2.9 KB) instead of the whole config (~14.4 KB with
  * the old single ~7.2 KB blob) — the fix for ESP_ERR_NVS_NOT_ENOUGH_SPACE
- * on portal re-saves. A corrupted blob now costs one network, not all of
- * them.
+ * on portal re-saves — and a save that fails partway leaves the previous
+ * configuration fully intact. A corrupted blob now costs one network, not
+ * all of them.
  *
  * Free-space requirement (enforced by static asserts in storage.c and a
  * runtime guard in storage_save_v2): with the maximum config saved

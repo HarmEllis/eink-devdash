@@ -125,6 +125,16 @@ esp_err_t wifi_net_init(void)
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
 
+    /* RAM-only driver storage, set FIRST — before any WiFi setter that could
+     * persist configuration (esp_wifi_set_country_code below writes flash
+     * under the default WIFI_STORAGE_FLASH). The app owns all credentials in
+     * the NVS config and reconfigures the driver from it on every boot/wake
+     * (wifi_roam also runs with WIFI_STORAGE_RAM). FLASH storage would let
+     * the driver mirror state into the nvs.net80211 namespace — dead weight
+     * in the same 24 KB partition the per-network config blobs need headroom
+     * in; the v5→v6 migration erases that namespace once to reclaim it. */
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
     /* Set the regulatory domain so channels 1-13 are usable with active scan.
      * The ESP32 default ("01"/world-safe) makes channels 12-13 passive-only, so
      * an active scan cannot reliably find an AP on channel 13 — a router on
@@ -159,13 +169,6 @@ esp_err_t wifi_net_init(void)
         }
     }
 
-    /* RAM-only driver storage: the app owns all credentials in the NVS config
-     * and reconfigures the driver from it on every boot/wake (wifi_roam also
-     * runs with WIFI_STORAGE_RAM). FLASH storage would let the driver mirror
-     * credentials into the nvs.net80211 namespace — dead weight in the same
-     * 24 KB partition the per-network config blobs need headroom in; the
-     * v5→v6 migration erases that namespace once to reclaim its entries. */
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     return ESP_OK;
 }

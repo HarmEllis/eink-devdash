@@ -113,17 +113,21 @@ for things that **must** survive a cold boot / power loss: WiFi + API config,
 panel variant, the AP password, and the per-network quiet hours.
 
 Since config version 6 the config is stored as **per-network blobs**: a small
-`cfg_meta` header plus one `cfg_net{i}` blob (~1.5 KB) per saved WiFi network.
-`storage_save_v2` writes changed blobs one at a time and skips unchanged ones,
-so a re-save only ever needs old+new coexistence for a single network blob —
-the historical failure mode (rewriting one ~7 KB blob, needing ~14 KB free)
-is gone. The free-space rule: with the maximum config saved (5 networks × 5
-APIs), at least `DASH_NVS_MIN_FREE_ENTRIES` (64 entries = 2 KB) must remain
-free so one network blob can always be rewritten. Static asserts in
-`storage.c` enforce this budget — if they fire after growing a cap or struct,
-shrink the caps, don't touch the partition. The WiFi driver runs with
-`WIFI_STORAGE_RAM` everywhere; its `nvs.net80211` namespace is dead weight
-and is erased once by the v5→v6 migration.
+`cfg_meta` header plus one `cfg_net{i}{a|b}` blob (~1.5 KB) per saved WiFi
+network. `storage_save_v2` writes changed blobs one at a time (skipping
+unchanged ones) into the slot's other bank key and commits the meta blob
+last, which switches the save live atomically — a failed save leaves the old
+config fully intact, and a re-save only ever needs old+new coexistence for a
+single network blob. The historical failure mode (rewriting one ~7 KB blob,
+needing ~14 KB free) is gone. The free-space rule: with the maximum config
+saved (5 networks × 5 APIs), at least `DASH_NVS_MIN_FREE_ENTRIES` (64
+entries = 2 KB) must remain available so one network blob can always be
+rewritten; static asserts in `storage.c` even pin the absolute worst case
+(every slot double-banked) inside the partition. If they fire after growing
+a cap or struct, shrink the caps, don't touch the partition. The WiFi driver
+runs with `WIFI_STORAGE_RAM` everywhere (set before any driver call that
+could persist state); its `nvs.net80211` namespace is dead weight and is
+erased once by the v5→v6 migration.
 
 For state that only needs to survive **deep-sleep timer wakes** — not a power
 loss — use `RTC_DATA_ATTR` (RTC slow memory) instead. It is zero-initialized on

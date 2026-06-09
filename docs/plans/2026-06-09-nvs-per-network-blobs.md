@@ -29,8 +29,15 @@ All keys stay in the existing `devdash` namespace.
 
 | Key | Content | Size |
 |-----|---------|------|
-| `cfg_meta` | `dash_meta_blob_t`: version, caps, refresh_min, network_count, panel_variant, max_partials, write_counter, crc32 | 16 B |
-| `cfg_net0`…`cfg_net4` | `dash_net_blob_t`: version, crc32, one `dash_wifi_profile_t` (profile + its 5 APIs + its quiet-hours fields) | ~1 440 B |
+| `cfg_meta` | `dash_meta_blob_t`: version, caps, refresh_min, network_count, panel_variant, max_partials, write_counter, per-slot bank map, crc32 | 24 B |
+| `cfg_net{0..4}{a\|b}` | `dash_net_blob_t`: version, crc32, one `dash_wifi_profile_t` (profile + its 5 APIs + its quiet-hours fields) | ~1 440 B |
+
+Each slot has two bank keys (`a`/`b`); the meta blob records which bank is
+live per slot. A changed network is written to the slot's *other* bank, and
+the meta write at the end of the save switches the new generation live
+atomically (Codex review round 1, [MAJOR] #3: without this, a failed save
+could leave a mix of old and new networks while the portal reports
+"nothing applied").
 
 Struct changes in `storage.h`:
 
@@ -53,34 +60,38 @@ Struct changes in `storage.h`:
 1. Normalize the cfg; sync the RTC last-success hints (unchanged semantics,
    storage.c:557-564).
 2. Open NVS read-write; allocate two ~1.5 KB heap scratch buffers (candidate
-   blob + stored blob — never on the caller's stack).
-3. **Erase first**: `nvs_erase_key` + commit for every `cfg_net{i}` slot with
-   `i >= network_count` (frees entries before any write) and for the legacy
-   `cfg_v2` key if it still exists.
+   blob + stored blob — never on the caller's stack). Runtime guard:
+   `nvs_get_stats()`; if `available_entries < DASH_NVS_MIN_FREE_ENTRIES`
+   (worst-case single network blob + meta + slack; `available_entries`
+   excludes the reserved GC page, unlike `free_entries` — Codex round 1
+   [MAJOR] #2), fail early with `ESP_ERR_NVS_NOT_ENOUGH_SPACE` so the portal
+   shows the existing clear error up front. Defense-in-depth: statically
+   this cannot happen with only this firmware's keys present.
+3. **Erase orphans only**: bank keys the stored meta does not reference
+   (leftovers of a previously failed save). Everything the old meta
+   references stays untouched until step 5 commits.
 4. **Per-network, sequentially**: for each `i < network_count`, build the
-   candidate blob, read the stored `cfg_net{i}` and `memcmp`. Identical →
-   skip (no flash write, no wear). Different/absent → `nvs_set_blob` +
-   `nvs_commit` for THIS blob only, then move to the next. Peak coexistence
-   is therefore old+new of a single ~1.44 KB blob (~2.9 KB), regardless of
-   how many networks changed. A mid-sequence failure leaves every blob
-   individually valid (each carries its own CRC); a retry skips the
-   already-written ones — the sequence is idempotent.
-5. **Meta last**: if any network blob changed, a slot was erased, or the meta
-   fields differ from the stored meta, write `cfg_meta` with
-   `write_counter + 1`. A fully unchanged save writes nothing at all
-   (today it rewrites 7.2 KB even for a no-op).
-6. Runtime guard: before step 4, `nvs_get_stats()`; if
-   `total_entries - used_entries < DASH_NVS_MIN_FREE_ENTRIES` (worst-case
-   single network blob + meta + slack), fail early with
-   `ESP_ERR_NVS_NOT_ENOUGH_SPACE` so the portal shows the existing clear
-   error before any partial write — defense-in-depth, statically this cannot
-   happen (see below).
+   candidate blob, read the stored blob in the slot's live bank and
+   `memcmp`. Identical → skip (no flash write, no wear; bank kept).
+   Different/new → `nvs_set_blob` + `nvs_commit` into the slot's OTHER bank,
+   then move to the next. Peak coexistence per step is old+new of a single
+   ~1.44 KB blob (~2.9 KB), regardless of how many networks changed; even
+   the absolute worst case (all 5 slots double-banked) fits the partition by
+   static assert.
+5. **Meta last — the atomic switch**: if anything changed, write `cfg_meta`
+   (new bank map, `write_counter + 1`). Only this commit makes the new
+   generation live; a failure or power cut before it leaves the old config
+   fully intact, so a failed portal save genuinely means "nothing applied".
+   A fully unchanged save writes nothing at all (today it rewrites 7.2 KB
+   even for a no-op).
+6. **Release the old generation** (best-effort, after the meta is live):
+   erase switched banks, dropped slots, and the legacy `cfg_v2` key; any
+   leftover is an orphan that step 3 of the next save reclaims.
 
-Crash-consistency trade-off (documented in storage.c): the old single blob
-was atomic; per-network blobs mean a power cut mid-save can persist a mix of
-old and new networks. Every blob is individually CRC-valid, the load path
-drops only broken blobs, and a portal re-save converges — accepted for this
-device class in exchange for the guaranteed headroom.
+A power cut during the meta `nvs_set_blob` itself is covered by NVS's own
+item-level power-safety: the old meta entry is only invalidated after the
+new one is fully written, so the device boots with either the complete old
+or the complete new generation — never a torn one.
 
 ## Load + migration (`storage_load_v2`)
 
