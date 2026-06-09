@@ -144,9 +144,9 @@ esp_err_t wifi_net_init(void)
     char country[4];
     storage_get_wifi_country(country, sizeof(country));
     /* Only call the setter when the active domain actually differs. With
-     * WIFI_STORAGE_RAM (below) the call no longer touches flash, but it is
-     * still driver work on every deep-sleep refresh wake, so keep skipping
-     * the no-op case. */
+     * WIFI_STORAGE_RAM (set above) the call no longer touches flash, but it
+     * is still driver work on every deep-sleep refresh wake, so keep
+     * skipping the no-op case. */
     wifi_country_t active = {0};
     /* Re-apply when the active code differs OR the policy is not AUTO: we always
      * want WIFI_COUNTRY_POLICY_AUTO (802.11d) from set_country_code(.., true), so
