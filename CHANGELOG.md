@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-09
+
+This minor release adds a selectable WiFi region, a web-flasher-free factory reset gesture on the device, and relay improvements that let several devices share one Worker and reprint their provisioning QR codes on demand.
+
+### Added
+
+- A WiFi region selector in the captive portal that sets the regulatory domain (country code) independently of the rest of the configuration, defaulting to a world-safe value that ships anywhere.
+- A device-side factory reset gesture using the BOOT button, requiring no web flasher: a long press in setup forgets the WiFi credentials, and a second press within ten seconds erases all stored configuration.
+- A `npm run qr` relay command (with a Docker equivalent) that reprints the provisioning QR codes from the existing `.env` without redeploying the Worker or rotating credentials.
+- Support for multiple relay setup identities, so several devices can share a single Worker, each authenticated with its own per-device secret.
+
+### Changed
+
+- ESP32-S3 SoftAP provisioning is more compatible: AMPDU RX/TX are disabled and the access point runs in 11b/g mode.
+- The relay now authenticates each device with a per-device secret, and re-running setup creates or reuses this machine's identity instead of rotating a single shared credential.
+
 ## [0.4.1] - 2026-06-07
 
 This patch release makes offline display refreshes and SoftAP provisioning more reliable, and reworks the relay so every device fetch is served on demand over an active WebSocket.
@@ -98,6 +114,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.5.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.3.0...v0.3.1
