@@ -436,6 +436,26 @@ If no saved WiFi network or API endpoint is reachable, the display shows the
 failed connection type and the device sleeps before trying again. Saved
 credentials are not erased automatically.
 
+### Resetting the device
+
+While the setup portal is open, a second long BOOT press opens a
+non-destructive reset confirm screen with a 10-second countdown. Nothing is
+erased until you act during the countdown:
+
+| BOOT presses during the countdown | Result |
+|-----------------------------------|--------|
+| One press | **Config reset** — clears all saved WiFi networks, API endpoints, and quiet hours; keeps the display variant, refresh interval, and max-partial settings |
+| Two presses | **Full erase** — wipes the entire NVS; the device reboots as if first-run |
+| No press | Cancel and return to the setup portal |
+
+After a config reset or full erase the device shows a confirmation and reboots.
+If a config reset cannot be saved (for example a full NVS), a **RESET FAIL**
+screen offers a retry (one press) or returns to the portal on timeout.
+
+| Confirm | Config reset | Full erase |
+|---------|--------------|------------|
+| <img src="docs/assets/reset-confirm-bw-screen.svg" alt="DevDash setup reset confirm" width="280"> | <img src="docs/assets/reset-result-config-screen.svg" alt="DevDash config reset done" width="280"> | <img src="docs/assets/reset-result-erase-screen.svg" alt="DevDash full erase" width="280"> |
+
 ## Architecture
 
 ```text
