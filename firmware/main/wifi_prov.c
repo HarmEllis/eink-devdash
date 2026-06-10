@@ -1575,6 +1575,110 @@ static void prov_pm_lock_release(void)
 #endif
 }
 
+/* Clear all saved Wi-Fi networks — and their nested per-network API profiles
+   and quiet-hours — while preserving panel variant / refresh / other device
+   settings. cfg_v2 is ~7 KB, so heap-allocate to keep it off this task's stack.
+   Returns true only when the trimmed config committed to NVS. */
+static bool reset_clear_networks(void)
+{
+    dash_config_v2_t *cfg = calloc(1, sizeof(*cfg));
+    if (!cfg) {
+        ESP_LOGE(TAG, "Config reset: cfg alloc failed");
+        return false;
+    }
+    storage_load_v2(cfg);
+    cfg->network_count = 0;
+    memset(cfg->networks, 0, sizeof(cfg->networks));
+    esp_err_t err = storage_save_v2(cfg);
+    free(cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Config reset save failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+typedef enum {
+    RESET_GESTURE_CANCEL,     /* no action taken; caller restores the portal */
+    RESET_GESTURE_PROV_DONE,  /* credentials were saved mid-window; let prov win */
+} reset_gesture_t;
+
+/* Setup-mode reset gesture. Entered after a BOOT long-press in the portal; the
+   confirm screen is non-destructive. A 10 s window counts BOOT taps:
+     2x -> full factory erase  (arm RTC flag, show WIPING, restart — no return)
+     1x -> config reset         (clear networks; show DONE + restart, or RESET
+                                 FAIL with a retry/back window)
+     0  -> cancel
+   A provisioning save during the window (BIT_PROV_DONE) supersedes the gesture.
+   On BW the countdown bar depletes via partial refresh once per second. */
+static reset_gesture_t setup_reset_gesture(void)
+{
+    int secs = 10;
+    display_show_reset_confirm(secs);
+
+    int presses = 0;
+    int64_t now           = esp_timer_get_time();
+    int64_t next_tick_us  = now + 1000000;
+    int64_t window_end_us = now + 10 * 1000000;
+    while (presses < 2 && esp_timer_get_time() < window_end_us) {
+        if (xEventGroupGetBits(s_wifi_events) & BIT_PROV_DONE) {
+            return RESET_GESTURE_PROV_DONE;
+        }
+        if (boot_button_is_pressed()) {
+            boot_button_wait_release();
+            presses++;
+            continue;
+        }
+        if (esp_timer_get_time() >= next_tick_us) {
+            if (secs > 0) secs--;
+            display_reset_confirm_tick(secs);
+            next_tick_us += 1000000;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    if (presses >= 2) {
+        ESP_LOGW(TAG, "Setup reset: full factory erase confirmed (2x BOOT)");
+        boot_button_request_factory_reset();
+        display_show_reset_result_erase();
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        esp_restart();
+    }
+    if (presses == 0) {
+        ESP_LOGI(TAG, "Setup reset cancelled (no BOOT press)");
+        return RESET_GESTURE_CANCEL;
+    }
+
+    /* presses == 1 -> config reset, with a retry/back window on NVS failure. */
+    ESP_LOGW(TAG, "Setup reset: config reset confirmed (1x BOOT)");
+    for (;;) {
+        if (reset_clear_networks()) {
+            display_show_reset_result_config();
+            vTaskDelay(pdMS_TO_TICKS(1500));
+            esp_restart();
+        }
+        /* RESET FAIL: 1x BOOT retries, no press returns to setup. */
+        display_show_reset_result_fail();
+        int64_t fail_end_us = esp_timer_get_time() + 10 * 1000000;
+        bool retry = false;
+        while (esp_timer_get_time() < fail_end_us) {
+            if (xEventGroupGetBits(s_wifi_events) & BIT_PROV_DONE) {
+                return RESET_GESTURE_PROV_DONE;
+            }
+            if (boot_button_is_pressed()) {
+                boot_button_wait_release();
+                retry = true;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        if (!retry) {
+            ESP_LOGI(TAG, "Setup reset: returning to setup after NVS failure");
+            return RESET_GESTURE_CANCEL;
+        }
+    }
+}
+
 static esp_err_t run_provisioning_window(void)
 {
     xEventGroupClearBits(s_wifi_events, BIT_PROV_DONE);
@@ -1673,54 +1777,12 @@ static esp_err_t run_provisioning_window(void)
         if (boot_button_is_pressed() &&
             boot_button_wait_longpress(CONFIG_DEVDASH_BOOT_LONGPRESS_MS)) {
             boot_button_wait_release();
-            ESP_LOGW(TAG, "Setup-screen long-press: forgetting Wi-Fi networks");
-
-            /* Tier 1: clear the saved Wi-Fi credentials, preserving the rest of
-             * the config (panel variant, refresh interval, etc.). cfg_v2 is
-             * ~7 KB — heap-allocate to keep it off this task's stack. Failures
-             * are logged, not hidden: a full/failed NVS is exactly when Tier 2
-             * (full erase) is the recovery, and the confirm screen already
-             * points there ("BOOT again = WIPE ALL"), so fall through. */
-            bool wiped = false;
-            dash_config_v2_t *cfg = calloc(1, sizeof(*cfg));
-            if (cfg) {
-                storage_load_v2(cfg);
-                cfg->network_count = 0;
-                memset(cfg->networks, 0, sizeof(cfg->networks));
-                esp_err_t serr = storage_save_v2(cfg);
-                free(cfg);
-                if (serr == ESP_OK) {
-                    wiped = true;
-                } else {
-                    ESP_LOGE(TAG, "Wi-Fi wipe save failed: %s — press BOOT again "
-                             "for a full factory erase", esp_err_to_name(serr));
-                }
-            } else {
-                ESP_LOGE(TAG, "Wi-Fi wipe: cfg alloc failed — press BOOT again "
-                         "for a full factory erase");
-            }
-
-            /* Tier 2: offer a full factory wipe. The screen reflects whether the
-             * Tier-1 wipe committed (so a failure is not shown as success), and
-             * always offers the full erase — the recovery when Tier 1 could not
-             * persist. Watch for a second BOOT press within a short window. */
-            display_show_factory_confirm(wiped);
-            const int64_t confirm_deadline =
-                esp_timer_get_time() + 10 * 1000000; /* 10 s */
-            bool factory = false;
-            while (esp_timer_get_time() < confirm_deadline) {
-                if (boot_button_is_pressed()) {
-                    boot_button_wait_release();
-                    factory = true;
-                    break;
-                }
-                vTaskDelay(pdMS_TO_TICKS(50));
-            }
-            if (factory) {
-                ESP_LOGW(TAG, "Factory reset confirmed via BOOT press");
-                boot_button_request_factory_reset();
-            }
-            esp_restart();
+            ESP_LOGW(TAG, "Setup-screen long-press: entering reset confirm");
+            if (setup_reset_gesture() == RESET_GESTURE_PROV_DONE) break;
+            /* Cancelled (or recovered from an NVS failure): restore the setup
+             * screen and keep serving the portal. */
+            display_show_qr(s_portal_ssid, s_portal_password);
+            continue;
         }
         if (deadline_us != 0 && esp_timer_get_time() >= deadline_us) break;
     }
