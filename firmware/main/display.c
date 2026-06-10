@@ -2484,8 +2484,9 @@ void display_show_reset_result_fail(void)
     draw_str((296 - str_w("config not cleared - nvs full?")) / 2, 66,
              "config not cleared - nvs full?", 0);
     hline(2, 104, 292);
-    draw_str((296 - str_w("1x BOOT = RETRY / NO PRESS = BACK")) / 2, 115,
-             "1x BOOT = RETRY / NO PRESS = BACK", 0);
+    /* "10s" must match the fail retry/back window in setup_reset_gesture(). */
+    draw_str((296 - str_w("BOOT = RETRY / WAIT 10s = BACK")) / 2, 115,
+             "BOOT = RETRY / WAIT 10s = BACK", 0);
 
     reset_result_commit("reset fail");
 }

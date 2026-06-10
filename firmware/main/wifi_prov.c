@@ -1672,7 +1672,8 @@ static reset_gesture_t setup_reset_gesture(void)
             vTaskDelay(pdMS_TO_TICKS(1500));
             esp_restart();
         }
-        /* RESET FAIL: 1x BOOT retries, no press returns to setup. */
+        /* RESET FAIL: a BOOT press retries, no press returns to setup. The 10 s
+           window is shown as "WAIT 10s = BACK" (display.c) — keep them in sync. */
         display_show_reset_result_fail();
         int64_t fail_end_us = esp_timer_get_time() + 10 * 1000000;
         bool retry = false;

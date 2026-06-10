@@ -984,7 +984,7 @@ function renderResetFail() {
   f.drawStr2x((296 - str2xW("NVS WRITE FAILED")) / 2, 42, "NVS WRITE FAILED", 0);
   f.drawStr((296 - strW("config not cleared - nvs full?")) / 2, 66, "config not cleared - nvs full?", 0);
   f.hline(2, 104, 292);
-  f.drawStr((296 - strW("1x BOOT = RETRY / NO PRESS = BACK")) / 2, 115, "1x BOOT = RETRY / NO PRESS = BACK", 0);
+  f.drawStr((296 - strW("BOOT = RETRY / WAIT 10s = BACK")) / 2, 115, "BOOT = RETRY / WAIT 10s = BACK", 0);
   return f;
 }
 
