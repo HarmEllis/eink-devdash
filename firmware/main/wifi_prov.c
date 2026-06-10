@@ -1604,23 +1604,24 @@ typedef enum {
 } reset_gesture_t;
 
 /* Setup-mode reset gesture. Entered after a BOOT long-press in the portal; the
-   confirm screen is non-destructive. A 10 s window counts BOOT taps:
+   confirm screen is non-destructive. A 10-count window counts BOOT taps:
      2x -> full factory erase  (arm RTC flag, show WIPING, restart — no return)
      1x -> config reset         (clear networks; show DONE + restart, or RESET
                                  FAIL with a retry/back window)
      0  -> cancel
    A provisioning save during the window (BIT_PROV_DONE) supersedes the gesture.
-   On BW the countdown bar depletes via partial refresh once per second. */
+   The window runs until the on-screen countdown reaches 0 — not a separate
+   wall-clock deadline — so a BW panel whose per-second band partial refresh
+   takes longer than a second still shows the full countdown before cancelling,
+   instead of jumping back to setup with seconds still on the clock. */
 static reset_gesture_t setup_reset_gesture(void)
 {
     int secs = 10;
     display_show_reset_confirm(secs);
 
     int presses = 0;
-    int64_t now           = esp_timer_get_time();
-    int64_t next_tick_us  = now + 1000000;
-    int64_t window_end_us = now + 10 * 1000000;
-    while (presses < 2 && esp_timer_get_time() < window_end_us) {
+    int64_t next_tick_us = esp_timer_get_time() + 1000000;
+    while (presses < 2 && secs > 0) {
         if (xEventGroupGetBits(s_wifi_events) & BIT_PROV_DONE) {
             return RESET_GESTURE_PROV_DONE;
         }
@@ -1630,8 +1631,8 @@ static reset_gesture_t setup_reset_gesture(void)
             continue;
         }
         if (esp_timer_get_time() >= next_tick_us) {
-            if (secs > 0) secs--;
-            display_reset_confirm_tick(secs);
+            secs--;
+            display_reset_confirm_tick(secs);  /* BW: ~1 partial; BWR: no-op */
             next_tick_us += 1000000;
         }
         vTaskDelay(pdMS_TO_TICKS(50));

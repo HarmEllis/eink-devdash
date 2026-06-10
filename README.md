@@ -452,10 +452,6 @@ After a config reset or full erase the device shows a confirmation and reboots.
 If a config reset cannot be saved (for example a full NVS), a **RESET FAIL**
 screen offers a retry (one press) or returns to the portal on timeout.
 
-| Confirm | Config reset | Full erase |
-|---------|--------------|------------|
-| <img src="docs/assets/reset-confirm-bw-screen.svg" alt="DevDash setup reset confirm" width="280"> | <img src="docs/assets/reset-result-config-screen.svg" alt="DevDash config reset done" width="280"> | <img src="docs/assets/reset-result-erase-screen.svg" alt="DevDash full erase" width="280"> |
-
 ## Architecture
 
 ```text
