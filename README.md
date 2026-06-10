@@ -436,6 +436,23 @@ If no saved WiFi network or API endpoint is reachable, the display shows the
 failed connection type and the device sleeps before trying again. Saved
 credentials are not erased automatically.
 
+### Resetting the device
+
+While the setup portal is open, a second long BOOT press opens a
+non-destructive reset confirm screen. Nothing is erased until you act:
+
+| BOOT gesture | Result |
+|--------------|--------|
+| Tap (short press) | **Config reset** — clears all saved WiFi networks, API endpoints, and quiet hours; keeps the display variant, refresh interval, and max-partial settings |
+| Hold for about 3 seconds | **Full erase** — wipes the entire NVS; the device reboots as if first-run |
+| No press | Cancel and return to the setup portal |
+
+A tap commits the config reset immediately; the full erase requires a sustained
+hold, so the destructive action cannot be triggered by accident. After either,
+the device shows a confirmation and reboots. If a config reset cannot be saved
+(for example a full NVS), a **RESET FAIL** screen offers a retry (one press) or
+returns to the portal on timeout.
+
 ## Architecture
 
 ```text

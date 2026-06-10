@@ -2359,33 +2359,136 @@ void display_show_setup_failed(void)
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
-void display_show_factory_confirm(bool wifi_cleared)
+/* ── Setup-mode reset flow (tap / hold) ──────────────────────────────────────
+   A BOOT long-press in the portal brings up display_show_reset_confirm() —
+   nothing is wiped yet, and the screen is drawn once (static, no countdown
+   animation) so the gesture loop can poll BOOT continuously: a momentary tap is
+   not lost to a blocking refresh. A short BOOT tap = config reset; holding BOOT
+   ~3 s = full erase; no press = cancel. The result screens are pushed via a
+   whole-panel partial refresh on BW (always, regardless of the max_partials
+   cap) and a full refresh on BWR. */
+
+/* Border + DEVDASH header with a right-aligned title; no QR footer. */
+static void draw_reset_chrome(const char *title)
+{
+    hline(1,   1,   294);
+    hline(1,   126, 294);
+    vline(1,   1,   126);
+    vline(294, 1,   126);
+
+    icon_box_logo(6, 4);
+    draw_str(19, 5, "DEVDASH", 0);
+    draw_str(290 - str_w(title), 5, title, 0);
+
+    hline(2, 15, 292);
+}
+
+/* Static confirm frame: TAP = config reset, HOLD = full erase, wait = cancel.
+   Black-only so it renders identically on BW and BWR. */
+static void draw_reset_confirm_frame(void)
+{
+    memset(bw_buf,  0xFF, sizeof(bw_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
+
+    draw_reset_chrome("SETUP RESET");
+
+    draw_str2x(6, 24, "TAP = CONFIG RESET", 0);
+    draw_str(6, 42, "clears wifi + api + sleep; panel kept", 0);
+
+    draw_str2x(6, 64, "HOLD 3s = FULL ERASE", 0);
+    draw_str(6, 82, "wipes entire nvs; back to first run", 0);
+
+    hline(2, 100, 292);
+    /* "15s" must match the cancel window in setup_reset_gesture() (wifi_prov.c). */
+    draw_str(6, 106, "WAIT 15s = CANCEL", 0);
+}
+
+void display_show_reset_confirm(void)
+{
+    ensure_init();
+    bool bwr = effective_panel_variant() == EINK_PANEL_WEACT_29_BWR;
+    draw_reset_confirm_frame();
+    /* Full refresh for a clean entry from the QR screen; commits the BW snapshot
+       the result screen's whole-panel partial diffs against. Deliberately no
+       eink_sleep(): the panel stays awake so the result push can partial-refresh. */
+    display_full_refresh(/*need_red=*/bwr, "reset confirm");
+    display_mark_frame(DISPLAY_FRAME_QR);
+}
+
+/* Push a freshly drawn (black-only) result frame. BW: whole-panel partial
+   refresh — ALWAYS, regardless of settings — so there is no full-refresh flash;
+   BWR (or BW with no valid snapshot): full refresh. Terminal: sleeps after. */
+static void reset_result_commit(const char *reason)
+{
+    if (effective_panel_variant() == EINK_PANEL_WEACT_29_BW && s_last_bw_valid) {
+        eink_rect_t full = physical_rect_from_logical(0, 0, 296, 128);
+        if (eink_refresh_bw_partial(&s_eink, s_last_bw_buf, bw_buf, full)) {
+            memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
+            s_last_bw_valid = true;
+            eink_sleep(&s_eink);
+            display_mark_frame(DISPLAY_FRAME_QR);
+            return;
+        }
+        ESP_LOGW(TAG, "reset result partial failed; full refresh");
+    }
+    display_full_refresh(/*need_red=*/false, reason);
+    eink_sleep(&s_eink);
+    display_mark_frame(DISPLAY_FRAME_QR);
+}
+
+/* Big centred banner (4×) over the standard chrome, with two sub-lines and a
+   footer line. Used by the config-reset and full-erase result screens. */
+static void draw_reset_result_banner(const char *title, const char *banner,
+                                     const char *l1, const char *l2,
+                                     const char *footer)
+{
+    memset(bw_buf,  0xFF, sizeof(bw_buf));
+    memset(red_buf, 0x00, sizeof(red_buf));
+
+    draw_reset_chrome(title);
+    draw_str4x_bw((296 - (int)strlen(banner) * 23) / 2, 34, banner, 1);
+    draw_str((296 - str_w(l1)) / 2, 74, l1, 0);
+    draw_str((296 - str_w(l2)) / 2, 86, l2, 0);
+    hline(2, 104, 292);
+    draw_str((296 - str_w(footer)) / 2, 115, footer, 0);
+}
+
+void display_show_reset_result_config(void)
+{
+    ensure_init();
+    draw_reset_result_banner("CONFIG RESET", "DONE",
+                             "wifi + api + sleep cleared",
+                             "panel + refresh settings kept",
+                             "returning to setup...");
+    reset_result_commit("reset done");
+}
+
+void display_show_reset_result_erase(void)
+{
+    ensure_init();
+    draw_reset_result_banner("FULL ERASE", "WIPING",
+                             "entire nvs erased on reboot",
+                             "device restarts as first run",
+                             "rebooting...");
+    reset_result_commit("reset wiping");
+}
+
+void display_show_reset_result_fail(void)
 {
     ensure_init();
     memset(bw_buf,  0xFF, sizeof(bw_buf));
     memset(red_buf, 0x00, sizeof(red_buf));
 
-    draw_s1_chrome();
-    draw_s1_info_column(NULL, NULL, NULL, false);
+    draw_reset_chrome("SETUP RESET");
+    draw_str2x((296 - str2x_w("NVS WRITE FAILED")) / 2, 42, "NVS WRITE FAILED", 0);
+    draw_str((296 - str_w("config not cleared - nvs full?")) / 2, 66,
+             "config not cleared - nvs full?", 0);
+    hline(2, 104, 292);
+    /* "10s" must match the fail retry/back window in setup_reset_gesture(). */
+    draw_str((296 - str_w("BOOT = RETRY / WAIT 10s = BACK")) / 2, 115,
+             "BOOT = RETRY / WAIT 10s = BACK", 0);
 
-    /* Drawn black-only so it renders identically on BW and BWR panels. The top
-     * line reflects whether the Wi-Fi-only wipe actually committed, so the
-     * screen never claims a reset that failed; the full-erase offer below is
-     * always shown because it is the recovery when the lighter wipe could not
-     * persist (e.g. a full NVS). */
-    int qr_centre_x = 12 + 89 / 2;
-    const char *L1 = wifi_cleared ? "WIFI RESET"  : "RESET FAIL";
-    const char *L2 = "BOOT again";
-    const char *L3 = "= WIPE ALL";
-    const char *L4 = wifi_cleared ? "wait = keep" : "wait=retry";
-    draw_str(qr_centre_x - str_w(L1) / 2, 34, L1, 0);
-    draw_str(qr_centre_x - str_w(L2) / 2, 50, L2, 0);
-    draw_str(qr_centre_x - str_w(L3) / 2, 60, L3, 0);
-    draw_str(qr_centre_x - str_w(L4) / 2, 76, L4, 0);
-
-    display_full_refresh(/*need_red=*/false, "factory confirm");
-    eink_sleep(&s_eink);
-    display_mark_frame(DISPLAY_FRAME_QR);
+    reset_result_commit("reset fail");
 }
 
 void display_show_offline(display_offline_reason_t reason,

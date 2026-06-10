@@ -937,6 +937,57 @@ function renderOffline(kind) {
   return f;
 }
 
+// ── Setup-mode reset flow (mirrors display.c draw_reset_* helpers) ──────────
+
+function drawResetChrome(f, title) {
+  f.hline(1, 1, 294);
+  f.hline(1, 126, 294);
+  f.vline(1, 1, 126);
+  f.vline(294, 1, 126);
+
+  iconBoxLogo(f, 6, 4);
+  f.drawStr(19, 5, "DEVDASH", 0);
+  f.drawStr(290 - strW(title), 5, title, 0);
+
+  f.hline(2, 15, 292);
+}
+
+function renderResetConfirm() {
+  const f = new Frame();
+  drawResetChrome(f, "SETUP RESET");
+
+  f.drawStr2x(6, 24, "TAP = CONFIG RESET", 0);
+  f.drawStr(6, 42, "clears wifi + api + sleep; panel kept", 0);
+
+  f.drawStr2x(6, 64, "HOLD 3s = FULL ERASE", 0);
+  f.drawStr(6, 82, "wipes entire nvs; back to first run", 0);
+
+  f.hline(2, 100, 292);
+  f.drawStr(6, 106, "WAIT 15s = CANCEL", 0);
+  return f;
+}
+
+function renderResetBanner(title, banner, l1, l2, footer) {
+  const f = new Frame();
+  drawResetChrome(f, title);
+  f.drawStr4xBw((296 - banner.length * 23) / 2, 34, banner, 1);
+  f.drawStr((296 - strW(l1)) / 2, 74, l1, 0);
+  f.drawStr((296 - strW(l2)) / 2, 86, l2, 0);
+  f.hline(2, 104, 292);
+  f.drawStr((296 - strW(footer)) / 2, 115, footer, 0);
+  return f;
+}
+
+function renderResetFail() {
+  const f = new Frame();
+  drawResetChrome(f, "SETUP RESET");
+  f.drawStr2x((296 - str2xW("NVS WRITE FAILED")) / 2, 42, "NVS WRITE FAILED", 0);
+  f.drawStr((296 - strW("config not cleared - nvs full?")) / 2, 66, "config not cleared - nvs full?", 0);
+  f.hline(2, 104, 292);
+  f.drawStr((296 - strW("BOOT = RETRY / WAIT 10s = BACK")) / 2, 115, "BOOT = RETRY / WAIT 10s = BACK", 0);
+  return f;
+}
+
 function escapeXml(value) {
   return value.replace(/[&<>"']/g, (ch) => ({
     "&": "&amp;",
@@ -956,6 +1007,10 @@ const screens = [
   ["readme-provision-screen.svg", renderProvision(), "DevDash provisioning screen"],
   ["readme-no-wifi-screen.svg", renderOffline("wifi"), "DevDash no WiFi screen"],
   ["readme-api-error-screen.svg", renderOffline("api"), "DevDash API error screen"],
+  ["reset-confirm-screen.svg", renderResetConfirm(), "DevDash setup reset confirm"],
+  ["reset-result-config-screen.svg", renderResetBanner("CONFIG RESET", "DONE", "wifi + api + sleep cleared", "panel + refresh settings kept", "returning to setup..."), "DevDash config reset done"],
+  ["reset-result-erase-screen.svg", renderResetBanner("FULL ERASE", "WIPING", "entire nvs erased on reboot", "device restarts as first run", "rebooting..."), "DevDash full erase"],
+  ["reset-result-fail-screen.svg", renderResetFail(), "DevDash setup reset NVS failure"],
 ];
 
 for (const [filename, frame, title] of screens) {

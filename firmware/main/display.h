@@ -63,12 +63,19 @@ void display_show_qr(const char *ssid, const char *pop);
 /* V4 S1 error variant — drawn when the SoftAP fails to start. */
 void display_show_setup_failed(void);
 
-/* Setup-screen factory-reset confirmation prompt: shown after the BOOT
- * long-press attempts to forget the saved Wi-Fi networks, telling the user a
- * second BOOT press within the confirm window triggers a full factory wipe (all
- * settings). `wifi_cleared` reflects whether that lighter wipe actually
- * committed, so the screen does not claim a reset that failed. */
-void display_show_factory_confirm(bool wifi_cleared);
+/* Setup-mode reset flow. A non-destructive confirm screen is shown after the
+ * BOOT long-press; the BOOT gesture then decides the action:
+ *   tap = config reset (wifi + api + sleep), hold ~3 s = full erase, none = cancel.
+ *
+ * display_show_reset_confirm() draws the confirm screen once (static — no
+ * countdown animation) and leaves the panel awake so the gesture loop can poll
+ * BOOT continuously without a per-second blocking refresh swallowing taps. The
+ * three result screens are pushed via a whole-panel partial refresh on BW
+ * (always, regardless of settings) and a full refresh on BWR. */
+void display_show_reset_confirm(void);
+void display_show_reset_result_config(void);
+void display_show_reset_result_erase(void);
+void display_show_reset_result_fail(void);
 
 typedef enum {
     DISPLAY_OFFLINE_REASON_API,
