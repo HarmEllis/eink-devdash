@@ -1616,6 +1616,11 @@ typedef enum {
    instead of jumping back to setup with seconds still on the clock. */
 static reset_gesture_t setup_reset_gesture(void)
 {
+    /* Latch BOOT presses in a debounced GPIO ISR: each ~1.4 s BW countdown tick
+     * blocks the CPU in the e-ink driver, so level-polling the button here would
+     * miss most taps. If arming fails take() stays 0 and the gesture safely
+     * cancels (no destructive action). */
+    boot_button_press_counter_arm();
     int secs = 10;
     display_show_reset_confirm(secs);
 
@@ -1623,13 +1628,11 @@ static reset_gesture_t setup_reset_gesture(void)
     int64_t next_tick_us = esp_timer_get_time() + 1000000;
     while (presses < 2 && secs > 0) {
         if (xEventGroupGetBits(s_wifi_events) & BIT_PROV_DONE) {
+            boot_button_press_counter_disarm();
             return RESET_GESTURE_PROV_DONE;
         }
-        if (boot_button_is_pressed()) {
-            boot_button_wait_release();
-            presses++;
-            continue;
-        }
+        presses += boot_button_press_counter_take();
+        if (presses >= 2) break;
         if (esp_timer_get_time() >= next_tick_us) {
             secs--;
             display_reset_confirm_tick(secs);  /* BW: ~1 partial; BWR: no-op */
@@ -1637,6 +1640,8 @@ static reset_gesture_t setup_reset_gesture(void)
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
+    presses += boot_button_press_counter_take();  /* drain taps latched in last refresh */
+    boot_button_press_counter_disarm();
 
     if (presses >= 2) {
         ESP_LOGW(TAG, "Setup reset: full factory erase confirmed (2x BOOT)");

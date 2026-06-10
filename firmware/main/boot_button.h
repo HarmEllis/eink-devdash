@@ -28,6 +28,19 @@ void boot_button_request_factory_reset(void);
 bool boot_button_factory_reset_pending(void);
 void boot_button_factory_reset_clear(void);
 
+/* Edge-counted BOOT presses for the setup reset gesture. The confirm-screen
+ * countdown blocks for ~1.4 s per BW partial refresh, during which the gesture
+ * loop cannot poll the button; a GPIO falling-edge ISR latches each press into a
+ * debounced counter so taps (incl. a fast double-tap for full erase) are not
+ * lost. arm() zeroes the count and enables the ISR; take() atomically
+ * reads-and-clears the accumulated count; disarm() disables the ISR so the
+ * normal level-polling paths (long-press, wait_release) are unaffected.
+ * If arm() cannot install the ISR it logs and returns: take() then stays 0, so
+ * the gesture safely degrades to "cancel" (no destructive action). */
+void boot_button_press_counter_arm(void);
+int  boot_button_press_counter_take(void);
+void boot_button_press_counter_disarm(void);
+
 void boot_button_monitor_start(void);
 
 #ifdef __cplusplus
