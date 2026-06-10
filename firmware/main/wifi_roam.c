@@ -206,6 +206,21 @@ static esp_err_t connect_one(const dash_wifi_profile_t *net, int timeout_ms,
     wcfg.sta.btm_enabled = 1;
     wcfg.sta.mbo_enabled = 1;
 
+    /* When the caller already picked a specific AP from the fresh scan in
+     * wifi_roam_connect(), pin its BSSID and channel so the driver associates
+     * directly instead of running a second all-channel scan of its own. That
+     * scan already ranked APs by signal, so pinning the chosen BSSID preserves
+     * strongest-AP selection (across multiple APs on the same SSID) while
+     * dropping the redundant scan. The NULL-candidate fallback path has no
+     * fresh scan result, so it keeps the all-channel scan and lets the driver
+     * locate the AP on its own. */
+    if (candidate) {
+        wcfg.sta.bssid_set = true;
+        memcpy(wcfg.sta.bssid, candidate->bssid, sizeof(wcfg.sta.bssid));
+        wcfg.sta.channel = candidate->channel;
+        wcfg.sta.scan_method = WIFI_FAST_SCAN;
+    }
+
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wcfg);
     if (err != ESP_OK) return err;
 

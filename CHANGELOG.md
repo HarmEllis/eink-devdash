@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- WiFi reconnection is faster and less timeout-prone: once the device has scanned and ranked the configured networks by signal, it now associates directly with the chosen access point instead of letting the driver run a second, redundant all-channel scan. Strongest-AP selection across multiple access points on the same network is unchanged.
+
 ## [0.5.0] - 2026-06-09
 
 This minor release adds a selectable WiFi region, a web-flasher-free factory reset gesture on the device, and relay improvements that let several devices share one Worker and reprint their provisioning QR codes on demand.
