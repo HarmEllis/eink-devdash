@@ -963,7 +963,7 @@ function renderResetConfirm() {
   f.drawStr(6, 82, "wipes entire nvs; back to first run", 0);
 
   f.hline(2, 100, 292);
-  f.drawStr(6, 106, "WAIT = CANCEL", 0);
+  f.drawStr(6, 106, "WAIT 15s = CANCEL", 0);
   return f;
 }
 

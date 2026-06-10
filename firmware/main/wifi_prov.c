@@ -1620,6 +1620,8 @@ static reset_gesture_t setup_reset_gesture(void)
     display_show_reset_confirm();
 
     const int64_t hold_erase_us = 3 * 1000000;
+    /* 15 s window is shown on the confirm screen as "WAIT 15s = CANCEL"
+       (draw_reset_confirm_frame, display.c) — keep the two in sync. */
     int64_t cancel_deadline_us  = esp_timer_get_time() + 15 * 1000000;
 
     /* Wait for a real (debounced) BOOT press, else cancel when the window ends. */

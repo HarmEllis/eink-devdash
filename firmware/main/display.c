@@ -2399,7 +2399,8 @@ static void draw_reset_confirm_frame(void)
     draw_str(6, 82, "wipes entire nvs; back to first run", 0);
 
     hline(2, 100, 292);
-    draw_str(6, 106, "WAIT = CANCEL", 0);
+    /* "15s" must match the cancel window in setup_reset_gesture() (wifi_prov.c). */
+    draw_str(6, 106, "WAIT 15s = CANCEL", 0);
 }
 
 void display_show_reset_confirm(void)
