@@ -147,27 +147,6 @@ class Frame {
     }
   }
 
-  drawChar2xInv(x, y, ch) {
-    const code = ch.charCodeAt(0);
-    const safe = code < 32 || code > 126 ? "?".charCodeAt(0) : code;
-    const glyph = font5x7[safe - 32];
-    for (let col = 0; col < 5; col++) {
-      for (let row = 0; row < 7; row++) {
-        if (glyph[col] & (1 << row)) {
-          this.fillRect(x + col * 2, y + row * 2, 2, 2, 0, 0);
-          this.fillRect(x + col * 2, y + row * 2, 2, 2, 0, 1);
-        }
-      }
-    }
-  }
-
-  drawStr2xInv(x, y, text) {
-    for (const ch of text) {
-      this.drawChar2xInv(x, y, ch);
-      x += FONT2_W;
-    }
-  }
-
   drawChar4xBw(x, y, ch, black) {
     const code = ch.charCodeAt(0);
     const safe = code < 32 || code > 126 ? "?".charCodeAt(0) : code;
@@ -973,51 +952,18 @@ function drawResetChrome(f, title) {
   f.hline(2, 15, 292);
 }
 
-function drawResetCountdown(f, secs, bwr) {
-  const n = 46;
-  const segW = 4;
-  const gap = 1;
-  const bx = 6;
-  const by = 110;
-  const bh = 9;
-  secs = Math.max(0, Math.min(10, secs));
-  const filled = bwr ? n : Math.floor((secs * n + 5) / 10);
-  const useRed = bwr ? 1 : 0;
-
-  for (let k = 0; k < n; k++) {
-    const sx = bx + k * (segW + gap);
-    if (k < filled) {
-      f.fillRect(sx, by, segW, bh, 1, useRed);
-    } else {
-      f.hline(sx, by, segW);
-      f.hline(sx, by + bh - 1, segW);
-      f.vline(sx, by, bh);
-      f.vline(sx + segW - 1, by, bh);
-    }
-  }
-
-  const ns = `${bwr ? 10 : secs}s`;
-  f.drawStr2x(290 - str2xW(ns), 108, ns, useRed);
-}
-
-function renderResetConfirm(bwr) {
+function renderResetConfirm() {
   const f = new Frame();
   drawResetChrome(f, "SETUP RESET");
 
-  f.fillRect(6, 21, 26, 18, 1, 0);
-  f.drawStr2xInv(9, 23, "1x");
-  f.drawStr2x(40, 22, "CONFIG RESET", 0);
-  f.drawStr(40, 41, "wifi + api + sleep - panel kept", 0);
+  f.drawStr2x(6, 24, "TAP = CONFIG RESET", 0);
+  f.drawStr(6, 42, "clears wifi + api + sleep; panel kept", 0);
 
-  f.fillRect(6, 56, 26, 18, 1, 0);
-  f.drawStr2xInv(9, 58, "2x");
-  f.drawStr2x(40, 57, "FULL ERASE", 0);
-  f.drawStr(40, 76, "wipes entire nvs - back to first run", 0);
+  f.drawStr2x(6, 64, "HOLD 3s = FULL ERASE", 0);
+  f.drawStr(6, 82, "wipes entire nvs; back to first run", 0);
 
-  f.hline(2, 93, 292);
-  f.drawStr(6, 98, "NO PRESS = CANCEL", 0);
-
-  drawResetCountdown(f, 10, bwr);
+  f.hline(2, 100, 292);
+  f.drawStr(6, 106, "WAIT = CANCEL", 0);
   return f;
 }
 
@@ -1061,8 +1007,7 @@ const screens = [
   ["readme-provision-screen.svg", renderProvision(), "DevDash provisioning screen"],
   ["readme-no-wifi-screen.svg", renderOffline("wifi"), "DevDash no WiFi screen"],
   ["readme-api-error-screen.svg", renderOffline("api"), "DevDash API error screen"],
-  ["reset-confirm-bw-screen.svg", renderResetConfirm(false), "DevDash setup reset confirm (BW)"],
-  ["reset-confirm-bwr-screen.svg", renderResetConfirm(true), "DevDash setup reset confirm (BWR)"],
+  ["reset-confirm-screen.svg", renderResetConfirm(), "DevDash setup reset confirm"],
   ["reset-result-config-screen.svg", renderResetBanner("CONFIG RESET", "DONE", "wifi + api + sleep cleared", "panel + refresh settings kept", "returning to setup..."), "DevDash config reset done"],
   ["reset-result-erase-screen.svg", renderResetBanner("FULL ERASE", "WIPING", "entire nvs erased on reboot", "device restarts as first run", "rebooting..."), "DevDash full erase"],
   ["reset-result-fail-screen.svg", renderResetFail(), "DevDash setup reset NVS failure"],

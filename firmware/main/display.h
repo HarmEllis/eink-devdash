@@ -64,18 +64,15 @@ void display_show_qr(const char *ssid, const char *pop);
 void display_show_setup_failed(void);
 
 /* Setup-mode reset flow. A non-destructive confirm screen is shown after the
- * BOOT long-press; BOOT press-count then decides the action:
- *   1x = config reset (wifi + api + sleep), 2x = full erase, none = cancel.
+ * BOOT long-press; the BOOT gesture then decides the action:
+ *   tap = config reset (wifi + api + sleep), hold ~3 s = full erase, none = cancel.
  *
- * display_show_reset_confirm() draws the confirm screen with a `secs`-second
- * countdown and leaves the panel awake. On BW, display_reset_confirm_tick() is
- * called once per remaining second to deplete the countdown bar via a direct
- * partial refresh (bypassing the max_partials cap); on BWR the bar is a static
- * red bar drawn once and tick() is a no-op. The three result screens are pushed
- * via a whole-panel partial refresh on BW (always, regardless of settings) and
- * a full refresh on BWR. */
-void display_show_reset_confirm(int secs);
-void display_reset_confirm_tick(int secs);
+ * display_show_reset_confirm() draws the confirm screen once (static — no
+ * countdown animation) and leaves the panel awake so the gesture loop can poll
+ * BOOT continuously without a per-second blocking refresh swallowing taps. The
+ * three result screens are pushed via a whole-panel partial refresh on BW
+ * (always, regardless of settings) and a full refresh on BWR. */
+void display_show_reset_confirm(void);
 void display_show_reset_result_config(void);
 void display_show_reset_result_erase(void);
 void display_show_reset_result_fail(void);

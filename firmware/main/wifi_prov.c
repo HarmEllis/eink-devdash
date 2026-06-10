@@ -1604,59 +1604,66 @@ typedef enum {
 } reset_gesture_t;
 
 /* Setup-mode reset gesture. Entered after a BOOT long-press in the portal; the
-   confirm screen is non-destructive. A 10-count window counts BOOT taps:
-     2x -> full factory erase  (arm RTC flag, show WIPING, restart — no return)
-     1x -> config reset         (clear networks; show DONE + restart, or RESET
-                                 FAIL with a retry/back window)
-     0  -> cancel
-   A provisioning save during the window (BIT_PROV_DONE) supersedes the gesture.
-   The window runs until the on-screen countdown reaches 0 — not a separate
-   wall-clock deadline — so a BW panel whose per-second band partial refresh
-   takes longer than a second still shows the full countdown before cancelling,
-   instead of jumping back to setup with seconds still on the clock. */
+   confirm screen is non-destructive. The BOOT gesture then decides:
+     hold >= 3 s -> full factory erase  (arm RTC flag, show WIPING, restart)
+     tap (release < 3 s) -> config reset (clear networks; show DONE + restart,
+                            or RESET FAIL with a retry/back window)
+     no press within the window -> cancel
+   A provisioning save (BIT_PROV_DONE) supersedes the gesture. The confirm screen
+   is static (no per-second refresh) so the CPU polls BOOT continuously: unlike a
+   tap-count over a depleting countdown, a momentary tap is never swallowed by a
+   ~1.4 s blocking BW partial refresh. The destructive action requires the most
+   deliberate gesture (a sustained hold), and a tap commits the safe action
+   immediately — the opposite of the earlier "2x is instant" footgun. */
 static reset_gesture_t setup_reset_gesture(void)
 {
-    /* Latch BOOT presses in a debounced GPIO ISR: each ~1.4 s BW countdown tick
-     * blocks the CPU in the e-ink driver, so level-polling the button here would
-     * miss most taps. If arming fails take() stays 0 and the gesture safely
-     * cancels (no destructive action). */
-    boot_button_press_counter_arm();
-    int secs = 10;
-    display_show_reset_confirm(secs);
+    display_show_reset_confirm();
 
-    int presses = 0;
-    int64_t next_tick_us = esp_timer_get_time() + 1000000;
-    while (presses < 2 && secs > 0) {
-        if (xEventGroupGetBits(s_wifi_events) & BIT_PROV_DONE) {
-            boot_button_press_counter_disarm();
-            return RESET_GESTURE_PROV_DONE;
+    const int64_t hold_erase_us = 3 * 1000000;
+    int64_t cancel_deadline_us  = esp_timer_get_time() + 15 * 1000000;
+
+    /* Wait for a real (debounced) BOOT press, else cancel when the window ends. */
+    bool pressed = false;
+    while (!pressed) {
+        while (!boot_button_is_pressed()) {
+            if (xEventGroupGetBits(s_wifi_events) & BIT_PROV_DONE) {
+                return RESET_GESTURE_PROV_DONE;
+            }
+            if (esp_timer_get_time() >= cancel_deadline_us) {
+                ESP_LOGI(TAG, "Setup reset cancelled (no BOOT press)");
+                return RESET_GESTURE_CANCEL;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
-        presses += boot_button_press_counter_take();
-        if (presses >= 2) break;
-        if (esp_timer_get_time() >= next_tick_us) {
-            secs--;
-            display_reset_confirm_tick(secs);  /* BW: ~1 partial; BWR: no-op */
-            next_tick_us += 1000000;
-        }
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(30));          /* settle; reject contact glitches */
+        pressed = boot_button_is_pressed();
     }
-    presses += boot_button_press_counter_take();  /* drain taps latched in last refresh */
-    boot_button_press_counter_disarm();
 
-    if (presses >= 2) {
-        ESP_LOGW(TAG, "Setup reset: full factory erase confirmed (2x BOOT)");
+    /* Measure the hold: full erase fires the moment 3 s is reached; an earlier
+       release falls through to the config reset (tap). */
+    int64_t press_start_us = esp_timer_get_time();
+    bool erase = false;
+    while (boot_button_is_pressed()) {
+        if (esp_timer_get_time() - press_start_us >= hold_erase_us) {
+            erase = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    if (erase) {
+        ESP_LOGW(TAG, "Setup reset: full factory erase confirmed (BOOT hold)");
         boot_button_request_factory_reset();
-        display_show_reset_result_erase();
+        display_show_reset_result_erase();      /* WIPING — confirms the hold */
+        /* Don't reboot while BOOT is still held: GPIO0 is a strapping pin and a
+           held BOOT at reset drops the chip into ROM download mode. */
+        boot_button_wait_release();
         vTaskDelay(pdMS_TO_TICKS(1500));
         esp_restart();
     }
-    if (presses == 0) {
-        ESP_LOGI(TAG, "Setup reset cancelled (no BOOT press)");
-        return RESET_GESTURE_CANCEL;
-    }
 
-    /* presses == 1 -> config reset, with a retry/back window on NVS failure. */
-    ESP_LOGW(TAG, "Setup reset: config reset confirmed (1x BOOT)");
+    /* Tap -> config reset, with a retry/back window on NVS failure. */
+    ESP_LOGW(TAG, "Setup reset: config reset confirmed (BOOT tap)");
     for (;;) {
         if (reset_clear_networks()) {
             display_show_reset_result_config();
@@ -1764,13 +1771,10 @@ static esp_err_t run_provisioning_window(void)
      * monitor task runs during provisioning (it starts only on the STA path,
      * after this branch), so a long-press here is unambiguous.
      *
-     * The gesture is two-tier, mirroring an erase-flash without the web flasher:
-     *   1. A long-press forgets the saved Wi-Fi networks (display/panel settings
-     *      are kept) and shows the confirm screen.
-     *   2. A second BOOT press within 10 s escalates to a full factory reset —
-     *      the entire NVS partition is erased on the next boot (armed via the
-     *      RTC flag in boot_button, applied before nvs_flash_init in app_main).
-     * If no second press arrives, only the Wi-Fi wipe takes effect on restart. */
+     * A long-press is non-destructive: it only opens the confirm screen and
+     * hands off to setup_reset_gesture(), where the BOOT gesture decides —
+     * tap = config reset, hold >= 3 s = full erase, no press = cancel (see that
+     * function). A credential save mid-gesture supersedes it. */
     const TickType_t poll = pdMS_TO_TICKS(250);
     const int64_t deadline_us = CONFIG_DEVDASH_PROV_TIMEOUT_S > 0
         ? esp_timer_get_time() + (int64_t)CONFIG_DEVDASH_PROV_TIMEOUT_S * 1000000

@@ -270,26 +270,6 @@ static void draw_str2x(int lx, int ly, const char *s, int use_red)
 
 static int str2x_w(const char *s) { return (int)strlen(s) * FONT2_W; }
 
-/* 2× inverse: white glyphs (both planes) for labels drawn on a black chip. */
-static void draw_char2x_inv(int lx, int ly, char c)
-{
-    if ((unsigned char)c < 32 || (unsigned char)c > 126) c = '?';
-    const uint8_t *g = font5x7[(unsigned char)c - 32];
-    for (int col = 0; col < 5; col++) {
-        for (int row = 0; row < 7; row++) {
-            if (g[col] & (1 << row)) {
-                fill_rect(lx + col * 2, ly + row * 2, 2, 2, 0, 0);
-                fill_rect(lx + col * 2, ly + row * 2, 2, 2, 0, 1);
-            }
-        }
-    }
-}
-
-static void draw_str2x_inv(int lx, int ly, const char *s)
-{
-    while (*s) { draw_char2x_inv(lx, ly, *s++); lx += FONT2_W; }
-}
-
 static void draw_char4x_bw(int lx, int ly, char c, int black)
 {
     if ((unsigned char)c < 32 || (unsigned char)c > 126) c = '?';
@@ -2379,14 +2359,14 @@ void display_show_setup_failed(void)
     display_mark_frame(DISPLAY_FRAME_QR);
 }
 
-/* ── Setup-mode reset flow (confirm + tap-count) ─────────────────────────────
-   Long-press in the portal brings up display_show_reset_confirm() — nothing is
-   wiped yet. BOOT press count then decides: 1x = config reset, 2x = full erase,
-   no press = cancel. On the BW panel the 10s countdown bar depletes via partial
-   refresh (one tick/second) and the result screens are pushed via partial too —
-   ALWAYS, regardless of the configured max_partials cap, by calling
-   eink_refresh_bw_partial() directly. BWR cannot partial-refresh, so its
-   countdown is a single static red bar drawn once with a full refresh. */
+/* ── Setup-mode reset flow (tap / hold) ──────────────────────────────────────
+   A BOOT long-press in the portal brings up display_show_reset_confirm() —
+   nothing is wiped yet, and the screen is drawn once (static, no countdown
+   animation) so the gesture loop can poll BOOT continuously: a momentary tap is
+   not lost to a blocking refresh. A short BOOT tap = config reset; holding BOOT
+   ~3 s = full erase; no press = cancel. The result screens are pushed via a
+   whole-panel partial refresh on BW (always, regardless of the max_partials
+   cap) and a full refresh on BWR. */
 
 /* Border + DEVDASH header with a right-aligned title; no QR footer. */
 static void draw_reset_chrome(const char *title)
@@ -2403,97 +2383,35 @@ static void draw_reset_chrome(const char *title)
     hline(2, 15, 292);
 }
 
-/* Logical rect covering the countdown band (bar + "Ns" readout). The BW tick
-   partial-refreshes exactly this window. */
-#define RESET_BAND_LX  4
-#define RESET_BAND_LY  106
-#define RESET_BAND_LW  288
-#define RESET_BAND_LH  18
-
-/* Depleting countdown bar + 2× readout. bwr=true draws a static, full red bar
-   (no partial refresh on 3-colour panels); BW draws black with outlined empty
-   segments and depletes by one segment per remaining second. */
-static void draw_reset_countdown(int secs, bool bwr)
-{
-    const int n = 46, segW = 4, gap = 1, bx = 6, by = 110, bh = 9;
-    if (secs < 0)  secs = 0;
-    if (secs > 10) secs = 10;
-    int filled   = bwr ? n : (secs * n + 5) / 10;   /* round(secs/10 * n) */
-    int use_red  = bwr ? 1 : 0;
-
-    for (int k = 0; k < n; k++) {
-        int sx = bx + k * (segW + gap);
-        if (k < filled) {
-            fill_rect(sx, by, segW, bh, 1, use_red);
-        } else {
-            /* 1-px outline for a depleted segment (BW only — BWR is all-filled) */
-            hline(sx, by, segW);
-            hline(sx, by + bh - 1, segW);
-            vline(sx, by, bh);
-            vline(sx + segW - 1, by, bh);
-        }
-    }
-
-    char ns[8];
-    snprintf(ns, sizeof(ns), "%ds", bwr ? 10 : secs);
-    draw_str2x(290 - str2x_w(ns), 108, ns, use_red);
-}
-
-/* Full confirm frame (header + two action rows + cancel hint + countdown). */
-static void draw_reset_confirm_frame(int secs, bool bwr)
+/* Static confirm frame: TAP = config reset, HOLD = full erase, wait = cancel.
+   Black-only so it renders identically on BW and BWR. */
+static void draw_reset_confirm_frame(void)
 {
     memset(bw_buf,  0xFF, sizeof(bw_buf));
     memset(red_buf, 0x00, sizeof(red_buf));
 
     draw_reset_chrome("SETUP RESET");
 
-    /* Action 1 — single tap: config reset */
-    fill_rect(6, 21, 26, 18, 1, 0);
-    draw_str2x_inv(9, 23, "1x");
-    draw_str2x(40, 22, "CONFIG RESET", 0);
-    draw_str(40, 41, "wifi + api + sleep - panel kept", 0);
+    draw_str2x(6, 24, "TAP = CONFIG RESET", 0);
+    draw_str(6, 42, "clears wifi + api + sleep; panel kept", 0);
 
-    /* Action 2 — double tap: full erase */
-    fill_rect(6, 56, 26, 18, 1, 0);
-    draw_str2x_inv(9, 58, "2x");
-    draw_str2x(40, 57, "FULL ERASE", 0);
-    draw_str(40, 76, "wipes entire nvs - back to first run", 0);
+    draw_str2x(6, 64, "HOLD 3s = FULL ERASE", 0);
+    draw_str(6, 82, "wipes entire nvs; back to first run", 0);
 
-    hline(2, 93, 292);
-    draw_str(6, 98, "NO PRESS = CANCEL", 0);
-
-    draw_reset_countdown(secs, bwr);
+    hline(2, 100, 292);
+    draw_str(6, 106, "WAIT = CANCEL", 0);
 }
 
-void display_show_reset_confirm(int secs)
+void display_show_reset_confirm(void)
 {
     ensure_init();
     bool bwr = effective_panel_variant() == EINK_PANEL_WEACT_29_BWR;
-    draw_reset_confirm_frame(secs, bwr);
-    /* Full refresh for a clean entry from the QR screen; commits the BW
-       snapshot the per-second ticks diff against. Deliberately no eink_sleep():
-       the panel stays awake so the countdown ticks can partial-refresh. */
+    draw_reset_confirm_frame();
+    /* Full refresh for a clean entry from the QR screen; commits the BW snapshot
+       the result screen's whole-panel partial diffs against. Deliberately no
+       eink_sleep(): the panel stays awake so the result push can partial-refresh. */
     display_full_refresh(/*need_red=*/bwr, "reset confirm");
     display_mark_frame(DISPLAY_FRAME_QR);
-}
-
-void display_reset_confirm_tick(int secs)
-{
-    /* BW only: deplete the countdown band via a direct partial refresh,
-       bypassing the max_partials cap. BWR's bar is static (drawn once). */
-    if (effective_panel_variant() != EINK_PANEL_WEACT_29_BW) return;
-    if (!s_last_bw_valid) { display_show_reset_confirm(secs); return; }
-
-    draw_reset_confirm_frame(secs, /*bwr=*/false);
-    eink_rect_t band = physical_rect_from_logical(
-        RESET_BAND_LX, RESET_BAND_LY, RESET_BAND_LW, RESET_BAND_LH);
-    if (eink_refresh_bw_partial(&s_eink, s_last_bw_buf, bw_buf, band)) {
-        memcpy(s_last_bw_buf, bw_buf, sizeof(s_last_bw_buf));
-        s_last_bw_valid = true;
-    } else {
-        ESP_LOGW(TAG, "reset countdown partial failed; full re-sync");
-        display_full_refresh(/*need_red=*/false, "reset tick full");
-    }
 }
 
 /* Push a freshly drawn (black-only) result frame. BW: whole-panel partial

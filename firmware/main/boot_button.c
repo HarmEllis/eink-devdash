@@ -6,17 +6,12 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "esp_timer.h"
 #include "sdkconfig.h"
 
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 #define BOOT_POLL_INTERVAL_MS   50
 #define BOOT_FORCE_PROV_MAGIC   0xB001F0F0u
 #define BOOT_FACTORY_RESET_MAGIC 0xFAC70123u
-/* Ignore falling edges within this window of the last accepted one: longer than
- * tactile contact bounce (~5-20 ms), shorter than a human double-tap interval
- * (~150-300 ms), so a real 1x/2x tap is distinguished from bounce. */
-#define BOOT_TAP_DEBOUNCE_US    60000
 
 static const char *TAG = "boot_button";
 
@@ -24,11 +19,6 @@ static RTC_NOINIT_ATTR uint32_t s_force_prov_magic;
 static RTC_NOINIT_ATTR uint32_t s_factory_reset_magic;
 static bool s_initialised   = false;
 static bool s_monitor_alive = false;
-
-static portMUX_TYPE s_tap_mux = portMUX_INITIALIZER_UNLOCKED;
-static volatile int     s_tap_count;
-static volatile int64_t s_tap_last_edge_us;
-static bool s_tap_isr_service_installed = false;
 
 void boot_button_init(void)
 {
@@ -100,68 +90,6 @@ bool boot_button_factory_reset_pending(void)
 void boot_button_factory_reset_clear(void)
 {
     s_factory_reset_magic = 0;
-}
-
-static void IRAM_ATTR boot_button_tap_isr(void *arg)
-{
-    (void)arg;
-    int64_t now = esp_timer_get_time();   /* ISR/IRAM-safe */
-    portENTER_CRITICAL_ISR(&s_tap_mux);
-    if (now - s_tap_last_edge_us >= BOOT_TAP_DEBOUNCE_US) {
-        s_tap_last_edge_us = now;
-        s_tap_count++;
-    }
-    portEXIT_CRITICAL_ISR(&s_tap_mux);
-}
-
-void boot_button_press_counter_arm(void)
-{
-    /* The ISR needs the pin configured (input + pull-up, active-low); don't rely
-     * on an earlier level-read having done it. */
-    if (!s_initialised) boot_button_init();
-
-    portENTER_CRITICAL(&s_tap_mux);
-    s_tap_count = 0;
-    s_tap_last_edge_us = 0;
-    portEXIT_CRITICAL(&s_tap_mux);
-
-    if (!s_tap_isr_service_installed) {
-        esp_err_t err = gpio_install_isr_service(0);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGE(TAG, "tap ISR service install failed: %s — taps will be "
-                     "missed, reset gesture degrades to cancel", esp_err_to_name(err));
-            return;
-        }
-        s_tap_isr_service_installed = true;
-    }
-
-    /* Set the edge type before registering the handler so it is never briefly
-     * live with the GPIO_INTR_DISABLE type left by boot_button_init(). Failures
-     * are logged, not fatal: ESP_ERROR_CHECK would abort() the whole device for a
-     * non-critical UI gesture, and take() returning 0 already degrades safely. */
-    esp_err_t err = gpio_set_intr_type(BOOT_BUTTON_GPIO, GPIO_INTR_NEGEDGE);
-    if (err == ESP_OK) err = gpio_isr_handler_add(BOOT_BUTTON_GPIO, boot_button_tap_isr, NULL);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "tap ISR arm failed: %s — reset gesture degrades to cancel",
-                 esp_err_to_name(err));
-        gpio_set_intr_type(BOOT_BUTTON_GPIO, GPIO_INTR_DISABLE);
-    }
-}
-
-int boot_button_press_counter_take(void)
-{
-    int c;
-    portENTER_CRITICAL(&s_tap_mux);
-    c = s_tap_count;
-    s_tap_count = 0;
-    portEXIT_CRITICAL(&s_tap_mux);
-    return c;
-}
-
-void boot_button_press_counter_disarm(void)
-{
-    gpio_isr_handler_remove(BOOT_BUTTON_GPIO);
-    gpio_set_intr_type(BOOT_BUTTON_GPIO, GPIO_INTR_DISABLE);
 }
 
 static void boot_button_monitor_task(void *arg)
