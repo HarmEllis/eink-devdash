@@ -23,6 +23,13 @@ sends `request-ack` synchronously, builds the resource, then returns a matching
 `response`. Dashboard requests may fall back to a stored snapshot; manifest
 requests fall back to `404` and are never cached.
 
+The API also sends an application-level heartbeat over the WebSocket. Each
+`ping` must receive a `pong` before the configured timeout; otherwise the API
+terminates the half-open socket and enters the normal reconnect path. The pong
+includes the relay protocol version. A missing or unsupported version keeps the
+connection backward compatible but logs a warning that the relay deployment
+must be updated.
+
 Publishers send `hello` before their seed dashboard and advertise
 resource-specific capabilities. A legacy publisher that never sends `hello` is
 never sent a request. This makes a Worker-first rollout fail quickly to the

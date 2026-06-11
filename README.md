@@ -327,6 +327,13 @@ curl -H "Authorization: Bearer <RELAY_ADMIN_KEY>" \
   "https://<worker>.workers.dev/admin/stats?uuid=<DEVICE_UUID>"
 ```
 
+The API sends a WebSocket heartbeat every 30 seconds and reconnects when the
+relay does not answer within 10 seconds. These defaults can be overridden with
+`RELAY_HEARTBEAT_INTERVAL_MS` and `RELAY_HEARTBEAT_TIMEOUT_MS`. The heartbeat
+also verifies the relay protocol version; an outdated deployment remains
+connected for backward compatibility but produces an API log warning asking
+you to update the relay.
+
 Cloudflare caching must remain disabled for `/d/*`, especially OTA manifests.
 Verify the deployed behavior with:
 

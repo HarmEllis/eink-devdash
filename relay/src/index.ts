@@ -68,6 +68,7 @@ const DEFAULT_DEADLINES: Record<Resource, number> = {
 const MAX_FAILOVER = 2
 const MAX_FRAME_BYTES = 16 * 1024
 const MAX_CAPABILITIES = 8
+const RELAY_PROTOCOL_VERSION = 2
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function uuidSecretSuffix(uuid: string): string {
@@ -319,7 +320,7 @@ export class DashboardRelay extends DurableObject<Env> {
     }
 
     if (frame.type === 'ping') {
-      ws.send(JSON.stringify({ type: 'pong' }))
+      ws.send(JSON.stringify({ type: 'pong', protocolVersion: RELAY_PROTOCOL_VERSION }))
       return
     }
     if (frame.type === 'hello') {

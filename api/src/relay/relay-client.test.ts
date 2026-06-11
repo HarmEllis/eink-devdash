@@ -19,6 +19,8 @@ test('relayConfigFromEnv defaults to disabled', () => {
     deviceUuid: '',
     reconnectMinMs: 1_000,
     reconnectMaxMs: 60_000,
+    heartbeatIntervalMs: 30_000,
+    heartbeatTimeoutMs: 10_000,
   })
 })
 
@@ -54,6 +56,8 @@ test('enabled-but-incomplete relay config opens no socket and does not throw', (
     deviceUuid: '',
     reconnectMinMs: 1_000,
     reconnectMaxMs: 60_000,
+    heartbeatIntervalMs: 30_000,
+    heartbeatTimeoutMs: 10_000,
   }
   const warnings: unknown[] = []
   const logger = {
@@ -105,6 +109,8 @@ test('publisher negotiates capabilities and serves correlated requests', { timeo
       deviceUuid: '11111111-1111-4111-8111-111111111111',
       reconnectMinMs: 5,
       reconnectMaxMs: 10,
+      heartbeatIntervalMs: 1_000,
+      heartbeatTimeoutMs: 200,
     },
     logger: { info() {}, warn() {}, error() {} },
     getPayload: async (signal) => {
@@ -139,6 +145,8 @@ test('publisher negotiates capabilities and serves correlated requests', { timeo
       type: 'hello',
       capabilities: ['dashboard', 'manifest'],
     })
+    assert.deepEqual(await messages.next(), { type: 'ping' })
+    socket.send(JSON.stringify({ type: 'pong', protocolVersion: 2 }))
     assert.equal(payloadCalls, 0)
 
     socket.send(JSON.stringify({ type: 'request', id: 'dash-1', resource: 'dashboard' }))
@@ -186,6 +194,126 @@ test('publisher negotiates capabilities and serves correlated requests', { timeo
           'https://github.com/HarmEllis/eink-devdash/releases/download/v0.4.0/eink-devdash.bin',
       },
     })
+  } finally {
+    publisher.stop()
+    for (const client of server.clients) client.terminate()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
+test('publisher warns when the relay protocol version is missing', { timeout: 5_000 }, async () => {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await once(server, 'listening')
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('missing websocket port')
+
+  const warnings: Array<{ obj: unknown; msg?: string }> = []
+  let resolveVersionWarning!: () => void
+  const versionWarningLogged = new Promise<void>((resolve) => { resolveVersionWarning = resolve })
+  const publisher = createRelayPublisher({
+    config: {
+      enabled: true,
+      relayUrl: `http://127.0.0.1:${address.port}`,
+      publishKey: 'publish-test',
+      deviceUuid: '11111111-1111-4111-8111-111111111111',
+      reconnectMinMs: 5,
+      reconnectMaxMs: 10,
+      heartbeatIntervalMs: 1_000,
+      heartbeatTimeoutMs: 200,
+    },
+    logger: {
+      info() {},
+      warn(obj: unknown, msg?: string) {
+        warnings.push({ obj, msg })
+        if (msg === 'relay protocol is outdated; update the relay deployment') {
+          resolveVersionWarning()
+        }
+      },
+      error() {},
+    },
+    getPayload: async () => {
+      throw new Error('getPayload must not be called')
+    },
+  })
+
+  try {
+    const connected = new Promise<{ socket: WebSocket; messages: ReturnType<typeof jsonQueue> }>(
+      (resolve) => server.once('connection', (socket) => {
+        resolve({ socket, messages: jsonQueue(socket) })
+      }),
+    )
+    publisher.start()
+    const { socket, messages } = await connected
+    await messages.next()
+    assert.deepEqual(await messages.next(), { type: 'ping' })
+    socket.send(JSON.stringify({ type: 'pong' }))
+    await versionWarningLogged
+
+    assert.deepEqual(warnings, [{
+      obj: { relayProtocolVersion: null, minimumRelayProtocolVersion: 2 },
+      msg: 'relay protocol is outdated; update the relay deployment',
+    }])
+  } finally {
+    publisher.stop()
+    for (const client of server.clients) client.terminate()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
+test('publisher reconnects when an open socket stops answering heartbeats', { timeout: 5_000 }, async () => {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await once(server, 'listening')
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('missing websocket port')
+
+  const warnings: Array<{ obj: unknown; msg?: string }> = []
+  let connectionCount = 0
+  let resolveReplacement!: () => void
+  const replacementConnected = new Promise<void>((resolve) => { resolveReplacement = resolve })
+  server.on('connection', (socket) => {
+    connectionCount += 1
+    const currentConnection = connectionCount
+    socket.on('message', (data) => {
+      const frame = JSON.parse(data.toString()) as { type?: string }
+      if (frame.type === 'ping' && currentConnection > 1) {
+        socket.send(JSON.stringify({ type: 'pong', protocolVersion: 2 }))
+        resolveReplacement()
+      }
+    })
+  })
+
+  const publisher = createRelayPublisher({
+    config: {
+      enabled: true,
+      relayUrl: `http://127.0.0.1:${address.port}`,
+      publishKey: 'publish-test',
+      deviceUuid: '11111111-1111-4111-8111-111111111111',
+      reconnectMinMs: 5,
+      reconnectMaxMs: 10,
+      heartbeatIntervalMs: 1_000,
+      heartbeatTimeoutMs: 20,
+    },
+    logger: {
+      info() {},
+      warn(obj: unknown, msg?: string) { warnings.push({ obj, msg }) },
+      error() {},
+    },
+    getPayload: async () => {
+      throw new Error('getPayload must not be called')
+    },
+  })
+
+  try {
+    publisher.start()
+    await replacementConnected
+    assert.equal(connectionCount, 2)
+    assert.ok(warnings.some(({ obj, msg }) => (
+      msg === 'relay websocket heartbeat timed out; reconnecting'
+      && (obj as { timeoutMs?: number }).timeoutMs === 20
+    )))
+    assert.ok(warnings.some(({ msg }) => (
+      msg === 'relay websocket disconnected; reconnect scheduled'
+    )))
   } finally {
     publisher.stop()
     for (const client of server.clients) client.terminate()
