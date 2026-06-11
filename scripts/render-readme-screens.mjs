@@ -252,6 +252,33 @@ function strWAdv(text, advance) {
   return text.length * advance;
 }
 
+// Mirrors firmware draw_currency_symbol: € needs its own 5x7 column-major
+// bitmap (font5x7 stays ASCII-only); $ and unknown codes reuse the font glyph.
+const glyphEuro = [0x3e, 0x55, 0x55, 0x41, 0x00];
+
+function drawCurrencySymbol(f, x, y, code, useRed) {
+  if (code === "EUR") {
+    for (let col = 0; col < 5; col++) {
+      for (let row = 0; row < 7; row++) {
+        if (glyphEuro[col] & (1 << row)) f.lpix(x + col, y + row, 1, useRed);
+      }
+    }
+    return;
+  }
+  f.drawChar(x, y, "$", useRed);
+}
+
+// Mirrors firmware format_spend_amount: up to 2 decimals, trailing zeros (and a
+// bare trailing dot) trimmed: 0.91 -> "0.91", 1.00 -> "1", 1200 -> "1200". The
+// decimal separator follows the currency (EUR -> comma, else dot).
+function formatSpendAmount(amount, currency) {
+  let a = amount < 0 ? 0 : amount > 99999 ? 99999 : amount;
+  let s = a.toFixed(2);
+  if (s.includes(".")) s = s.replace(/0+$/, "").replace(/\.$/, "");
+  if (currency === "EUR" && s.includes(".")) s = s.replace(".", ",");
+  return s;
+}
+
 function str2xW(text) {
   return text.length * FONT2_W;
 }
@@ -512,7 +539,7 @@ function formatResetCountdown(seconds) {
   return h < 10 ? `${d}d ${h}h` : `${d}d${h}h`;
 }
 
-function drawProvider(f, ox, oy, width, layout, title, ses, wk, sesResetS, wkResetS, spend = null) {
+function drawProvider(f, ox, oy, width, layout, title, ses, wk, sesResetS, wkResetS, extra = null) {
   f.drawStr(ox, oy, title, 0);
 
   const sesS = formatResetCountdown(sesResetS);
@@ -546,13 +573,28 @@ function drawProvider(f, ox, oy, width, layout, title, ses, wk, sesResetS, wkRes
   const wkPct = `${wk}%`;
   f.drawStr(ox + width - strW(wkPct) - 2, wkY + 2, wkPct, wk > 80);
 
-  if (spend !== null) {
-    const spendText = spend > 0 ? `+${spend}` : String(Math.max(0, spend));
+  if (extra !== null) {
+    // Extra-usage row: [currency symbol] [bar = % of monthly cap] [amount].
+    // The bar uses the real utilization percent; when absent (env override) it
+    // falls back to an amount-capped fill. Mirrors firmware draw_provider:
+    // prefer the API's preformatted valueText, else format the number locally.
+    const amountText = extra.valueText ?? formatSpendAmount(extra.amount, extra.currency);
+    const hasSpend = extra.amount > 0;
+    let barPct;
+    if (extra.percent != null) {
+      barPct = extra.percent;
+    } else {
+      const amt = Math.round(extra.amount);
+      barPct = amt < 0 ? 0 : amt > 100 ? 100 : amt;
+    }
     const spendY = wkY + layout.barRowH + 1;
-    f.drawStr(ox, spendY + 1, "$", 0);
-    const spendPct = spend > 0 ? Math.min(100, spend) : 0;
-    drawBarCfg(f, barX, spendY + barDy, barW, layout.barH, layout.segW, spendPct, spend > 0);
-    f.drawStr(ox + width - strW(spendText) - 2, spendY + 1, spendText, spend > 0);
+    // The amount can be wider than the fixed pct column, so shrink the bar to
+    // end just before it rather than overlapping (mirrors firmware).
+    const amountX = ox + width - strW(amountText) - 2;
+    const spendBarW = Math.max(0, amountX - 2 - barX);
+    drawCurrencySymbol(f, ox, spendY + 1, extra.currency, 0);
+    drawBarCfg(f, barX, spendY + barDy, spendBarW, layout.barH, layout.segW, barPct, hasSpend);
+    f.drawStr(amountX, spendY + 1, amountText, hasSpend);
   }
 }
 
@@ -581,9 +623,16 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
     claude: {
       fiveHour: { used: 18, limit: 200, resetInSeconds: 8200 },
       weekly: { used: 4100, limit: 10000, resetInSeconds: 304800 },
-      spend: null,
+      extra: { amount: 0.91, percent: 5, limit: 17, currency: "EUR", valueText: "0,91" },
     },
-    codex: { shortPct: 32, longPct: 38, reached: false, shortReset: 3600, longReset: 313200, spend: 0 },
+    codex: {
+      shortPct: 32,
+      longPct: 38,
+      reached: false,
+      shortReset: 3600,
+      longReset: 313200,
+      extra: { amount: 3, percent: null, limit: null, currency: "USD", valueText: "3" },
+    },
     updatedAt: "14:38",
     refreshMin: 5,
     stale: false,
@@ -640,11 +689,11 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
       }
       drawIconRow(f, depY, iconShield, depsAlert, "DEP", depsAlert ? `${data.github.dependabot}!` : formatCountValue(data.github.dependabot), depsAlert);
     }
-    drawProvider(f, 112, 22, 182, compactProvider, "CLAUDE", claudeSes, claudeWk, data.claude.fiveHour.resetInSeconds, data.claude.weekly.resetInSeconds, data.claude.spend);
-    drawProvider(f, 112, 76, 182, compactProvider, "CODEX", codexSes, codexWk, data.codex.shortReset, data.codex.longReset, data.codex.spend);
+    drawProvider(f, 112, 22, 182, compactProvider, "CLAUDE", claudeSes, claudeWk, data.claude.fiveHour.resetInSeconds, data.claude.weekly.resetInSeconds, data.claude.extra);
+    drawProvider(f, 112, 76, 182, compactProvider, "CODEX", codexSes, codexWk, data.codex.shortReset, data.codex.longReset, data.codex.extra);
   } else {
-    drawProvider(f, 4, 22, 288, compactProvider, "CLAUDE", claudeSes, claudeWk, data.claude.fiveHour.resetInSeconds, data.claude.weekly.resetInSeconds, data.claude.spend);
-    drawProvider(f, 4, 76, 288, compactProvider, "CODEX", codexSes, codexWk, data.codex.shortReset, data.codex.longReset, data.codex.spend);
+    drawProvider(f, 4, 22, 288, compactProvider, "CLAUDE", claudeSes, claudeWk, data.claude.fiveHour.resetInSeconds, data.claude.weekly.resetInSeconds, data.claude.extra);
+    drawProvider(f, 4, 76, 288, compactProvider, "CODEX", codexSes, codexWk, data.codex.shortReset, data.codex.longReset, data.codex.extra);
   }
   return f;
 }

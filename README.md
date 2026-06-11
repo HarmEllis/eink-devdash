@@ -147,6 +147,9 @@ contains all supported variables.
 | `GITHUB_NOTIFICATIONS_TOKEN` | no | empty | Classic token with `notifications` scope for unread notifications. |
 | `CODEX_PLAN_TYPE` | no | empty | Set to `plus` or `team` when multiple ChatGPT accounts are available. |
 | `CODEX_LIVE_USAGE` | no | `true` | Set to `false` to use only the on-disk Codex session fallback. |
+| `CODEX_OVERAGE_USD` | no | empty | Manual overage spend in USD for the Codex extra-usage bar (ChatGPT-auth exposes no dollar figure). Empty or `0` hides the bar; a value > 0 shows a `$` symbol, an amount-capped bar, and the amount. |
+| `CLAUDE_OVERAGE_USD` | no | empty | Optional override for the Claude extra-usage bar, which is otherwise read live from Claude's OAuth usage credits (currency symbol, bar = % of the monthly cap, amount consumed). If set (> 0) it forces a manual USD amount-capped bar. |
+| `DASHBOARD_LOCALE` | no | `nl-NL` | BCP-47 locale for the extra-usage amount's decimal separator (`nl-NL` → `0,91`, `en-US` → `0.91`). Invalid/unsupported values fall back to the default. |
 | `DASHBOARD_TIME_ZONE` | no | `Europe/Amsterdam` | IANA timezone used for timestamps and quiet hours. |
 | `MDNS_ENABLED` | no | `true` | Enables `.local` advertisement. |
 | `MDNS_NAME` | no | `devdash-api` | Hostname advertised under `.local`. |

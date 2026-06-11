@@ -19,11 +19,23 @@ typedef struct {
     int reset_in_seconds;
 } rate_limit_t;
 
+/* Extra-usage ("usage credits") spend, rendered as a currency row:
+   [symbol] [bar = percent] [amount]. `percent_present` is false for the env
+   override path (no percent source) → the device uses an amount-capped bar. */
+typedef struct {
+    bool present;
+    double amount;          /* major currency units spent (e.g. 0.91) */
+    int percent;            /* 0..100 share of the monthly cap consumed */
+    bool percent_present;   /* false → fall back to an amount-capped bar */
+    char currency[4];       /* ISO-4217 code, e.g. "EUR"/"USD"; empty → "$" */
+    char value_text[16];    /* API-preformatted, locale-aware amount string
+                               (e.g. "0,91"); empty → format `amount` locally */
+} extra_usage_t;
+
 typedef struct {
     rate_limit_t five_hour;
     rate_limit_t weekly;
-    int spend;
-    bool spend_present;
+    extra_usage_t extra_usage;
     bool auth_error;
 } claude_data_t;
 
@@ -33,8 +45,7 @@ typedef struct {
     bool reached;
     int short_reset_in_seconds;
     int long_reset_in_seconds;
-    int spend;
-    bool spend_present;
+    extra_usage_t extra_usage;
 } codex_data_t;
 
 typedef struct {
