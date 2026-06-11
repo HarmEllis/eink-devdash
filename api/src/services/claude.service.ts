@@ -1,4 +1,5 @@
 import { ClaudeCredentialStore } from './claude-credentials.js'
+import { minorToMajor } from './currency.js'
 
 type RateLimit = { used: number; limit: number; resetInSeconds: number }
 
@@ -25,17 +26,6 @@ export const CLAUDE_ADAPTER_BUDGET_MS = 11_000
 const PROBE_TIMEOUT_MS = 5_000
 const USAGE_TIMEOUT_MS = 5_000
 const OAUTH_USAGE_ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
-
-/* Minor-unit exponent per ISO-4217 code. Only currencies we can both convert
- * correctly AND render a symbol for are supported; anything else is omitted
- * rather than guessed (a wrong exponent would misreport money). */
-const CURRENCY_EXPONENTS: Record<string, number> = { EUR: 2, USD: 2 }
-
-function minorToMajor(minor: number, currency: string): number | null {
-  const exponent = CURRENCY_EXPONENTS[currency]
-  if (exponent === undefined) return null
-  return minor / 10 ** exponent
-}
 
 /* Operator-supplied overage spend in USD. An explicit override that wins over
  * the live read (precedence: override > live > absent) — useful when the

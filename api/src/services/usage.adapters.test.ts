@@ -36,7 +36,7 @@ test('serviceFromClaudeUsage emits a currency-aware extraUsage metric', () => {
     extraUsage: { amount: 0.91, percent: 5, limit: 17, currency: 'EUR' },
   })
   assert.deepEqual(service.metrics, [
-    { id: 'extraUsage', label: '€', value: 0.91, unit: 'EUR', usedPercent: 5, limit: 17 },
+    { id: 'extraUsage', label: '€', value: 0.91, valueText: '0,91', unit: 'EUR', usedPercent: 5, limit: 17 },
   ])
 })
 
@@ -46,7 +46,7 @@ test('serviceFromClaudeUsage omits usedPercent/limit for the env-override shape'
     extraUsage: { amount: 5, percent: null, limit: null, currency: 'USD' },
   })
   assert.deepEqual(service.metrics, [
-    { id: 'extraUsage', label: '$', value: 5, unit: 'USD' },
+    { id: 'extraUsage', label: '$', value: 5, valueText: '5', unit: 'USD' },
   ])
 })
 
@@ -58,6 +58,16 @@ test('serviceFromClaudeUsage omits the extraUsage metric without overage spend',
   ]) {
     const service = serviceFromClaudeUsage({ ...baseClaudeUsage, extraUsage })
     assert.equal(service.metrics, undefined)
+  }
+})
+
+test('serviceFromClaudeUsage omits unsupported/inherited currencies (never $)', () => {
+  for (const currency of ['GBP', 'JPY', 'constructor', 'toString', '__proto__']) {
+    const service = serviceFromClaudeUsage({
+      ...baseClaudeUsage,
+      extraUsage: { amount: 1.23, percent: 1, limit: 100, currency },
+    })
+    assert.equal(service.metrics, undefined, `currency ${currency} should be omitted`)
   }
 })
 
@@ -115,7 +125,7 @@ test('serviceFromCodexUsage emits a USD extraUsage metric from the env amount', 
   // percent/limit (the device uses an amount-capped bar).
   const service = serviceFromCodexUsage({ ...baseCodexUsage, spend: 3 })
   assert.deepEqual(service.metrics, [
-    { id: 'extraUsage', label: '$', value: 3, unit: 'USD' },
+    { id: 'extraUsage', label: '$', value: 3, valueText: '3', unit: 'USD' },
   ])
 })
 

@@ -216,9 +216,35 @@ static bool service_counter_present(const cJSON *service, const char *id)
     return find_service_item(service, "counters", id) != NULL;
 }
 
+/* Accept an API `valueText` only when it is a short ASCII amount: digits with at
+   most one '.'/',' decimal separator, <= 15 bytes. Anything else (overlong,
+   non-ASCII, malformed) is rejected so the device falls back to formatting the
+   numeric `value` locally rather than drawing a garbled/truncated string. */
+static bool valid_amount_text(const char *s)
+{
+    if (!s || s[0] == '\0') return false;
+    size_t len = strlen(s);
+    if (len > 15) return false;
+    bool seen_sep = false, seen_frac_digit = false, seen_int_digit = false;
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (c >= '0' && c <= '9') {
+            if (seen_sep) seen_frac_digit = true; else seen_int_digit = true;
+        } else if (c == '.' || c == ',') {
+            if (seen_sep || !seen_int_digit) return false;  /* one sep, after a digit */
+            seen_sep = true;
+        } else {
+            return false;
+        }
+    }
+    return seen_int_digit && (!seen_sep || seen_frac_digit);
+}
+
 /* Parse the optional `extraUsage` metric into the shared spend struct. Absent
    metric → not present. `usedPercent` may be omitted (env override) → the
-   device renders an amount-capped bar instead. The legacy `spend` metric is
+   device renders an amount-capped bar instead. `valueText` is the API's
+   preformatted, locale-aware amount; when valid the device draws it verbatim,
+   otherwise it formats `value` itself. The legacy `spend` metric is
    intentionally not read; this is its currency-aware replacement. */
 static void parse_extra_usage(const cJSON *service, extra_usage_t *out)
 {
@@ -239,6 +265,12 @@ static void parse_extra_usage(const cJSON *service, extra_usage_t *out)
     if (unit) {
         strncpy(out->currency, unit, sizeof(out->currency) - 1);
         out->currency[sizeof(out->currency) - 1] = '\0';
+    }
+
+    const char *vt = json_string(metric, "valueText");
+    if (valid_amount_text(vt)) {
+        strncpy(out->value_text, vt, sizeof(out->value_text) - 1);
+        out->value_text[sizeof(out->value_text) - 1] = '\0';
     }
 }
 

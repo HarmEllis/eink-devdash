@@ -790,9 +790,15 @@ static void draw_provider(int ox, int oy, int width, const provider_layout_t *la
         /* Extra-usage row: [currency symbol] [bar = % of monthly cap] [amount].
            The bar uses the real utilization percent; when that is absent (env
            override) it falls back to an amount-capped fill. */
-        char amount_s[12];
-        format_spend_amount(amount_s, sizeof(amount_s), extra->amount,
-                             extra->currency);
+        /* Prefer the API's preformatted, locale-aware amount; only format the
+           numeric value ourselves when it is absent (older API / rejected). */
+        char amount_s[16];
+        if (extra->value_text[0] != '\0') {
+            snprintf(amount_s, sizeof(amount_s), "%s", extra->value_text);
+        } else {
+            format_spend_amount(amount_s, sizeof(amount_s), extra->amount,
+                                 extra->currency);
+        }
         bool has_spend = extra->amount > 0;
 
         int bar_pct;

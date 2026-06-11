@@ -29,6 +29,10 @@ export type DashboardMetric = {
   usedPercent?: number
   limit?: number
   resetInSeconds?: number
+  // Preformatted, locale-aware, ASCII-only amount string (<=15 bytes) for the
+  // firmware to draw verbatim. The device prefers this over formatting `value`
+  // itself; absent it falls back to numeric formatting.
+  valueText?: string
 }
 
 export type DashboardService = {

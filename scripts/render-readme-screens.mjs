@@ -576,8 +576,9 @@ function drawProvider(f, ox, oy, width, layout, title, ses, wk, sesResetS, wkRes
   if (extra !== null) {
     // Extra-usage row: [currency symbol] [bar = % of monthly cap] [amount].
     // The bar uses the real utilization percent; when absent (env override) it
-    // falls back to an amount-capped fill. Mirrors firmware draw_provider.
-    const amountText = formatSpendAmount(extra.amount, extra.currency);
+    // falls back to an amount-capped fill. Mirrors firmware draw_provider:
+    // prefer the API's preformatted valueText, else format the number locally.
+    const amountText = extra.valueText ?? formatSpendAmount(extra.amount, extra.currency);
     const hasSpend = extra.amount > 0;
     let barPct;
     if (extra.percent != null) {
@@ -622,7 +623,7 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
     claude: {
       fiveHour: { used: 18, limit: 200, resetInSeconds: 8200 },
       weekly: { used: 4100, limit: 10000, resetInSeconds: 304800 },
-      extra: { amount: 0.91, percent: 5, limit: 17, currency: "EUR" },
+      extra: { amount: 0.91, percent: 5, limit: 17, currency: "EUR", valueText: "0,91" },
     },
     codex: {
       shortPct: 32,
@@ -630,7 +631,7 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
       reached: false,
       shortReset: 3600,
       longReset: 313200,
-      extra: { amount: 3, percent: null, limit: null, currency: "USD" },
+      extra: { amount: 3, percent: null, limit: null, currency: "USD", valueText: "3" },
     },
     updatedAt: "14:38",
     refreshMin: 5,

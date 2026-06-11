@@ -1,6 +1,7 @@
 import type { DashboardMetric, DashboardService, DashboardServiceAdapter } from './dashboard-service.js'
 import { getClaudeUsage, type ExtraUsage } from './claude.service.js'
 import { getCodexUsage } from './codex.service.js'
+import { DASHBOARD_LOCALE, currencySymbol, formatAmount, isSupportedCurrency } from './currency.js'
 
 type ClaudeRateLimit = {
   used: number
@@ -39,22 +40,26 @@ type UsageAdapterOptions<TUsage> = {
   getUsage?: (signal?: AbortSignal) => Promise<TUsage>
 }
 
-const CURRENCY_SYMBOLS: Record<string, string> = { EUR: '€', USD: '$' }
-
 // Extra-usage bar: emit the `extraUsage` metric only when there is actual
 // overage spend, so the firmware row stays hidden by default. The device draws
 // a currency symbol (from `unit`), a bar from `usedPercent` (share of the
-// monthly cap consumed) and the spent `value`. When `percent` is absent (env
-// override) the bar falls back to an amount-capped fill on the device.
+// monthly cap consumed) and the preformatted `valueText`. When `percent` is
+// absent (env override) the bar falls back to an amount-capped fill on the
+// device. `valueText` is the locale-aware, ASCII-only amount built centrally
+// here so the Claude-live path and both env overrides share one locale.
 // NB: a new metric id — `spend` is retired because released schema-2 firmware
 // rendered `spend.value` as both `$` text and the bar %, which would misrender
 // the new fractional, currency-aware value.
 function extraUsageMetric(extra: ExtraUsage | null | undefined): DashboardMetric | undefined {
-  if (!extra || !(extra.amount > 0)) return undefined
+  // Authoritative gate: omit without spend OR for any currency we cannot both
+  // convert and render. Unknown currencies are never emitted (and never shown
+  // as `$`), regardless of how the ExtraUsage was constructed.
+  if (!extra || !(extra.amount > 0) || !isSupportedCurrency(extra.currency)) return undefined
   const metric: DashboardMetric = {
     id: 'extraUsage',
-    label: CURRENCY_SYMBOLS[extra.currency] ?? '$',
+    label: currencySymbol(extra.currency),
     value: extra.amount,
+    valueText: formatAmount(extra.amount, extra.currency, DASHBOARD_LOCALE),
     unit: extra.currency,
   }
   if (extra.percent != null) metric.usedPercent = extra.percent

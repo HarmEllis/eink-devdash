@@ -26,6 +26,7 @@ services:
       - CODEX_SESSIONS_DIR=/home/node/.codex-source/sessions
       - DEVICE_TOKEN=${DEVICE_TOKEN}
       - DEVICE_UUID=${DEVICE_UUID:-}
+      - DASHBOARD_LOCALE=${DASHBOARD_LOCALE:-}
       - DASHBOARD_TIME_ZONE=${DASHBOARD_TIME_ZONE:-}
       - MDNS_ENABLED=${MDNS_ENABLED:-true}
       - MDNS_NAME=${MDNS_NAME:-devdash-api}
@@ -68,6 +69,7 @@ services:
       - CODEX_SESSIONS_DIR=/home/node/.codex-source/sessions
       - DEVICE_TOKEN=${DEVICE_TOKEN}
       - DEVICE_UUID=${DEVICE_UUID:-}
+      - DASHBOARD_LOCALE=${DASHBOARD_LOCALE:-}
       - DASHBOARD_TIME_ZONE=${DASHBOARD_TIME_ZONE:-}
       - MDNS_ENABLED=${MDNS_ENABLED:-true}
       - MDNS_NAME=${MDNS_NAME:-devdash-api}

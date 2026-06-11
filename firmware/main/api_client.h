@@ -28,6 +28,8 @@ typedef struct {
     int percent;            /* 0..100 share of the monthly cap consumed */
     bool percent_present;   /* false → fall back to an amount-capped bar */
     char currency[4];       /* ISO-4217 code, e.g. "EUR"/"USD"; empty → "$" */
+    char value_text[16];    /* API-preformatted, locale-aware amount string
+                               (e.g. "0,91"); empty → format `amount` locally */
 } extra_usage_t;
 
 typedef struct {
