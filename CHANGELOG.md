@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- The captive portal can now set the WiFi connect timeout (15-60 s, default 30) and the direct-API request timeout (5-20 s, default 10). Both are stored on the device, so a slow network can be given more time without rebuilding the firmware. The relay request timeout and the overall fetch-cycle budget are unchanged; with multiple API profiles a high API timeout can reduce how much failover fits in one refresh cycle.
+
+### Changed
+
+- The WiFi connect timeout is no longer a build-time setting; the firmware now reads the portal-configured value, with the default and bounds defined in one place.
+
 ## [0.6.0] - 2026-06-10
 
 This release reworks the on-device factory reset into a clearer tap-to-reset / hold-to-erase gesture with confirmation screens, speeds up WiFi reconnection, and stores configuration as per-network NVS blobs that can never be partially overwritten. It also adds API-endpoint reordering to the captive portal and a relay identity reuse prompt to setup.

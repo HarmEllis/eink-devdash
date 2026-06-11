@@ -4,7 +4,6 @@
 #include "esp_mac.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
-#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdlib.h>
@@ -12,7 +11,6 @@
 
 static const char *TAG = "wifi_roam";
 
-#define CONNECT_TIMEOUT_MS (CONFIG_DEVDASH_WIFI_CONNECT_TIMEOUT_S * 1000)
 #define DISCONNECT_RETRY_DELAY_MIN_MS 1000
 #define DISCONNECT_RETRY_DELAY_MAX_MS 8000
 #define DISCONNECT_SETTLE_MS 500
@@ -303,6 +301,14 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg,
     if (diag) memset(diag, 0, sizeof(*diag));
     if (!cfg || cfg->network_count == 0) return ESP_ERR_NOT_FOUND;
 
+    /* Per-attempt connect budget, configured in the portal and stored in cfg
+       (already normalized by storage). Re-clamp defensively: a 0/legacy/garbage
+       value falls back to the default rather than producing a 0 ms timeout. */
+    uint8_t to_s = cfg->wifi_connect_timeout_s;
+    if (to_s < DASH_WIFI_CONNECT_TIMEOUT_MIN || to_s > DASH_WIFI_CONNECT_TIMEOUT_MAX)
+        to_s = DASH_WIFI_CONNECT_TIMEOUT_DEFAULT;
+    const int connect_timeout_ms = (int)to_s * 1000;
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     esp_err_t err = esp_wifi_start();
     if (err == ESP_ERR_WIFI_NOT_STOPPED) err = ESP_OK;
@@ -346,7 +352,7 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg,
     for (uint8_t i = 0; i < candidate_count; i++) {
         uint8_t idx = candidates[i].idx;
         char reason[UNREACHABLE_REASON_MAX] = {0};
-        err = connect_one(&cfg->networks[idx], CONNECT_TIMEOUT_MS,
+        err = connect_one(&cfg->networks[idx], connect_timeout_ms,
                           &candidates[i], reason, sizeof(reason));
         if (err == ESP_OK) {
             cfg->last_success_network_idx = idx;
@@ -362,7 +368,7 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg,
         uint8_t idx = (uint8_t)cfg->last_success_network_idx;
         ESP_LOGW(TAG, "No visible configured WiFi network found; trying last successful SSID");
         char reason[UNREACHABLE_REASON_MAX] = {0};
-        err = connect_one(&cfg->networks[idx], CONNECT_TIMEOUT_MS, NULL,
+        err = connect_one(&cfg->networks[idx], connect_timeout_ms, NULL,
                           reason, sizeof(reason));
         if (err == ESP_OK) {
             if (network_idx_out) *network_idx_out = idx;

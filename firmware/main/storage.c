@@ -58,7 +58,15 @@ typedef struct {
        with the meta write — a save that fails partway leaves the old meta,
        and therefore the old configuration, fully intact. */
     uint8_t net_bank[MAX_WIFI_NETWORKS];
-    uint8_t reserved[3];          /* zero */
+    /* Reused from the former reserved[3] (always zero in pre-existing blobs):
+       the WiFi connect timeout and direct-API request timeout, in seconds.
+       Taking these from the reserved bytes keeps sizeof and every other field
+       offset identical, so old cfg_meta blobs still pass the len/CRC checks in
+       load_v6 and read these as 0 → normalized to DEFAULT. The offsets are
+       pinned by static asserts below. */
+    uint8_t wifi_connect_timeout_s;
+    uint8_t api_timeout_s;
+    uint8_t reserved[1];          /* zero */
     uint32_t crc32;               /* over this struct with crc32 zeroed */
 } dash_meta_blob_t;
 
@@ -183,6 +191,17 @@ _Static_assert(sizeof(dash_net_blob_t) <= DASH_NET_BLOB_MAX_BYTES,
                "network blob exceeds DASH_NET_BLOB_MAX_BYTES — shrink caps");
 _Static_assert(sizeof(dash_meta_blob_t) <= 32,
                "meta blob grew unexpectedly — recompute blob budget");
+/* Backward-compat lock: load_v6 rejects any cfg_meta blob whose length differs
+   from sizeof(dash_meta_blob_t), and the CRC covers the whole struct. The
+   timeout fields were carved out of the former reserved[3] (always zero in
+   blobs written before this change), so the size and every offset MUST stay
+   exactly as they were or old configs would fail to load. */
+_Static_assert(sizeof(dash_meta_blob_t) == 24,
+               "meta blob size changed — old cfg_meta blobs would fail the "
+               "len==sizeof check in load_v6; recheck migration");
+_Static_assert(offsetof(dash_meta_blob_t, wifi_connect_timeout_s) == 17 &&
+               offsetof(dash_meta_blob_t, api_timeout_s) == 18,
+               "timeout fields must reuse the old reserved[0]/[1] offsets");
 /* Absolute worst case: every slot momentarily occupies BOTH banks (all five
    networks changed in one save, old generation not yet released) plus
    old+new meta coexistence. Even that must fit, so a save can never run the
@@ -230,6 +249,24 @@ static uint8_t clamp_max_partials(uint8_t value)
 {
     if (value < DASH_MAX_PARTIALS_MIN) return DASH_MAX_PARTIALS_MIN;
     if (value > DASH_MAX_PARTIALS_MAX) return DASH_MAX_PARTIALS_MAX;
+    return value;
+}
+
+/* 0 (unset/legacy/blank reserved byte) maps to DEFAULT; anything outside the
+   range clamps to the nearest bound. */
+static uint8_t clamp_wifi_connect_timeout(uint8_t value)
+{
+    if (value == 0) return DASH_WIFI_CONNECT_TIMEOUT_DEFAULT;
+    if (value < DASH_WIFI_CONNECT_TIMEOUT_MIN) return DASH_WIFI_CONNECT_TIMEOUT_MIN;
+    if (value > DASH_WIFI_CONNECT_TIMEOUT_MAX) return DASH_WIFI_CONNECT_TIMEOUT_MAX;
+    return value;
+}
+
+static uint8_t clamp_api_timeout(uint8_t value)
+{
+    if (value == 0) return DASH_API_TIMEOUT_DEFAULT;
+    if (value < DASH_API_TIMEOUT_MIN) return DASH_API_TIMEOUT_MIN;
+    if (value > DASH_API_TIMEOUT_MAX) return DASH_API_TIMEOUT_MAX;
     return value;
 }
 
@@ -403,6 +440,8 @@ void storage_cfg_v2_defaults(dash_config_v2_t *cfg)
     cfg->last_success_api_idx = -1;
     cfg->panel_variant = storage_default_panel_variant();
     cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
+    cfg->wifi_connect_timeout_s = DASH_WIFI_CONNECT_TIMEOUT_DEFAULT;
+    cfg->api_timeout_s = DASH_API_TIMEOUT_DEFAULT;
     cfg->refresh_min = clamp_refresh(CONFIG_DEVDASH_REFRESH_MIN,
                                      cfg->panel_variant, cfg->max_partials);
 }
@@ -441,6 +480,8 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
         cfg->panel_variant = storage_default_panel_variant();
     }
     cfg->max_partials = clamp_max_partials(cfg->max_partials);
+    cfg->wifi_connect_timeout_s = clamp_wifi_connect_timeout(cfg->wifi_connect_timeout_s);
+    cfg->api_timeout_s = clamp_api_timeout(cfg->api_timeout_s);
     cfg->refresh_min = clamp_refresh(cfg->refresh_min, cfg->panel_variant,
                                      cfg->max_partials);
     if (cfg->network_count > MAX_WIFI_NETWORKS) cfg->network_count = MAX_WIFI_NETWORKS;
@@ -540,6 +581,8 @@ static bool load_v6(nvs_handle_t h, dash_config_v2_t *cfg)
     cfg->refresh_min = meta.refresh_min;
     cfg->panel_variant = meta.panel_variant;
     cfg->max_partials = meta.max_partials;
+    cfg->wifi_connect_timeout_s = meta.wifi_connect_timeout_s;
+    cfg->api_timeout_s = meta.api_timeout_s;
     cfg->write_counter = meta.write_counter;
 
     dash_net_blob_t *blob = calloc(1, sizeof(*blob));
@@ -833,7 +876,9 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
         prev.refresh_min != cfg->refresh_min ||
         prev.network_count != cfg->network_count ||
         prev.panel_variant != cfg->panel_variant ||
-        prev.max_partials != cfg->max_partials;
+        prev.max_partials != cfg->max_partials ||
+        prev.wifi_connect_timeout_s != cfg->wifi_connect_timeout_s ||
+        prev.api_timeout_s != cfg->api_timeout_s;
     bool need_meta = blobs_changed || meta_differs;
 
     /* Capacity guard: the exact entry cost of this save (defense-in-depth;
@@ -877,6 +922,8 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
         meta.network_count = cfg->network_count;
         meta.panel_variant = cfg->panel_variant;
         meta.max_partials = cfg->max_partials;
+        meta.wifi_connect_timeout_s = cfg->wifi_connect_timeout_s;
+        meta.api_timeout_s = cfg->api_timeout_s;
         memcpy(meta.net_bank, new_bank, sizeof(meta.net_bank));
         meta.write_counter =
             (have_prev ? prev.write_counter : cfg->write_counter) + 1;

@@ -21,6 +21,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 
 static const char *TAG = "wifi_net";
 
@@ -103,6 +105,10 @@ typedef struct {
     bool       mp_present; /* True iff an `mp` field was in the form. */
     char       country[4]; /* WiFi regulatory country code (`cc`). */
     bool       cc_present; /* True iff a `cc` field was in the form. */
+    int        to;         /* WiFi connect timeout, seconds (`to`). */
+    bool       to_present; /* True iff a `to` field was SEEN (parse may have failed). */
+    int        at;         /* Direct-API request timeout, seconds (`at`). */
+    bool       at_present; /* True iff an `at` field was SEEN (parse may have failed). */
 } portal_form_t;
 
 /* Connection is driven explicitly by wifi_roam_connect (esp_wifi_connect on the
@@ -296,6 +302,33 @@ static int parse_hhmm(const char *s)
  *   wN_aK_i            wN_aK_on         wN_aK_url
  *   wN_aK_tok          wN_aK_cleartok
  */
+/* Strict integer parse for numeric portal fields, working on the RAW form value
+ * (NOT form_decode output): a number input only ever posts plain ASCII digits,
+ * so routing it through form_decode would only add failure modes — truncation
+ * to an in-range prefix, or an embedded NUL via %00 (e.g. "15%00junk" decodes to
+ * "15\0junk", which a string strtol end-check would wrongly accept as 15). The
+ * whole src_len-byte value must be [+-]?[0-9]+, non-empty, and short enough not
+ * to overflow int. Returns false otherwise so the caller can flag the field
+ * malformed and let range validation reject it. */
+static bool parse_strict_int(const char *src, size_t src_len, int *out)
+{
+    if (src_len == 0 || src_len > 6) return false;   /* bounds → no overflow */
+    size_t i = 0;
+    if (src[0] == '+' || src[0] == '-') i = 1;
+    if (i == src_len) return false;                  /* sign with no digits */
+    for (; i < src_len; i++) {
+        if (src[i] < '0' || src[i] > '9') return false;
+    }
+    char buf[8];
+    memcpy(buf, src, src_len);
+    buf[src_len] = '\0';
+    errno = 0;
+    long v = strtol(buf, NULL, 10);
+    if (errno != 0 || v < INT_MIN || v > INT_MAX) return false;
+    *out = (int)v;
+    return true;
+}
+
 static void apply_field(portal_form_t *form,
                         const char *key, size_t klen,
                         const char *val, size_t vlen)
@@ -327,6 +360,16 @@ static void apply_field(portal_form_t *form,
     if (klen == 2 && key[0] == 'c' && key[1] == 'c') {
         form_decode(form->country, sizeof(form->country), val, vlen);
         form->cc_present = true;   /* validated at save time */
+        return;
+    }
+    if (klen == 2 && key[0] == 't' && key[1] == 'o') {
+        form->to_present = true;   /* SEEN; range-validated at save time */
+        if (!parse_strict_int(val, vlen, &form->to)) form->to = INT_MIN;
+        return;
+    }
+    if (klen == 2 && key[0] == 'a' && key[1] == 't') {
+        form->at_present = true;   /* SEEN; range-validated at save time */
+        if (!parse_strict_int(val, vlen, &form->at)) form->at = INT_MIN;
         return;
     }
     if (klen < 4 || key[0] != 'w') return;
@@ -1036,6 +1079,47 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
         DASH_MAX_PARTIALS_MIN, DASH_MAX_PARTIALS_MAX, DASH_MAX_PARTIALS_DEFAULT);
     CHUNK(req, page_buf);
 
+    /* Connection timeouts: WiFi connect budget and direct-API request timeout.
+       Plain number inputs (no range slider) so no extra sync JS is needed. The
+       help text is built from the macros, never hardcoded, so the displayed
+       bounds/defaults always match the firmware. */
+    int to = cfg->wifi_connect_timeout_s ? cfg->wifi_connect_timeout_s
+                                         : DASH_WIFI_CONNECT_TIMEOUT_DEFAULT;
+    int at = cfg->api_timeout_s ? cfg->api_timeout_s : DASH_API_TIMEOUT_DEFAULT;
+    snprintf(page_buf, sizeof(page_buf),
+        "<div class=\"interval-grid\" style=\"margin-top:14px\">"
+        "<label class=\"lab full\" for=\"to-num\" style=\"font-size:14px;color:#1c1f24\">"
+        "WiFi connect timeout <span style=\"color:#6b7280;font-weight:400\">- "
+        "per network before moving on.</span></label>"
+        "<span></span>"
+        "<div class=\"num-wrap\"><input type=\"number\" id=\"to-num\" name=\"to\" "
+        "min=\"%d\" max=\"%d\" step=\"1\" value=\"%d\"><span class=\"unit\">s</span></div>"
+        "<p class=\"full\" style=\"margin:0;color:#6b7280;font-size:12px\">"
+        "%d-%d s. Default %d. How long the device tries one network before moving "
+        "on to the next or reporting offline.</p>"
+        "</div>",
+        DASH_WIFI_CONNECT_TIMEOUT_MIN, DASH_WIFI_CONNECT_TIMEOUT_MAX, to,
+        DASH_WIFI_CONNECT_TIMEOUT_MIN, DASH_WIFI_CONNECT_TIMEOUT_MAX,
+        DASH_WIFI_CONNECT_TIMEOUT_DEFAULT);
+    CHUNK(req, page_buf);
+
+    snprintf(page_buf, sizeof(page_buf),
+        "<div class=\"interval-grid\" style=\"margin-top:14px\">"
+        "<label class=\"lab full\" for=\"at-num\" style=\"font-size:14px;color:#1c1f24\">"
+        "API request timeout <span style=\"color:#6b7280;font-weight:400\">- "
+        "per direct API call.</span></label>"
+        "<span></span>"
+        "<div class=\"num-wrap\"><input type=\"number\" id=\"at-num\" name=\"at\" "
+        "min=\"%d\" max=\"%d\" step=\"1\" value=\"%d\"><span class=\"unit\">s</span></div>"
+        "<p class=\"full\" style=\"margin:0;color:#6b7280;font-size:12px\">"
+        "%d-%d s. Default %d. Per-request timeout for direct API calls; relay "
+        "calls keep their own longer timeout. With multiple API profiles a high "
+        "value can reduce failover within a refresh cycle.</p>"
+        "</div>",
+        DASH_API_TIMEOUT_MIN, DASH_API_TIMEOUT_MAX, at,
+        DASH_API_TIMEOUT_MIN, DASH_API_TIMEOUT_MAX, DASH_API_TIMEOUT_DEFAULT);
+    CHUNK(req, page_buf);
+
     /* Panel variant selector — two radio buttons. Checked state reflects
        the saved cfg->panel_variant so a save with the form unchanged keeps
        the previous choice. */
@@ -1185,6 +1269,24 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
         cfg->refresh_min = (uint8_t)form->iv;
     } else {
         cfg->refresh_min = prev->refresh_min ? prev->refresh_min : 5;
+    }
+
+    /* Connect/API timeouts: accept only an in-range value (a malformed field is
+       parsed to INT_MIN and rejected here), otherwise preserve the previous
+       setting. storage_cfg_v2_normalize clamps 0/out-of-range defensively. */
+    if (form->to_present && form->to >= DASH_WIFI_CONNECT_TIMEOUT_MIN &&
+        form->to <= DASH_WIFI_CONNECT_TIMEOUT_MAX) {
+        cfg->wifi_connect_timeout_s = (uint8_t)form->to;
+    } else {
+        cfg->wifi_connect_timeout_s = prev->wifi_connect_timeout_s
+            ? prev->wifi_connect_timeout_s : DASH_WIFI_CONNECT_TIMEOUT_DEFAULT;
+    }
+    if (form->at_present && form->at >= DASH_API_TIMEOUT_MIN &&
+        form->at <= DASH_API_TIMEOUT_MAX) {
+        cfg->api_timeout_s = (uint8_t)form->at;
+    } else {
+        cfg->api_timeout_s = prev->api_timeout_s
+            ? prev->api_timeout_s : DASH_API_TIMEOUT_DEFAULT;
     }
 
     int out_n = 0;
@@ -1360,6 +1462,15 @@ static esp_err_t handler_save(httpd_req_t *req)
     if (!reason && form->cc_present &&
         !wifi_country_is_supported(form->country)) {
         reason = "Pick a supported WiFi country (or Worldwide).";
+    }
+    if (!reason && form->to_present &&
+        (form->to < DASH_WIFI_CONNECT_TIMEOUT_MIN ||
+         form->to > DASH_WIFI_CONNECT_TIMEOUT_MAX)) {
+        reason = "WiFi connect timeout must be between 15 and 60 seconds.";
+    }
+    if (!reason && form->at_present &&
+        (form->at < DASH_API_TIMEOUT_MIN || form->at > DASH_API_TIMEOUT_MAX)) {
+        reason = "API request timeout must be between 5 and 20 seconds.";
     }
     for (int n = 0; n < MAX_WIFI_NETWORKS && !reason; n++) {
         const net_form_t *nf = &form->nets[n];
