@@ -4,13 +4,26 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-11
+
+This release adds live, locale-aware Claude extra-usage costs and an optional Codex overage indicator, improves Cloudflare relay connection monitoring, and makes WiFi and direct-API timeouts configurable from the captive portal.
+
 ### Added
 
+- A currency-aware extra-usage row for Claude, populated live from OAuth usage credits with the amount consumed and percentage of the monthly cap. EUR and USD are supported, and `DASHBOARD_LOCALE` controls the decimal separator.
+- Optional manual extra-usage amounts for Claude and Codex through `CLAUDE_OVERAGE_USD` and `CODEX_OVERAGE_USD`.
 - The captive portal can now set the WiFi connect timeout (15-60 s, default 30) and the direct-API request timeout (5-20 s, default 10). Both are stored on the device, so a slow network can be given more time without rebuilding the firmware. The relay request timeout and the overall fetch-cycle budget are unchanged; with multiple API profiles a high API timeout can reduce how much failover fits in one refresh cycle.
+- Application-level relay heartbeats with protocol-version reporting and configurable heartbeat intervals and timeouts.
 
 ### Changed
 
+- Claude usage windows and extra-usage credits are now read from the free OAuth usage endpoint when available, with the existing billed probe retained only as a fallback for usage windows.
 - The WiFi connect timeout is no longer a build-time setting; the firmware now reads the portal-configured value, with the default and bounds defined in one place.
+
+### Fixed
+
+- Half-open relay WebSocket connections are detected and reconnected instead of remaining silently unavailable.
+- A Claude OAuth token rejected with HTTP 401 is forcibly refreshed even when its local expiry time has not yet passed.
 
 ## [0.6.0] - 2026-06-10
 
@@ -137,6 +150,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.7.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.4.0...v0.4.1
