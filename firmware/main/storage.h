@@ -23,6 +23,23 @@
 #define DASH_MAX_PARTIALS_MAX     100
 #define DASH_MAX_PARTIALS_DEFAULT 5
 
+/* WiFi connect timeout (seconds): how long the station tries one configured
+   network before moving on to the next scanned candidate or reporting offline.
+   Portal-editable; these macros are the sole firmware default and bounds (the
+   former Kconfig DEVDASH_WIFI_CONNECT_TIMEOUT_S has been retired). */
+#define DASH_WIFI_CONNECT_TIMEOUT_MIN     15
+#define DASH_WIFI_CONNECT_TIMEOUT_MAX     60
+#define DASH_WIFI_CONNECT_TIMEOUT_DEFAULT 30
+
+/* Direct-API per-request timeout (seconds): the HTTP timeout for non-relay API
+   calls (relay calls keep their own longer timeout). Portal-editable. MAX is
+   kept conservative so the existing best-effort multi-profile failover within
+   the fixed fetch-cycle budget stays roughly as healthy as the former fixed
+   10 s. The relay timeout and the fetch-cycle budget are not configurable. */
+#define DASH_API_TIMEOUT_MIN     5
+#define DASH_API_TIMEOUT_MAX     20
+#define DASH_API_TIMEOUT_DEFAULT 10
+
 /* Per-network "quiet hours" (added in v5). Window endpoints are minutes since
    local midnight, so the valid range is [0, 1439]. A window with
    start == end is treated as disabled (see storage_cfg_v2_normalize). */
@@ -105,6 +122,10 @@ typedef struct {
     /* BW per-region partial cap, clamped to
        [DASH_MAX_PARTIALS_MIN, DASH_MAX_PARTIALS_MAX]. */
     uint8_t max_partials;
+    /* WiFi connect timeout (s) and direct-API request timeout (s), clamped to
+       their respective [MIN, MAX]. 0 means "unset" → normalized to DEFAULT. */
+    uint8_t wifi_connect_timeout_s;
+    uint8_t api_timeout_s;
     dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
 } dash_config_v2_t;
 

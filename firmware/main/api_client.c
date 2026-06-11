@@ -16,7 +16,9 @@ static const char *TAG = "api_client";
 /* Headroom for schemaVersion 2 services plus future optional metrics. The
  * parser still rejects truncated responses before JSON parsing. */
 #define RESPONSE_BUF_SIZE 6144
-#define DASHBOARD_HTTP_TIMEOUT_MS 10000
+/* Direct-API per-request timeout is now portal-configurable (cfg->api_timeout_s,
+   default DASH_API_TIMEOUT_DEFAULT). The relay per-request timeout and the
+   overall fetch-cycle budget remain fixed. */
 #define RELAY_HTTP_TIMEOUT_MS 22000
 #define DASHBOARD_FETCH_CYCLE_BUDGET_MS 60000
 #define DASHBOARD_HTTP_ATTEMPTS 3
@@ -482,11 +484,12 @@ static int fetch_cycle_remaining_ms(int64_t started_us)
     return DASHBOARD_FETCH_CYCLE_BUDGET_MS - (int)elapsed_ms;
 }
 
-static int profile_timeout_ms(const char *url, int remaining_ms)
+static int profile_timeout_ms(const char *url, int remaining_ms,
+                              int dashboard_timeout_ms)
 {
     int timeout = api_url_is_relay(url)
         ? RELAY_HTTP_TIMEOUT_MS
-        : DASHBOARD_HTTP_TIMEOUT_MS;
+        : dashboard_timeout_ms;
     return timeout < remaining_ms ? timeout : remaining_ms;
 }
 
@@ -513,6 +516,16 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
 
     esp_err_t last_err = ESP_FAIL;
     int64_t cycle_started_us = esp_timer_get_time();
+
+    /* Portal-configured per-request timeout for direct (non-relay) API calls.
+       cfg is already normalized by storage; re-clamp defensively so a
+       0/legacy/garbage value falls back to the default instead of 0 ms. The
+       relay timeout and the fetch-cycle budget are not configurable. */
+    uint8_t api_to_s = cfg->api_timeout_s;
+    if (api_to_s < DASH_API_TIMEOUT_MIN || api_to_s > DASH_API_TIMEOUT_MAX)
+        api_to_s = DASH_API_TIMEOUT_DEFAULT;
+    const int dashboard_timeout_ms = (int)api_to_s * 1000;
+
     int start = -1;
     if (prefer_last_success_api &&
         cfg->last_success_api_idx >= 0 &&
@@ -542,7 +555,7 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                          idx, attempt, DASHBOARD_HTTP_ATTEMPTS, api->api_url);
                 last_err = fetch_one(api->api_url, api->device_token,
                                      out, &status, &sock_errno,
-                                     profile_timeout_ms(api->api_url, remaining_ms));
+                                     profile_timeout_ms(api->api_url, remaining_ms, dashboard_timeout_ms));
                 if (last_err == ESP_OK) {
                     ESP_LOGI(TAG, "API profile index=%u succeeded", idx);
                     cfg->last_success_network_idx = network_idx;
@@ -602,7 +615,7 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                          idx, attempt, DASHBOARD_HTTP_ATTEMPTS);
                 last_err = fetch_one(api->api_url, api->device_token,
                                      out, &status, &sock_errno,
-                                     profile_timeout_ms(api->api_url, remaining_ms));
+                                     profile_timeout_ms(api->api_url, remaining_ms, dashboard_timeout_ms));
                 if (last_err == ESP_OK ||
                     !should_retry_same_profile(status, last_err) ||
                     attempt == DASHBOARD_HTTP_ATTEMPTS) {
