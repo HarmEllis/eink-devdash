@@ -41,7 +41,9 @@ async function advertise(ws: WebSocket, capabilities: string[]) {
   ws.send(JSON.stringify({ type: 'hello', capabilities }))
   const pong = nextMessage(ws)
   ws.send(JSON.stringify({ type: 'ping' }))
-  await expect(pong).resolves.toMatchObject({ data: '{"type":"pong"}' })
+  await expect(pong).resolves.toMatchObject({
+    data: '{"type":"pong","protocolVersion":2}',
+  })
 }
 
 test('health returns ok without auth', async () => {

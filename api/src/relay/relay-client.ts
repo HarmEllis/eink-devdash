@@ -16,6 +16,8 @@ export type RelayConfig = {
   deviceUuid: string
   reconnectMinMs: number
   reconnectMaxMs: number
+  heartbeatIntervalMs: number
+  heartbeatTimeoutMs: number
 }
 
 export type RelayPublisherOptions = {
@@ -33,6 +35,15 @@ export type RelayPublisher = {
 
 const DEFAULT_RECONNECT_MIN_MS = 1_000
 const DEFAULT_RECONNECT_MAX_MS = 60_000
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000
+const DEFAULT_HEARTBEAT_TIMEOUT_MS = 10_000
+const MIN_RELAY_PROTOCOL_VERSION = 2
+
+type HeartbeatState = {
+  intervalTimer: ReturnType<typeof setInterval>
+  timeoutTimer: ReturnType<typeof setTimeout> | null
+  versionChecked: boolean
+}
 
 function optionalEnv(value: string | undefined): string {
   return value?.trim() ?? ''
@@ -52,6 +63,8 @@ export function relayConfigFromEnv(env: NodeJS.ProcessEnv = process.env): RelayC
     deviceUuid: optionalEnv(env.DEVICE_UUID),
     reconnectMinMs: intEnv(env.RELAY_RECONNECT_MIN_MS, DEFAULT_RECONNECT_MIN_MS),
     reconnectMaxMs: intEnv(env.RELAY_RECONNECT_MAX_MS, DEFAULT_RECONNECT_MAX_MS),
+    heartbeatIntervalMs: intEnv(env.RELAY_HEARTBEAT_INTERVAL_MS, DEFAULT_HEARTBEAT_INTERVAL_MS),
+    heartbeatTimeoutMs: intEnv(env.RELAY_HEARTBEAT_TIMEOUT_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS),
   }
 }
 
@@ -85,10 +98,65 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let reconnectDelayMs = config.reconnectMinMs
   let stopped = false
+  const heartbeatStates = new Map<WebSocket, HeartbeatState>()
 
   function clearTimers() {
     if (reconnectTimer) clearTimeout(reconnectTimer)
     reconnectTimer = null
+    for (const socket of heartbeatStates.keys()) clearHeartbeat(socket)
+  }
+
+  function clearHeartbeat(socket: WebSocket) {
+    const state = heartbeatStates.get(socket)
+    if (!state) return
+    clearInterval(state.intervalTimer)
+    if (state.timeoutTimer) clearTimeout(state.timeoutTimer)
+    heartbeatStates.delete(socket)
+  }
+
+  function verifyRelayVersion(state: HeartbeatState, value: unknown) {
+    if (state.versionChecked) return
+    state.versionChecked = true
+    const relayProtocolVersion = typeof value === 'number' && Number.isInteger(value)
+      ? value
+      : null
+    if (relayProtocolVersion === null || relayProtocolVersion < MIN_RELAY_PROTOCOL_VERSION) {
+      logger.warn(
+        { relayProtocolVersion, minimumRelayProtocolVersion: MIN_RELAY_PROTOCOL_VERSION },
+        'relay protocol is outdated; update the relay deployment',
+      )
+      return
+    }
+    logger.info({ relayProtocolVersion }, 'relay protocol version verified')
+  }
+
+  function heartbeat(socket: WebSocket) {
+    const state = heartbeatStates.get(socket)
+    if (!state || socket.readyState !== WebSocket.OPEN || state.timeoutTimer) return
+    socket.send(JSON.stringify({ type: 'ping' }), (err) => {
+      if (!err || socket.readyState >= WebSocket.CLOSING) return
+      logger.warn({ err }, 'relay websocket heartbeat send failed')
+      socket.terminate()
+    })
+    state.timeoutTimer = setTimeout(() => {
+      state.timeoutTimer = null
+      if (socket.readyState !== WebSocket.OPEN) return
+      logger.warn(
+        { timeoutMs: config.heartbeatTimeoutMs },
+        'relay websocket heartbeat timed out; reconnecting',
+      )
+      socket.terminate()
+    }, config.heartbeatTimeoutMs)
+  }
+
+  function startHeartbeat(socket: WebSocket) {
+    const state: HeartbeatState = {
+      intervalTimer: setInterval(() => heartbeat(socket), config.heartbeatIntervalMs),
+      timeoutTimer: null,
+      versionChecked: false,
+    }
+    heartbeatStates.set(socket, state)
+    heartbeat(socket)
   }
 
   function scheduleReconnect() {
@@ -156,6 +224,7 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
       logger.info({ relayUrl: config.relayUrl, deviceUuid: config.deviceUuid }, 'relay websocket connected')
       const capabilities = ['dashboard', ...(options.getManifest ? ['manifest'] : [])]
       socket.send(JSON.stringify({ type: 'hello', capabilities }))
+      startHeartbeat(socket)
     })
     socket.on('message', (data) => {
       const text = data.toString()
@@ -164,6 +233,18 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
         frame = JSON.parse(text)
       } catch {
         logger.warn('relay websocket received invalid JSON')
+        return
+      }
+      if (
+        frame
+        && typeof frame === 'object'
+        && (frame as { type?: unknown }).type === 'pong'
+      ) {
+        const state = heartbeatStates.get(socket)
+        if (!state) return
+        if (state.timeoutTimer) clearTimeout(state.timeoutTimer)
+        state.timeoutTimer = null
+        verifyRelayVersion(state, (frame as { protocolVersion?: unknown }).protocolVersion)
         return
       }
       if (
@@ -180,6 +261,7 @@ export function createRelayPublisher(options: RelayPublisherOptions): RelayPubli
       logger.debug?.({ message: text }, 'relay websocket message')
     })
     socket.on('close', () => {
+      clearHeartbeat(socket)
       if (ws === socket) ws = null
       scheduleReconnect()
     })
