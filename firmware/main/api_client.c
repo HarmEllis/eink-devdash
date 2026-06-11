@@ -216,15 +216,30 @@ static bool service_counter_present(const cJSON *service, const char *id)
     return find_service_item(service, "counters", id) != NULL;
 }
 
-static int service_metric_value(const cJSON *service, const char *id)
+/* Parse the optional `extraUsage` metric into the shared spend struct. Absent
+   metric → not present. `usedPercent` may be omitted (env override) → the
+   device renders an amount-capped bar instead. The legacy `spend` metric is
+   intentionally not read; this is its currency-aware replacement. */
+static void parse_extra_usage(const cJSON *service, extra_usage_t *out)
 {
-    const cJSON *metric = find_service_item(service, "metrics", id);
-    return json_int(metric, "value");
-}
+    memset(out, 0, sizeof(*out));
+    const cJSON *metric = find_service_item(service, "metrics", "extraUsage");
+    if (!metric) return;
 
-static bool service_metric_present(const cJSON *service, const char *id)
-{
-    return find_service_item(service, "metrics", id) != NULL;
+    out->present = true;
+    out->amount = json_double(metric, "value");
+
+    const cJSON *pct = cJSON_GetObjectItemCaseSensitive(metric, "usedPercent");
+    if (pct && cJSON_IsNumber(pct)) {
+        out->percent = round_percent(pct->valuedouble);
+        out->percent_present = true;
+    }
+
+    const char *unit = json_string(metric, "unit");
+    if (unit) {
+        strncpy(out->currency, unit, sizeof(out->currency) - 1);
+        out->currency[sizeof(out->currency) - 1] = '\0';
+    }
 }
 
 static const cJSON *service_window(const cJSON *service, const char *id)
@@ -269,8 +284,7 @@ static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
         out->claude.weekly.limit            = json_int(wk, "limit");
         out->claude.weekly.reset_in_seconds = json_int(wk, "resetInSeconds");
 
-        out->claude.spend_present = service_metric_present(cl, "spend");
-        out->claude.spend = service_metric_value(cl, "spend");
+        parse_extra_usage(cl, &out->claude.extra_usage);
         out->claude.auth_error = service_auth_error(cl);
     }
 
@@ -285,8 +299,7 @@ static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
         out->codex.long_reset_in_seconds  = json_int(long_window,  "resetInSeconds");
         out->codex.reached = json_bool(short_window, "reachedLimit") ||
                              json_bool(long_window, "reachedLimit");
-        out->codex.spend_present = service_metric_present(cx, "spend");
-        out->codex.spend = service_metric_value(cx, "spend");
+        parse_extra_usage(cx, &out->codex.extra_usage);
     }
 }
 

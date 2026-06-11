@@ -19,6 +19,8 @@ services:
       - CODEX_LIVE_USAGE=${CODEX_LIVE_USAGE:-true}
       - CODEX_CLI_PATH=${CODEX_CLI_PATH:-}
       - CODEX_APP_SERVER_TIMEOUT_MS=${CODEX_APP_SERVER_TIMEOUT_MS:-}
+      - CODEX_OVERAGE_USD=${CODEX_OVERAGE_USD:-}
+      - CLAUDE_OVERAGE_USD=${CLAUDE_OVERAGE_USD:-}
       - CODEX_HOME=/tmp/devdash-codex-runtime
       - CODEX_SOURCE_HOME=/home/node/.codex-source
       - CODEX_SESSIONS_DIR=/home/node/.codex-source/sessions
@@ -59,6 +61,8 @@ services:
       - CODEX_LIVE_USAGE=${CODEX_LIVE_USAGE:-true}
       - CODEX_CLI_PATH=${CODEX_CLI_PATH:-}
       - CODEX_APP_SERVER_TIMEOUT_MS=${CODEX_APP_SERVER_TIMEOUT_MS:-}
+      - CODEX_OVERAGE_USD=${CODEX_OVERAGE_USD:-}
+      - CLAUDE_OVERAGE_USD=${CLAUDE_OVERAGE_USD:-}
       - CODEX_HOME=/tmp/devdash-codex-runtime
       - CODEX_SOURCE_HOME=/home/node/.codex-source
       - CODEX_SESSIONS_DIR=/home/node/.codex-source/sessions

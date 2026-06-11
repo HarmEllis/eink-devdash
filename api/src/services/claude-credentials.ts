@@ -236,7 +236,16 @@ export class ClaudeCredentialStore {
       // Another process may have refreshed while we were waiting on the lock.
       const fresh = await this.readDisk()
       const current = fresh ?? initial
-      if (current.expiresAt - Date.now() > REFRESH_SKEW_MS) {
+      // Honour the "already valid" fast path for the ordinary (clock-driven)
+      // refresh. But a forceRefresh means the caller got a 401 on this exact
+      // access token, so an unexpired clock is not enough — only skip the
+      // network refresh when disk now holds a *different* (peer-refreshed)
+      // token, otherwise we would hand back the same rejected credential.
+      const peerRefreshed = current.accessToken !== initial.accessToken
+      if (
+        (options.forceRefresh !== true || peerRefreshed)
+        && current.expiresAt - Date.now() > REFRESH_SKEW_MS
+      ) {
         this.cached = { accessToken: current.accessToken, expiresAt: current.expiresAt }
         return current.accessToken
       }

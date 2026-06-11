@@ -26,6 +26,7 @@ export type DashboardMetric = {
   label: string
   value: number
   unit?: string
+  usedPercent?: number
   limit?: number
   resetInSeconds?: number
 }

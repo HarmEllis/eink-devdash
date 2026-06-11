@@ -1,5 +1,5 @@
-import type { DashboardService, DashboardServiceAdapter } from './dashboard-service.js'
-import { getClaudeUsage } from './claude.service.js'
+import type { DashboardMetric, DashboardService, DashboardServiceAdapter } from './dashboard-service.js'
+import { getClaudeUsage, type ExtraUsage } from './claude.service.js'
 import { getCodexUsage } from './codex.service.js'
 
 type ClaudeRateLimit = {
@@ -12,6 +12,7 @@ type ClaudeUsage = {
   fiveHour: ClaudeRateLimit
   weekly: ClaudeRateLimit
   authError: boolean
+  extraUsage?: ExtraUsage | null
 }
 
 type CodexLimitReached = 'short' | 'long' | null
@@ -31,14 +32,38 @@ type CodexUsage = {
   short: CodexWindow
   long: CodexWindow
   reachedLimit: CodexLimitReached
+  spend?: number | null
 }
 
 type UsageAdapterOptions<TUsage> = {
   getUsage?: (signal?: AbortSignal) => Promise<TUsage>
 }
 
+const CURRENCY_SYMBOLS: Record<string, string> = { EUR: '€', USD: '$' }
+
+// Extra-usage bar: emit the `extraUsage` metric only when there is actual
+// overage spend, so the firmware row stays hidden by default. The device draws
+// a currency symbol (from `unit`), a bar from `usedPercent` (share of the
+// monthly cap consumed) and the spent `value`. When `percent` is absent (env
+// override) the bar falls back to an amount-capped fill on the device.
+// NB: a new metric id — `spend` is retired because released schema-2 firmware
+// rendered `spend.value` as both `$` text and the bar %, which would misrender
+// the new fractional, currency-aware value.
+function extraUsageMetric(extra: ExtraUsage | null | undefined): DashboardMetric | undefined {
+  if (!extra || !(extra.amount > 0)) return undefined
+  const metric: DashboardMetric = {
+    id: 'extraUsage',
+    label: CURRENCY_SYMBOLS[extra.currency] ?? '$',
+    value: extra.amount,
+    unit: extra.currency,
+  }
+  if (extra.percent != null) metric.usedPercent = extra.percent
+  if (extra.limit != null && extra.limit > 0) metric.limit = extra.limit
+  return metric
+}
+
 export function serviceFromClaudeUsage(usage: ClaudeUsage): DashboardService {
-  return {
+  const service: DashboardService = {
     id: 'claude',
     kind: 'usage',
     provider: 'claude',
@@ -61,10 +86,15 @@ export function serviceFromClaudeUsage(usage: ClaudeUsage): DashboardService {
       },
     ],
   }
+
+  const metric = extraUsageMetric(usage.extraUsage)
+  if (metric) service.metrics = [metric]
+
+  return service
 }
 
 export function serviceFromCodexUsage(usage: CodexUsage): DashboardService {
-  return {
+  const service: DashboardService = {
     id: 'codex',
     kind: 'usage',
     provider: 'codex',
@@ -91,6 +121,17 @@ export function serviceFromCodexUsage(usage: CodexUsage): DashboardService {
       },
     ],
   }
+
+  // Codex has no live spend source (ChatGPT-auth exposes only a remaining-credit
+  // snapshot), so the amount comes from CODEX_OVERAGE_USD with no percent/limit.
+  const metric = extraUsageMetric(
+    usage.spend != null && usage.spend > 0
+      ? { amount: usage.spend, percent: null, limit: null, currency: 'USD' }
+      : null,
+  )
+  if (metric) service.metrics = [metric]
+
+  return service
 }
 
 export function createClaudeUsageAdapter(

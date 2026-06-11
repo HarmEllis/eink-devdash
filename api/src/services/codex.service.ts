@@ -22,6 +22,7 @@ type CodexUsage = {
   short: CodexWindow
   long: CodexWindow
   reachedLimit: CodexLimitReached
+  spend?: number | null
 }
 
 type RateLimitWindow = {
@@ -93,6 +94,17 @@ const CODEX_APP_SERVER_TIMEOUT_MS = Number.parseInt(
   process.env.CODEX_APP_SERVER_TIMEOUT_MS ?? '8000',
   10,
 )
+
+/* Operator-supplied overage spend in USD. ChatGPT-auth exposes no dollar
+ * figure, so the extra-usage ($) bar is driven by this env until a real
+ * api-key cost source exists. Only a value > 0 is honoured, which keeps the
+ * bar hidden by default and visible only when there is actual overage spend. */
+function parseOverageUsd(raw: string | undefined): number | null {
+  if (!raw) return null
+  const n = Number.parseFloat(raw.trim())
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+const CODEX_OVERAGE_USD = parseOverageUsd(process.env.CODEX_OVERAGE_USD)
 
 function emptyChatGptUsage(status: CodexStatus): CodexUsage {
   return {
@@ -511,6 +523,8 @@ export async function getCodexUsage(signal?: AbortSignal): Promise<CodexUsage> {
   /* ChatGPT-auth Codex usage is read live through the app-server when
    * available, with local session files as a fallback. A future api-key adapter
    * can auto-select when OPENAI_API_KEY is present and map spend budgets onto
-   * the same short/long wire shape. */
-  return getChatGptUsage(signal)
+   * the same short/long wire shape. Overage spend is operator-supplied via
+   * CODEX_OVERAGE_USD until that adapter exists. */
+  const usage = await getChatGptUsage(signal)
+  return { ...usage, spend: CODEX_OVERAGE_USD }
 }

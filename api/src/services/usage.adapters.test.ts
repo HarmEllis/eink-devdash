@@ -24,6 +24,43 @@ test('serviceFromClaudeUsage maps Claude limits to a generic usage service', () 
   )
 })
 
+const baseClaudeUsage = {
+  fiveHour: { used: 42, limit: 100, resetInSeconds: 300 },
+  weekly: { used: 67, limit: 100, resetInSeconds: 600 },
+  authError: false,
+}
+
+test('serviceFromClaudeUsage emits a currency-aware extraUsage metric', () => {
+  const service = serviceFromClaudeUsage({
+    ...baseClaudeUsage,
+    extraUsage: { amount: 0.91, percent: 5, limit: 17, currency: 'EUR' },
+  })
+  assert.deepEqual(service.metrics, [
+    { id: 'extraUsage', label: '€', value: 0.91, unit: 'EUR', usedPercent: 5, limit: 17 },
+  ])
+})
+
+test('serviceFromClaudeUsage omits usedPercent/limit for the env-override shape', () => {
+  const service = serviceFromClaudeUsage({
+    ...baseClaudeUsage,
+    extraUsage: { amount: 5, percent: null, limit: null, currency: 'USD' },
+  })
+  assert.deepEqual(service.metrics, [
+    { id: 'extraUsage', label: '$', value: 5, unit: 'USD' },
+  ])
+})
+
+test('serviceFromClaudeUsage omits the extraUsage metric without overage spend', () => {
+  for (const extraUsage of [
+    null,
+    undefined,
+    { amount: 0, percent: 0, limit: 17, currency: 'EUR' },
+  ]) {
+    const service = serviceFromClaudeUsage({ ...baseClaudeUsage, extraUsage })
+    assert.equal(service.metrics, undefined)
+  }
+})
+
 test('serviceFromCodexUsage maps Codex limits to a generic usage service', () => {
   assert.deepEqual(
     serviceFromCodexUsage({
@@ -62,4 +99,29 @@ test('serviceFromCodexUsage maps Codex limits to a generic usage service', () =>
       ],
     },
   )
+})
+
+const baseCodexUsage = {
+  status: 'ok' as const,
+  source: 'chatgpt',
+  planType: 'plus',
+  short: { usedPercent: 100, label: '5h', resetsAt: 1779232450, resetInSeconds: 300 },
+  long: { usedPercent: 80, label: '7d', resetsAt: 1779641619, resetInSeconds: 600 },
+  reachedLimit: 'short' as const,
+}
+
+test('serviceFromCodexUsage emits a USD extraUsage metric from the env amount', () => {
+  // Codex has no live spend source, so the amount is env-driven with no
+  // percent/limit (the device uses an amount-capped bar).
+  const service = serviceFromCodexUsage({ ...baseCodexUsage, spend: 3 })
+  assert.deepEqual(service.metrics, [
+    { id: 'extraUsage', label: '$', value: 3, unit: 'USD' },
+  ])
+})
+
+test('serviceFromCodexUsage omits the extraUsage metric without overage spend', () => {
+  for (const spend of [null, undefined, 0]) {
+    const service = serviceFromCodexUsage({ ...baseCodexUsage, spend })
+    assert.equal(service.metrics, undefined)
+  }
 })

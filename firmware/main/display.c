@@ -228,6 +228,42 @@ static void draw_str(int lx, int ly, const char *s, int use_red)
 
 static int str_w(const char *s)  { return (int)strlen(s) * FONT_W; }
 
+/* Currency symbols outside ASCII need a standalone 5x7 bitmap (column-major,
+   same layout as font5x7) — the font5x7 table is kept to its 95-glyph ASCII
+   range. `$` reuses the font glyph; only `€` needs its own bitmap. */
+static const uint8_t glyph_euro[5] = { 0x3E, 0x55, 0x55, 0x41, 0x00 };
+
+static void draw_currency_symbol(int lx, int ly, const char *code, int use_red)
+{
+    if (code && strcmp(code, "EUR") == 0) {
+        for (int col = 0; col < 5; col++)
+            for (int row = 0; row < 7; row++)
+                if (glyph_euro[col] & (1 << row))
+                    lpix(lx + col, ly + row, 1, use_red);
+        return;
+    }
+    /* USD and any unknown/empty code fall back to the ASCII dollar glyph. */
+    draw_char(lx, ly, '$', use_red);
+}
+
+/* Format a spend amount with up to 2 decimals, trailing zeros (and a bare
+   trailing dot) trimmed: 0.91 -> "0.91", 1.00 -> "1", 1200 -> "1200". The
+   decimal separator follows the currency: EUR uses a comma (NL/eurozone
+   convention), everything else keeps the dot. */
+static void format_spend_amount(char *dst, size_t dsz, double amount,
+                                const char *currency)
+{
+    if (amount < 0) amount = 0;
+    if (amount > 99999) amount = 99999;
+    snprintf(dst, dsz, "%.2f", amount);
+    char *dot = strchr(dst, '.');
+    if (!dot) return;
+    char *end = dst + strlen(dst) - 1;
+    while (end > dot && *end == '0') *end-- = '\0';
+    if (end == dot) { *end = '\0'; return; }
+    if (currency && strcmp(currency, "EUR") == 0) *dot = ',';
+}
+
 static void draw_str_adv(int lx, int ly, const char *s, int black, int advance)
 {
     while (*s) {
@@ -696,8 +732,7 @@ typedef struct {
 static void draw_provider(int ox, int oy, int width, const provider_layout_t *layout,
                           const char *title, int ses, int wk,
                           int ses_reset_s, int wk_reset_s,
-                          int spend,
-                          bool spend_present,
+                          const extra_usage_t *extra,
                           bool auth_err)
 {
     char pct_s[8], ses_s[8], wk_s[8];
@@ -751,21 +786,34 @@ static void draw_provider(int ox, int oy, int width, const provider_layout_t *la
     }
     draw_str(ox + width - str_w(pct_s) - 2, wk_y + 2, pct_s, auth_err || wk > 80);
 
-    if (spend_present) {
-        char spend_s[8];
-        int spend_display = spend > 999 ? 999 : spend;
-        if (spend_display > 0) {
-            snprintf(spend_s, sizeof(spend_s), "+%d", spend_display);
+    if (extra && extra->present) {
+        /* Extra-usage row: [currency symbol] [bar = % of monthly cap] [amount].
+           The bar uses the real utilization percent; when that is absent (env
+           override) it falls back to an amount-capped fill. */
+        char amount_s[12];
+        format_spend_amount(amount_s, sizeof(amount_s), extra->amount,
+                             extra->currency);
+        bool has_spend = extra->amount > 0;
+
+        int bar_pct;
+        if (extra->percent_present) {
+            bar_pct = extra->percent;
         } else {
-            snprintf(spend_s, sizeof(spend_s), "0");
+            int amt = (int)(extra->amount + 0.5);
+            bar_pct = amt < 0 ? 0 : (amt > 100 ? 100 : amt);
         }
+
         int spend_y = wk_y + layout->bar_row_h + 1;
-        draw_str(ox, spend_y + 1, "$", auth_err);
-        int spend_pct = spend > 0 ? (spend > 100 ? 100 : spend) : 0;
-        draw_bar_cfg_ex(bar_x, spend_y + bar_dy, bar_w, layout->bar_h,
-                        layout->seg_w, spend_pct, spend > 0);
-        draw_str(ox + width - str_w(spend_s) - 2, spend_y + 1, spend_s,
-                 auth_err || spend > 0);
+        /* The amount can be wider than the fixed pct column (e.g. "12.34" is
+           30px vs pct_w=28px), so shrink the bar to end just before it rather
+           than letting the text overlap the final segment. */
+        int amount_x = ox + width - str_w(amount_s) - 2;
+        int spend_bar_w = amount_x - 2 - bar_x;
+        if (spend_bar_w < 0) spend_bar_w = 0;
+        draw_currency_symbol(ox, spend_y + 1, extra->currency, auth_err);
+        draw_bar_cfg_ex(bar_x, spend_y + bar_dy, spend_bar_w, layout->bar_h,
+                        layout->seg_w, bar_pct, has_spend);
+        draw_str(amount_x, spend_y + 1, amount_s, auth_err || has_spend);
     }
 }
 
@@ -1788,15 +1836,13 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
                       claude_ses, claude_wk,
                       data->claude.five_hour.reset_in_seconds,
                       data->claude.weekly.reset_in_seconds,
-                      data->claude.spend,
-                      data->claude.spend_present,
+                      &data->claude.extra_usage,
                       data->claude.auth_error);
         draw_provider(112, 76, 182, &compact_provider, "CODEX",
                       codex_ses, codex_wk,
                       data->codex.short_reset_in_seconds,
                       data->codex.long_reset_in_seconds,
-                      data->codex.spend,
-                      data->codex.spend_present,
+                      &data->codex.extra_usage,
                       false);
     } else {
         /* GitHub integration disabled upstream: use the whole canvas for the
@@ -1805,15 +1851,13 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
                       claude_ses, claude_wk,
                       data->claude.five_hour.reset_in_seconds,
                       data->claude.weekly.reset_in_seconds,
-                      data->claude.spend,
-                      data->claude.spend_present,
+                      &data->claude.extra_usage,
                       data->claude.auth_error);
         draw_provider(4, 76, 288, &compact_provider, "CODEX",
                       codex_ses, codex_wk,
                       data->codex.short_reset_in_seconds,
                       data->codex.long_reset_in_seconds,
-                      data->codex.spend,
-                      data->codex.spend_present,
+                      &data->codex.extra_usage,
                       false);
     }
 
