@@ -589,9 +589,11 @@ function drawProvider(f, ox, oy, width, layout, title, ses, wk, sesResetS, wkRes
     }
     const spendY = wkY + layout.barRowH + 1;
     // The amount can be wider than the fixed pct column, so shrink the bar to
-    // end just before it rather than overlapping (mirrors firmware).
+    // end just before it rather than overlapping. Cap at barW so a short amount
+    // leaves this bar at most as wide as the other two, never wider (mirrors
+    // firmware).
     const amountX = ox + width - strW(amountText) - 2;
-    const spendBarW = Math.max(0, amountX - 2 - barX);
+    const spendBarW = Math.max(0, Math.min(barW, amountX - 2 - barX));
     drawCurrencySymbol(f, ox, spendY + 1, extra.currency, 0);
     drawBarCfg(f, barX, spendY + barDy, spendBarW, layout.barH, layout.segW, barPct, hasSpend);
     f.drawStr(amountX, spendY + 1, amountText, hasSpend);
