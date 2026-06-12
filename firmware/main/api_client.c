@@ -24,6 +24,11 @@ static const char *TAG = "api_client";
 #define DASHBOARD_HTTP_ATTEMPTS 3
 #define DASHBOARD_HTTP_RETRY_DELAY_MS 750
 
+/* Don't issue a request when less than this remains in the fetch-cycle budget:
+   profile_timeout_ms() would only clamp it into a doomed, time-wasting request
+   (the relay timeout in particular is fixed and larger than this floor). */
+#define DASHBOARD_FETCH_MIN_REQUEST_MS 5000
+
 typedef struct {
     char *buf;
     int  len;
@@ -505,12 +510,14 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
     if (diag) memset(diag, 0, sizeof(*diag));
     if (!cfg || network_idx < 0 || network_idx >= cfg->network_count) {
         out->offline = true;
+        if (diag) diag->permanent = true;
         return ESP_ERR_INVALID_ARG;
     }
 
     dash_wifi_profile_t *net = &cfg->networks[network_idx];
     if (net->api_count == 0) {
         out->offline = true;
+        if (diag) diag->permanent = true;
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -544,13 +551,14 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                     ESP_LOGW(TAG, "API token empty for %s; device stays offline", api->api_url);
                     diag_set_reason(diag, idx, "401");
                     out->offline = true;
+                    if (diag) diag->permanent = true;
                     return ESP_ERR_INVALID_STATE;
                 }
 
                 int status = 0;
                 int sock_errno = 0;
                 int remaining_ms = fetch_cycle_remaining_ms(cycle_started_us);
-                if (remaining_ms <= 0) goto budget_exhausted;
+                if (remaining_ms < DASHBOARD_FETCH_MIN_REQUEST_MS) goto budget_too_low;
                 ESP_LOGI(TAG, "Trying API profile index=%u round=%u/%u url=%s",
                          idx, attempt, DASHBOARD_HTTP_ATTEMPTS, api->api_url);
                 last_err = fetch_one(api->api_url, api->device_token,
@@ -601,6 +609,7 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                 ESP_LOGW(TAG, "API token empty for %s; device stays offline", api->api_url);
                 diag_set_reason(diag, idx, "401");
                 out->offline = true;
+                if (diag) diag->permanent = true;
                 return ESP_ERR_INVALID_STATE;
             }
 
@@ -610,7 +619,7 @@ esp_err_t api_client_fetch_with_failover(dash_config_v2_t *cfg,
                      idx, pass, api->api_url);
             for (uint8_t attempt = 1; attempt <= DASHBOARD_HTTP_ATTEMPTS; attempt++) {
                 int remaining_ms = fetch_cycle_remaining_ms(cycle_started_us);
-                if (remaining_ms <= 0) goto budget_exhausted;
+                if (remaining_ms < DASHBOARD_FETCH_MIN_REQUEST_MS) goto budget_too_low;
                 ESP_LOGI(TAG, "API profile index=%u attempt=%u/%u",
                          idx, attempt, DASHBOARD_HTTP_ATTEMPTS);
                 last_err = fetch_one(api->api_url, api->device_token,
@@ -659,5 +668,11 @@ budget_exhausted:
     out->offline = true;
     ESP_LOGW(TAG, "Dashboard fetch cycle exceeded %d ms budget",
              DASHBOARD_FETCH_CYCLE_BUDGET_MS);
+    return ESP_ERR_TIMEOUT;
+
+budget_too_low:
+    out->offline = true;
+    ESP_LOGW(TAG, "Insufficient fetch budget left for another request (< %d ms floor of the %d ms cycle)",
+             DASHBOARD_FETCH_MIN_REQUEST_MS, DASHBOARD_FETCH_CYCLE_BUDGET_MS);
     return ESP_ERR_TIMEOUT;
 }

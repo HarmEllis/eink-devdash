@@ -8,6 +8,19 @@
 #define DASH_REFRESH_MAX                         60
 #define DASH_REFRESH_BW_SHORT_INTERVAL_MIN_PARTIALS 2
 
+/* In-wake bounded retry of the whole connect+fetch cycle on the production
+ * (deep-sleep) path. One re-scan/re-fetch absorbs transient scan misses, slow
+ * DHCP and relay cold-starts; each retry also gives the API failover a fresh
+ * fetch-cycle budget. An unambiguous permanent API error (no profile / missing
+ * token) sleeps at once; everything else is retried up to the attempt count.
+ * DASH_WAKE_RETRY_CUTOFF_MS is an elapsed-time retry-start cutoff (evaluated
+ * between cycles): it stops new cycles from starting but does not interrupt a
+ * running cycle, so the worst-case awake time is the cutoff plus one cycle's
+ * own timeouts. These could later become Kconfig/portal-configurable. */
+#define DASH_WAKE_RETRY_MAX_ATTEMPTS             3
+#define DASH_WAKE_RETRY_DELAY_MS                 1500
+#define DASH_WAKE_RETRY_CUTOFF_MS                240000
+
 bool clock_should_apply(const char *iso, bool stale);
 bool api_url_is_relay(const char *url);
 

@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- The dashboard no longer shows "NO WIFI"/"NO API" after a single transient
+  failure on the production (deep-sleep) path. Each wake now retries the whole
+  connect+fetch cycle up to three times, a scan that sees none of the
+  configured networks is re-run once after a short back-off, and a configured
+  network that was hidden behind a visible secondary is retried on all
+  channels. An unambiguous permanent error (no API endpoint configured, or a
+  missing device token) sleeps immediately instead of retrying, and a per-wake
+  elapsed-time cutoff stops starting new retry cycles so a wake cannot keep
+  retrying indefinitely. The relay fetch cycle also skips issuing a request
+  when too little of its budget remains to complete one.
+
 ## [0.7.0] - 2026-06-11
 
 This release adds live, locale-aware Claude extra-usage costs and an optional Codex overage indicator, improves Cloudflare relay connection monitoring, and makes WiFi and direct-API timeouts configurable from the captive portal.
