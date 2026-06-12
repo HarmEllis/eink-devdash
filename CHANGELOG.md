@@ -4,8 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-06-12
+
+This release recovers from transient WiFi/API failures within a single wake instead of immediately showing an error, and tidies the extra-usage bar so it never renders wider than the session/week bars above it.
+
 ### Fixed
 
+- The extra-usage bar is now capped to the width of the session/week bars above it. A short amount previously left the bar extending further right than the other two; it now stays at most as wide as them and still shrinks when a wider amount needs the room.
 - The dashboard no longer shows "NO WIFI"/"NO API" after a single transient
   failure on the production (deep-sleep) path. Each wake now retries the whole
   connect+fetch cycle up to three times, a scan that sees none of the
@@ -163,6 +168,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.7.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.4.1...v0.5.0
