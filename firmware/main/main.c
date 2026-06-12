@@ -365,12 +365,16 @@ void app_main(void)
             ESP_LOGI(TAG, "Dashboard API fetch result: %s api_idx=%d",
                      esp_err_to_name(err), api_idx);
             if (err == ESP_OK) break;
+#if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
             wifi_net_stop();
+#endif
             offline_reason = DISPLAY_OFFLINE_REASON_API;
             ESP_LOGE(TAG, "API fetch failed");
         } else {
             ESP_LOGW(TAG, "No configured WiFi network available");
+#if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
             wifi_net_stop();
+#endif
         }
 
 #if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
@@ -399,8 +403,10 @@ void app_main(void)
 #else
         /* Absorb a transient scan miss, slow DHCP or relay cold-start by
          * retrying the whole connect+fetch cycle a bounded number of times
-         * before giving up. WiFi is already stopped on both failure paths
-         * above, and each retry gets a fresh API fetch-cycle budget. An
+         * before giving up. Keep the WiFi driver started between production
+         * retries: wifi_roam_connect() can re-scan and reconnect an active
+         * driver, avoiding a stop/start lifecycle within one wake. Each retry
+         * still gets a fresh API fetch-cycle budget. An
          * unambiguous permanent API error (no profile / missing token) is not
          * retried; everything else (including all WiFi failures, which are
          * ambiguous to classify) is retried until the attempt count or the
@@ -435,6 +441,7 @@ void app_main(void)
             ESP_LOGW(TAG, "Per-wake retry cutoff reached after %u cycle(s); sleeping",
                      (unsigned)wake_attempt);
         }
+        wifi_net_stop();
         uint32_t attempt = offline_attempt_next(offline_reason);
         display_show_offline(offline_reason, &cfg, network_idx,
                              &wifi_diag, &api_diag, attempt);
