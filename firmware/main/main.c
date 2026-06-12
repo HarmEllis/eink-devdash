@@ -340,6 +340,14 @@ void app_main(void)
     if (!wake_refresh) {
         display_show_connecting(DISPLAY_CTX_NORMAL_BOOT, false, &cfg);
     }
+#if !CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
+    /* Counts the whole connect+fetch cycles tried this wake (production
+     * deep-sleep path only); the bring-up branch retries forever instead.
+     * wake_started marks when retrying began so the cutoff below can stop
+     * starting new cycles (it does not interrupt a cycle already running). */
+    uint32_t wake_attempt = 0;
+    TickType_t wake_started = xTaskGetTickCount();
+#endif
     for (;;) {
         display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
         memset(&wifi_diag, 0, sizeof(wifi_diag));
@@ -389,6 +397,44 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S * 1000));
         continue;
 #else
+        /* Absorb a transient scan miss, slow DHCP or relay cold-start by
+         * retrying the whole connect+fetch cycle a bounded number of times
+         * before giving up. WiFi is already stopped on both failure paths
+         * above, and each retry gets a fresh API fetch-cycle budget. An
+         * unambiguous permanent API error (no profile / missing token) is not
+         * retried; everything else (including all WiFi failures, which are
+         * ambiguous to classify) is retried until the attempt count or the
+         * elapsed-time cutoff is reached. The cutoff is evaluated between
+         * cycles: it stops a new cycle from starting once exceeded, but does
+         * not clamp the per-profile/fetch waits inside a cycle already under
+         * way, so the last started cycle can still run to its own timeouts. */
+        bool permanent = (offline_reason == DISPLAY_OFFLINE_REASON_API)
+                             ? api_diag.permanent
+                             : false;
+        bool cutoff_passed =
+            (int32_t)(xTaskGetTickCount() - wake_started) >=
+            (int32_t)pdMS_TO_TICKS(DASH_WAKE_RETRY_CUTOFF_MS);
+        wake_attempt++;
+        if (!permanent && wake_attempt < DASH_WAKE_RETRY_MAX_ATTEMPTS &&
+            !cutoff_passed) {
+            ESP_LOGW(TAG,
+                     "Connect/fetch cycle %u/%u failed (%s); retrying in %d ms",
+                     (unsigned)wake_attempt,
+                     (unsigned)DASH_WAKE_RETRY_MAX_ATTEMPTS,
+                     offline_reason == DISPLAY_OFFLINE_REASON_API ? "API"
+                                                                  : "WiFi",
+                     DASH_WAKE_RETRY_DELAY_MS);
+            vTaskDelay(pdMS_TO_TICKS(DASH_WAKE_RETRY_DELAY_MS));
+            continue;
+        }
+        if (permanent) {
+            ESP_LOGW(TAG, "Offline cause looks permanent (%s); sleeping without retry",
+                     offline_reason == DISPLAY_OFFLINE_REASON_API ? "API"
+                                                                  : "WiFi");
+        } else if (cutoff_passed) {
+            ESP_LOGW(TAG, "Per-wake retry cutoff reached after %u cycle(s); sleeping",
+                     (unsigned)wake_attempt);
+        }
         uint32_t attempt = offline_attempt_next(offline_reason);
         display_show_offline(offline_reason, &cfg, network_idx,
                              &wifi_diag, &api_diag, attempt);

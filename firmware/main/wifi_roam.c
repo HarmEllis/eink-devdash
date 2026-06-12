@@ -17,6 +17,11 @@ static const char *TAG = "wifi_roam";
 #define DRIVER_FAILURE_RETRY_COUNT 3
 #define MAX_SCAN_APS 32
 
+/* When the first active scan sees none of the configured networks, re-scan
+ * once after a short back-off to absorb a missed beacon. */
+#define WIFI_SCAN_MAX_TRIES 2
+#define WIFI_SCAN_RETRY_DELAY_MS 400
+
 typedef struct {
     uint8_t idx;
     int8_t rssi;
@@ -321,32 +326,43 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg,
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
     };
     ESP_LOGI(TAG, "Scanning for configured WiFi networks");
-    err = esp_wifi_scan_start(&scan_cfg, true);
-    if (err != ESP_OK) return err;
-
-    wifi_ap_record_t *aps = calloc(MAX_SCAN_APS, sizeof(*aps));
-    if (!aps) return ESP_ERR_NO_MEM;
-
-    uint16_t ap_count = MAX_SCAN_APS;
-    err = esp_wifi_scan_get_ap_records(&ap_count, aps);
-    if (err != ESP_OK) {
-        free(aps);
-        return err;
-    }
 
     candidate_t candidates[MAX_WIFI_NETWORKS] = {0};
     uint8_t candidate_count = 0;
-    for (uint8_t i = 0; i < cfg->network_count; i++) {
-        const dash_wifi_profile_t *net = &cfg->networks[i];
-        if (!net->enabled || net->ssid[0] == '\0') continue;
-        candidate_t candidate = { .idx = i, .rssi = -128 };
-        if (!find_best_scanned_ap(aps, ap_count, net->ssid, &candidate)) {
-            diag_set_reason(diag, i, "no-ap");
-            continue;
+    for (uint8_t scan_try = 0; scan_try < WIFI_SCAN_MAX_TRIES; scan_try++) {
+        if (scan_try > 0) {
+            ESP_LOGW(TAG, "No configured WiFi network seen; re-scanning after %d ms",
+                     WIFI_SCAN_RETRY_DELAY_MS);
+            vTaskDelay(pdMS_TO_TICKS(WIFI_SCAN_RETRY_DELAY_MS));
         }
-        candidates[candidate_count++] = candidate;
+
+        err = esp_wifi_scan_start(&scan_cfg, true);
+        if (err != ESP_OK) return err;
+
+        wifi_ap_record_t *aps = calloc(MAX_SCAN_APS, sizeof(*aps));
+        if (!aps) return ESP_ERR_NO_MEM;
+
+        uint16_t ap_count = MAX_SCAN_APS;
+        err = esp_wifi_scan_get_ap_records(&ap_count, aps);
+        if (err != ESP_OK) {
+            free(aps);
+            return err;
+        }
+
+        candidate_count = 0;
+        for (uint8_t i = 0; i < cfg->network_count; i++) {
+            const dash_wifi_profile_t *net = &cfg->networks[i];
+            if (!net->enabled || net->ssid[0] == '\0') continue;
+            candidate_t candidate = { .idx = i, .rssi = -128 };
+            if (!find_best_scanned_ap(aps, ap_count, net->ssid, &candidate)) {
+                diag_set_reason(diag, i, "no-ap");
+                continue;
+            }
+            candidates[candidate_count++] = candidate;
+        }
+        free(aps);
+        if (candidate_count > 0) break;
     }
-    free(aps);
     sort_candidates(candidates, candidate_count);
 
     for (uint8_t i = 0; i < candidate_count; i++) {
@@ -363,20 +379,38 @@ esp_err_t wifi_roam_connect(dash_config_v2_t *cfg,
         diag_set_reason(diag, idx, reason[0] ? reason : "timeout");
     }
 
-    if (candidate_count == 0 && cfg->last_success_network_idx >= 0 &&
+    /* Fall back to the last successful network on all channels when it is not
+     * in the scanned candidate set — either nothing was visible, or a missed
+     * primary was hidden behind a visible secondary that we already tried.
+     * (If it was scanned, the candidate loop above already attempted it.)
+     * Keep this to at most one extra all-channel attempt. */
+    if (cfg->last_success_network_idx >= 0 &&
         cfg->last_success_network_idx < (int8_t)cfg->network_count) {
         uint8_t idx = (uint8_t)cfg->last_success_network_idx;
-        ESP_LOGW(TAG, "No visible configured WiFi network found; trying last successful SSID");
-        char reason[UNREACHABLE_REASON_MAX] = {0};
-        err = connect_one(&cfg->networks[idx], connect_timeout_ms, NULL,
-                          reason, sizeof(reason));
-        if (err == ESP_OK) {
-            if (network_idx_out) *network_idx_out = idx;
-            return ESP_OK;
+        bool already_scanned = false;
+        for (uint8_t i = 0; i < candidate_count; i++) {
+            if (candidates[i].idx == idx) {
+                already_scanned = true;
+                break;
+            }
         }
-        diag_set_reason(diag, idx, reason[0] ? reason : "no-ap");
+        if (!already_scanned) {
+            ESP_LOGW(TAG, "Last successful WiFi network not in scan; trying it on all channels");
+            char reason[UNREACHABLE_REASON_MAX] = {0};
+            err = connect_one(&cfg->networks[idx], connect_timeout_ms, NULL,
+                              reason, sizeof(reason));
+            if (err == ESP_OK) {
+                if (network_idx_out) *network_idx_out = idx;
+                return ESP_OK;
+            }
+            diag_set_reason(diag, idx, reason[0] ? reason : "no-ap");
+        }
     }
 
+    /* WiFi failures are always treated as retryable: on WPA2-PSK a 4-way
+       handshake timeout is indistinguishable from a wrong password versus
+       packet loss, so the in-wake retry (bounded by its elapsed-time cutoff)
+       handles them rather than risk wrongly suppressing a recoverable wake. */
     ESP_LOGW(TAG, "No configured WiFi network connected");
     return ESP_ERR_NOT_FOUND;
 }
