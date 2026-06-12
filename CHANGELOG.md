@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-06-12
+
+This patch release prevents the ESP32-S3 from rebooting after a failed dashboard
+refresh while retaining the new within-wake WiFi and API recovery behavior.
+
+### Fixed
+
+- Production retries now keep the WiFi driver running between connection and
+  fetch attempts. The previous stop/start cycle could reboot the ESP32-S3 after
+  a failed refresh attempt; WiFi is now stopped only when the device is ready
+  to enter deep sleep.
+
 ## [0.7.1] - 2026-06-12
 
 This release recovers from transient WiFi/API failures within a single wake instead of immediately showing an error, and tidies the extra-usage bar so it never renders wider than the session/week bars above it.
@@ -168,6 +180,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.7.2]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.5.0...v0.6.0
