@@ -812,9 +812,12 @@ static void draw_provider(int ox, int oy, int width, const provider_layout_t *la
         int spend_y = wk_y + layout->bar_row_h + 1;
         /* The amount can be wider than the fixed pct column (e.g. "12.34" is
            30px vs pct_w=28px), so shrink the bar to end just before it rather
-           than letting the text overlap the final segment. */
+           than letting the text overlap the final segment. Never let it grow
+           past the session/week bars above: cap at bar_w so a short amount
+           leaves this bar at most as wide as the other two, never wider. */
         int amount_x = ox + width - str_w(amount_s) - 2;
         int spend_bar_w = amount_x - 2 - bar_x;
+        if (spend_bar_w > bar_w) spend_bar_w = bar_w;
         if (spend_bar_w < 0) spend_bar_w = 0;
         draw_currency_symbol(ox, spend_y + 1, extra->currency, auth_err);
         draw_bar_cfg_ex(bar_x, spend_y + bar_dy, spend_bar_w, layout->bar_h,
