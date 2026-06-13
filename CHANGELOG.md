@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-13
+
+This release adds an always-connected WiFi mode for USB/mains-powered installations and hardens heap management for long-running operation.
+
+### Added
+
+- **Always-connected mode**: the device can now stay awake between refreshes instead of deep-sleeping. While idle it holds its WiFi association and enables minimum-modem power save. A long BOOT press still opens the setup portal during idle waits. The option is enabled per device from the captive portal.
+- **Quiet-hours behavior choice**: when always-connected mode is on, each network can independently choose whether quiet hours put the device into deep sleep (the original behavior) or keep it awake and associated while pausing API and display updates.
+
+### Changed
+
+- Quiet-hours status messages in the firmware now distinguish the new connected-pause state from the existing deep-sleep state.
+- Heap allocations in the main loop and WiFi provisioning are released more aggressively between refresh cycles, and a periodic heap-low warning fires when free heap falls below 20 KB, guarding against slow leaks during long-running operation.
+
 ## [0.7.1] - 2026-06-12
 
 This release recovers from transient WiFi/API failures within a single wake instead of immediately showing an error, and tidies the extra-usage bar so it never renders wider than the session/week bars above it.
@@ -168,6 +182,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.8.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.5.0...v0.6.0
