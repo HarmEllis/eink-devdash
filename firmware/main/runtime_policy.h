@@ -33,6 +33,19 @@ uint8_t dashboard_refresh_input_minimum(bool is_bw);
 uint8_t dashboard_refresh_minimum(bool is_bw, uint8_t max_partials);
 bool dashboard_refresh_config_is_valid(uint8_t refresh_min, bool is_bw,
                                        uint8_t max_partials);
+
+typedef enum {
+    DASH_QUIET_INACTIVE = 0,
+    DASH_QUIET_DEEP_SLEEP,
+    DASH_QUIET_PAUSE_CONNECTED,
+} dashboard_quiet_action_t;
+
+/* Resolve quiet-hours behavior without coupling the main loop to storage
+ * representation details. quiet_keep_connected is only effective when the
+ * device-wide always-connected mode is enabled. */
+dashboard_quiet_action_t dashboard_quiet_action(bool quiet_active,
+                                                bool keep_wifi_connected,
+                                                bool quiet_keep_connected);
 bool offline_partial_refresh_allowed(uint8_t partial_count,
                                      uint8_t max_partials,
                                      uint16_t renders_since_full,

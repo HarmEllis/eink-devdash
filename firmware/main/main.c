@@ -90,6 +90,74 @@ static void enter_deep_sleep(uint8_t minutes)
     enter_deep_sleep_seconds((uint32_t)minutes * 60u);
 }
 
+static void wait_awake_seconds(uint32_t seconds)
+{
+    if (seconds < 1) seconds = 1;
+    if (wifi_net_is_connected()) {
+        esp_err_t err = wifi_net_set_idle_power_save(true);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Could not enable WiFi modem sleep: %s",
+                     esp_err_to_name(err));
+        }
+    }
+    ESP_LOGI(TAG, "Staying awake with WiFi idle for %u s", (unsigned)seconds);
+    vTaskDelay(pdMS_TO_TICKS(seconds * 1000u));
+    if (wifi_net_is_connected()) {
+        esp_err_t err = wifi_net_set_idle_power_save(false);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Could not disable WiFi modem sleep: %s",
+                     esp_err_to_name(err));
+        }
+    }
+}
+
+static dashboard_quiet_action_t current_quiet_action(
+    const dash_config_v2_t *cfg, bool time_is_eligible,
+    int *network_idx_out, int *now_min_out, int *end_min_out)
+{
+    if (!time_is_eligible) return DASH_QUIET_INACTIVE;
+
+    int network_idx = cfg->last_success_network_idx;
+    int now_min = 0;
+    if (network_idx < 0 || network_idx >= cfg->network_count) {
+        return DASH_QUIET_INACTIVE;
+    }
+
+    const dash_wifi_profile_t *net = &cfg->networks[network_idx];
+    bool active = net->enabled && net->ssid[0] != '\0' &&
+                  net->quiet_enabled &&
+                  timekeep_now_minute_of_day(&now_min) &&
+                  timekeep_minute_in_window(now_min, net->quiet_start_min,
+                                            net->quiet_end_min);
+    dashboard_quiet_action_t action = dashboard_quiet_action(
+        active, cfg->keep_wifi_connected, net->quiet_keep_connected);
+    if (action != DASH_QUIET_INACTIVE) {
+        if (network_idx_out) *network_idx_out = network_idx;
+        if (now_min_out) *now_min_out = now_min;
+        if (end_min_out) *end_min_out = net->quiet_end_min;
+    }
+    return action;
+}
+
+static esp_err_t ensure_wifi_connected(dash_config_v2_t *cfg,
+                                       bool keep_connected,
+                                       int *network_idx,
+                                       wifi_unreachable_diag_t *diag)
+{
+    if (keep_connected && wifi_net_is_connected() &&
+        *network_idx >= 0 && *network_idx < cfg->network_count) {
+        ESP_LOGI(TAG, "Reusing WiFi connection; network index=%d",
+                 *network_idx);
+        esp_err_t err = wifi_net_set_idle_power_save(false);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Could not disable WiFi modem sleep: %s",
+                     esp_err_to_name(err));
+        }
+        return ESP_OK;
+    }
+    return wifi_roam_connect(cfg, network_idx, diag);
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "Firmware marker: %s", BUILD_MARKER);
@@ -237,8 +305,11 @@ void app_main(void)
      * provisioning window returns with a controlled error. */
     bool force_prov = boot_button_force_prov_active();
 
-    ESP_LOGI(TAG, "Boot: networks=%u refresh=%u reset=%d wake=%d boot_wake=%d force_prov=%d",
-             cfg.network_count, cfg.refresh_min, reset, wake, boot_wake, force_prov);
+    ESP_LOGI(TAG,
+             "Boot: networks=%u refresh=%u keep_wifi=%u reset=%d wake=%d "
+             "boot_wake=%d force_prov=%d",
+             cfg.network_count, cfg.refresh_min, cfg.keep_wifi_connected,
+             reset, wake, boot_wake, force_prov);
 
     if (boot_wake || force_prov || cfg.network_count == 0) {
         boot_button_force_prov_mark();
@@ -272,62 +343,16 @@ void app_main(void)
         esp_restart();
     }
 
-    /* Quiet hours: on a plain timer refresh (NOT cold boot, NOT a short-press
-     * EXT0 force-refresh, NOT provisioning) skip the whole WiFi + API + e-paper
-     * cycle when the network we are parked on is inside its configured sleep
-     * window. The window is evaluated against the RTC clock, which we set from
-     * the API after each fetch and which survives timer wakes but not cold
-     * boot — so an unset clock simply falls through to a normal refresh that
-     * re-acquires the time. We re-evaluate on every wake (chunked sleep) so the
-     * device leaves the window within at most one chunk. */
-    if (wake == ESP_SLEEP_WAKEUP_TIMER) {
-        int qidx = cfg.last_success_network_idx;
-        int now_min = 0;
-        if (qidx >= 0 && qidx < cfg.network_count &&
-            cfg.networks[qidx].enabled && cfg.networks[qidx].ssid[0] != '\0' &&
-            cfg.networks[qidx].quiet_enabled &&
-            timekeep_now_minute_of_day(&now_min) &&
-            timekeep_minute_in_window(now_min, cfg.networks[qidx].quiet_start_min,
-                                      cfg.networks[qidx].quiet_end_min)) {
-            int end_min = cfg.networks[qidx].quiet_end_min;
-            int until = timekeep_minutes_until(now_min, end_min);
-            if (!s_quiet_footer_shown) {
-                char wake_hhmm[9];
-                snprintf(wake_hhmm, sizeof(wake_hhmm), "%02d:%02d",
-                         end_min / 60, end_min % 60);
-                display_show_sleeping(wake_hhmm);
-                s_quiet_footer_shown = true;
-            }
-            /* Cap each nap at 60 min so RTC drift cannot overshoot the window
-             * end by more than a chunk; the floor lives in
-             * enter_deep_sleep_seconds. */
-            uint32_t chunk_min = (until > 60) ? 60u : (uint32_t)until;
-            ESP_LOGI(TAG, "Quiet hours net=%d now=%02d:%02d wake=%02d:%02d sleep=%umin",
-                     qidx, now_min / 60, now_min % 60, end_min / 60, end_min % 60,
-                     (unsigned)chunk_min);
-            wifi_net_stop();
-            enter_deep_sleep_seconds(chunk_min * 60u);
-            return;
-        }
-    }
-
-    int network_idx = -1;
+    int network_idx = cfg.last_success_network_idx;
     int api_idx = -1;
     wifi_unreachable_diag_t wifi_diag = {0};
     api_unreachable_diag_t api_diag = {0};
     static dashboard_data_t data;   /* keep off the stack, like cfg above */
-    memset(&data, 0, sizeof(data));
 
-    /* From here on we are in the normal connect/fetch/render path. Start
-     * the BOOT long-press monitor so a 5s hold can force the captive
-     * portal at any time — including while stuck in the offline retry
-     * loop below. The monitor writes the RTC force_prov flag and calls
-     * esp_restart(); on next boot we land in the portal branch above. */
+    /* The long-press monitor remains active through connected waits and quiet
+     * hours, so the portal is reachable without deep-sleep wake handling. */
     boot_button_monitor_start();
 
-    /* On failure either retry in a foreground loop (bring-up — keeps
-     * USB-CDC alive so we can reflash) or drop to deep sleep (battery-
-     * friendly default for production). Toggle via Kconfig. */
 #if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
     bool offline_displayed = false;
     display_offline_reason_t displayed_offline_reason =
@@ -337,140 +362,182 @@ void app_main(void)
     bool wake_refresh = (wake == ESP_SLEEP_WAKEUP_TIMER ||
                          wake == ESP_SLEEP_WAKEUP_EXT0);
     bool prefer_last_success_api = wake_refresh;
+    bool quiet_time_is_eligible = wake == ESP_SLEEP_WAKEUP_TIMER;
     if (!wake_refresh) {
         display_show_connecting(DISPLAY_CTX_NORMAL_BOOT, false, &cfg);
     }
-#if !CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
-    /* Counts the whole connect+fetch cycles tried this wake (production
-     * deep-sleep path only); the bring-up branch retries forever instead.
-     * wake_started marks when retrying began so the cutoff below can stop
-     * starting new cycles (it does not interrupt a cycle already running). */
-    uint32_t wake_attempt = 0;
-    TickType_t wake_started = xTaskGetTickCount();
-#endif
-    for (;;) {
-        display_offline_reason_t offline_reason = DISPLAY_OFFLINE_REASON_WIFI;
-        memset(&wifi_diag, 0, sizeof(wifi_diag));
-        memset(&api_diag, 0, sizeof(api_diag));
-        err = wifi_roam_connect(&cfg, &network_idx, &wifi_diag);
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "WiFi connected; selected network index=%d", network_idx);
-            ESP_LOGI(TAG, "Fetching dashboard API (%s)",
-                     prefer_last_success_api ? "prefer last successful slot"
-                                             : "ordered from first slot");
-            err = api_client_fetch_with_failover(&cfg, network_idx,
-                                                 prefer_last_success_api,
-                                                 &data, &api_idx,
-                                                 &api_diag);
-            ESP_LOGI(TAG, "Dashboard API fetch result: %s api_idx=%d",
-                     esp_err_to_name(err), api_idx);
-            if (err == ESP_OK) break;
-            wifi_net_stop();
-            offline_reason = DISPLAY_OFFLINE_REASON_API;
-            ESP_LOGE(TAG, "API fetch failed");
-        } else {
-            ESP_LOGW(TAG, "No configured WiFi network available");
-            wifi_net_stop();
-        }
 
-#if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
-        /* Count every connection cycle, but update the panel no faster than
-         * the configured dashboard interval. This keeps the bring-up retry
-         * loop from bypassing the one-minute/two-partial safety contract. */
-        uint32_t attempt = offline_attempt_next(offline_reason);
-        TickType_t now = xTaskGetTickCount();
-        bool reason_changed =
-            offline_displayed && displayed_offline_reason != offline_reason;
-        bool display_due =
-            !offline_displayed || reason_changed ||
-            (int32_t)(now - next_offline_display_at) >= 0;
-        if (display_due) {
-            display_show_offline(offline_reason, &cfg, network_idx,
-                                 &wifi_diag, &api_diag, attempt);
-            offline_displayed = true;
-            displayed_offline_reason = offline_reason;
-            next_offline_display_at =
-                now + pdMS_TO_TICKS((uint32_t)cfg.refresh_min * 60u * 1000u);
-        }
-        ESP_LOGW(TAG, "Offline, retrying in %ds",
-                 CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S);
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S * 1000));
-        continue;
-#else
-        /* Absorb a transient scan miss, slow DHCP or relay cold-start by
-         * retrying the whole connect+fetch cycle a bounded number of times
-         * before giving up. WiFi is already stopped on both failure paths
-         * above, and each retry gets a fresh API fetch-cycle budget. An
-         * unambiguous permanent API error (no profile / missing token) is not
-         * retried; everything else (including all WiFi failures, which are
-         * ambiguous to classify) is retried until the attempt count or the
-         * elapsed-time cutoff is reached. The cutoff is evaluated between
-         * cycles: it stops a new cycle from starting once exceeded, but does
-         * not clamp the per-profile/fetch waits inside a cycle already under
-         * way, so the last started cycle can still run to its own timeouts. */
-        bool permanent = (offline_reason == DISPLAY_OFFLINE_REASON_API)
-                             ? api_diag.permanent
-                             : false;
-        bool cutoff_passed =
-            (int32_t)(xTaskGetTickCount() - wake_started) >=
-            (int32_t)pdMS_TO_TICKS(DASH_WAKE_RETRY_CUTOFF_MS);
-        wake_attempt++;
-        if (!permanent && wake_attempt < DASH_WAKE_RETRY_MAX_ATTEMPTS &&
-            !cutoff_passed) {
-            ESP_LOGW(TAG,
-                     "Connect/fetch cycle %u/%u failed (%s); retrying in %d ms",
-                     (unsigned)wake_attempt,
-                     (unsigned)DASH_WAKE_RETRY_MAX_ATTEMPTS,
-                     offline_reason == DISPLAY_OFFLINE_REASON_API ? "API"
-                                                                  : "WiFi",
-                     DASH_WAKE_RETRY_DELAY_MS);
-            vTaskDelay(pdMS_TO_TICKS(DASH_WAKE_RETRY_DELAY_MS));
+    for (;;) {
+        int qidx = -1;
+        int now_min = 0;
+        int end_min = 0;
+        dashboard_quiet_action_t quiet_action = current_quiet_action(
+            &cfg, quiet_time_is_eligible, &qidx, &now_min, &end_min);
+        if (quiet_action != DASH_QUIET_INACTIVE) {
+            int until = timekeep_minutes_until(now_min, end_min);
+            if (!s_quiet_footer_shown) {
+                char wake_hhmm[16];
+                snprintf(wake_hhmm, sizeof(wake_hhmm), "%02d:%02d",
+                         end_min / 60, end_min % 60);
+                display_show_sleeping(wake_hhmm);
+                s_quiet_footer_shown = true;
+            }
+
+            uint32_t chunk_min = (until > 60) ? 60u : (uint32_t)until;
+            if (quiet_action == DASH_QUIET_DEEP_SLEEP) {
+                ESP_LOGI(TAG,
+                         "Quiet hours net=%d now=%02d:%02d wake=%02d:%02d "
+                         "deep-sleep=%umin",
+                         qidx, now_min / 60, now_min % 60,
+                         end_min / 60, end_min % 60, (unsigned)chunk_min);
+                wifi_net_stop();
+                enter_deep_sleep_seconds(chunk_min * 60u);
+                return;
+            }
+
+            /* Re-evaluate at least once per configured refresh interval so an
+             * association lost during a long quiet window can be restored. */
+            if (chunk_min > cfg.refresh_min) chunk_min = cfg.refresh_min;
+            memset(&wifi_diag, 0, sizeof(wifi_diag));
+            if (!wifi_net_is_connected()) {
+                err = wifi_roam_connect(&cfg, &network_idx, &wifi_diag);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "Quiet-hours WiFi reconnect failed");
+                }
+            }
+            ESP_LOGI(TAG,
+                     "Quiet hours net=%d now=%02d:%02d wake=%02d:%02d "
+                     "updates paused, awake=%umin",
+                     qidx, now_min / 60, now_min % 60,
+                     end_min / 60, end_min % 60, (unsigned)chunk_min);
+            wait_awake_seconds(chunk_min * 60u);
             continue;
         }
-        if (permanent) {
-            ESP_LOGW(TAG, "Offline cause looks permanent (%s); sleeping without retry",
-                     offline_reason == DISPLAY_OFFLINE_REASON_API ? "API"
-                                                                  : "WiFi");
-        } else if (cutoff_passed) {
-            ESP_LOGW(TAG, "Per-wake retry cutoff reached after %u cycle(s); sleeping",
-                     (unsigned)wake_attempt);
-        }
-        uint32_t attempt = offline_attempt_next(offline_reason);
-        display_show_offline(offline_reason, &cfg, network_idx,
-                             &wifi_diag, &api_diag, attempt);
-        enter_deep_sleep(cfg.refresh_min);
-        return;
+
+        bool cycle_failed = false;
+#if !CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
+        uint32_t wake_attempt = 0;
+        TickType_t wake_started = xTaskGetTickCount();
 #endif
+        for (;;) {
+            display_offline_reason_t offline_reason =
+                DISPLAY_OFFLINE_REASON_WIFI;
+            memset(&wifi_diag, 0, sizeof(wifi_diag));
+            memset(&api_diag, 0, sizeof(api_diag));
+            memset(&data, 0, sizeof(data));
+
+            err = ensure_wifi_connected(&cfg, cfg.keep_wifi_connected,
+                                        &network_idx, &wifi_diag);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "WiFi ready; selected network index=%d",
+                         network_idx);
+                ESP_LOGI(TAG, "Fetching dashboard API (%s)",
+                         prefer_last_success_api
+                             ? "prefer last successful slot"
+                             : "ordered from first slot");
+                err = api_client_fetch_with_failover(
+                    &cfg, network_idx, prefer_last_success_api,
+                    &data, &api_idx, &api_diag);
+                ESP_LOGI(TAG, "Dashboard API fetch result: %s api_idx=%d",
+                         esp_err_to_name(err), api_idx);
+                if (err == ESP_OK) break;
+                offline_reason = DISPLAY_OFFLINE_REASON_API;
+                ESP_LOGE(TAG, "API fetch failed");
+            } else {
+                ESP_LOGW(TAG, "No configured WiFi network available");
+            }
+
+            if (!cfg.keep_wifi_connected) wifi_net_stop();
+
+#if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
+            uint32_t attempt = offline_attempt_next(offline_reason);
+            TickType_t now = xTaskGetTickCount();
+            bool reason_changed =
+                offline_displayed &&
+                displayed_offline_reason != offline_reason;
+            bool display_due =
+                !offline_displayed || reason_changed ||
+                (int32_t)(now - next_offline_display_at) >= 0;
+            if (display_due) {
+                display_show_offline(offline_reason, &cfg, network_idx,
+                                     &wifi_diag, &api_diag, attempt);
+                offline_displayed = true;
+                displayed_offline_reason = offline_reason;
+                next_offline_display_at =
+                    now + pdMS_TO_TICKS(
+                        (uint32_t)cfg.refresh_min * 60u * 1000u);
+            }
+            ESP_LOGW(TAG, "Offline, retrying in %ds",
+                     CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S);
+            wait_awake_seconds(CONFIG_DEVDASH_OFFLINE_RETRY_INTERVAL_S);
+            continue;
+#else
+            bool permanent =
+                offline_reason == DISPLAY_OFFLINE_REASON_API &&
+                api_diag.permanent;
+            bool cutoff_passed =
+                (int32_t)(xTaskGetTickCount() - wake_started) >=
+                (int32_t)pdMS_TO_TICKS(DASH_WAKE_RETRY_CUTOFF_MS);
+            wake_attempt++;
+            if (!permanent &&
+                wake_attempt < DASH_WAKE_RETRY_MAX_ATTEMPTS &&
+                !cutoff_passed) {
+                ESP_LOGW(TAG,
+                         "Connect/fetch cycle %u/%u failed (%s); "
+                         "retrying in %d ms",
+                         (unsigned)wake_attempt,
+                         (unsigned)DASH_WAKE_RETRY_MAX_ATTEMPTS,
+                         offline_reason == DISPLAY_OFFLINE_REASON_API
+                             ? "API" : "WiFi",
+                         DASH_WAKE_RETRY_DELAY_MS);
+                vTaskDelay(pdMS_TO_TICKS(DASH_WAKE_RETRY_DELAY_MS));
+                continue;
+            }
+
+            uint32_t attempt = offline_attempt_next(offline_reason);
+            display_show_offline(offline_reason, &cfg, network_idx,
+                                 &wifi_diag, &api_diag, attempt);
+            cycle_failed = true;
+            if (!cfg.keep_wifi_connected) {
+                enter_deep_sleep(cfg.refresh_min);
+                return;
+            }
+            break;
+#endif
+        }
+
+        quiet_time_is_eligible = true;
+        prefer_last_success_api = true;
+        if (cycle_failed) {
+            wait_awake_seconds((uint32_t)cfg.refresh_min * 60u);
+            continue;
+        }
+
+        if (clock_should_apply(data.updated_at_iso, data.stale)) {
+            timekeep_set_from_iso(data.updated_at_iso);
+        }
+        s_quiet_footer_shown = false;
+        offline_episode_clear();
+
+#if CONFIG_DEVDASH_RETRY_FOREVER_WHEN_OFFLINE
+        offline_displayed = false;
+#endif
+        display_set_connection_slots(&cfg, network_idx, api_idx);
+
+        err = ota_client_maybe_update(&cfg, network_idx, api_idx);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "OTA check/update failed: %s",
+                     esp_err_to_name(err));
+        }
+
+        if (!cfg.keep_wifi_connected) wifi_net_stop();
+        display_render(&data);
+        ota_client_mark_image_valid();
+
+        if (!cfg.keep_wifi_connected) {
+            enter_deep_sleep(cfg.refresh_min);
+            return;
+        }
+        wait_awake_seconds((uint32_t)cfg.refresh_min * 60u);
     }
-
-    /* Set the RTC wall clock from the API's local timestamp so the next timer
-     * wake can evaluate the quiet-hours window without turning on WiFi. */
-    if (clock_should_apply(data.updated_at_iso, data.stale)) {
-        timekeep_set_from_iso(data.updated_at_iso);
-    }
-    /* A normal refresh repaints the dashboard, so the sleeping footer (if any)
-     * is gone — let the next quiet-window entry repaint it. */
-    s_quiet_footer_shown = false;
-    offline_episode_clear();
-
-    display_set_connection_slots(&cfg, network_idx, api_idx);
-
-    /* Check for OTA before the dashboard render. A real update writes one
-     * static OTA poster and then starts flash erase/write; rendering the
-     * dashboard first would force two full e-paper refreshes in one wake
-     * cycle. */
-    err = ota_client_maybe_update(&cfg, network_idx, api_idx);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "OTA check/update failed: %s", esp_err_to_name(err));
-    }
-
-    wifi_net_stop();
-    display_render(&data);
-
-    /* A successful fetch + render is the rollback-validation gate for an
-     * OTA install. No-op when the running image is already VALID, so this
-     * is safe to call unconditionally. */
-    ota_client_mark_image_valid();
-
-    enter_deep_sleep(cfg.refresh_min);
 }

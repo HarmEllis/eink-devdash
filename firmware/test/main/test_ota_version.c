@@ -170,6 +170,18 @@ static void test_refresh_config_rejects_unsafe_one_minute_combinations(void)
     TEST_ASSERT_FALSE(dashboard_refresh_config_is_valid(61, true, 2));
 }
 
+static void test_quiet_hours_policy_preserves_deep_sleep_defaults(void)
+{
+    TEST_ASSERT_EQUAL(DASH_QUIET_INACTIVE,
+                      dashboard_quiet_action(false, false, false));
+    TEST_ASSERT_EQUAL(DASH_QUIET_DEEP_SLEEP,
+                      dashboard_quiet_action(true, false, false));
+    TEST_ASSERT_EQUAL(DASH_QUIET_DEEP_SLEEP,
+                      dashboard_quiet_action(true, true, false));
+    TEST_ASSERT_EQUAL(DASH_QUIET_PAUSE_CONNECTED,
+                      dashboard_quiet_action(true, true, true));
+}
+
 static void test_offline_partial_policy_enforces_both_caps(void)
 {
     TEST_ASSERT_TRUE(offline_partial_refresh_allowed(0, 2, 1, 1440));
@@ -229,6 +241,7 @@ void app_main(void)
     RUN_TEST(test_relay_url_detection_uses_device_path);
     RUN_TEST(test_refresh_minimum_allows_one_minute_for_bw_at_least_two_partials);
     RUN_TEST(test_refresh_config_rejects_unsafe_one_minute_combinations);
+    RUN_TEST(test_quiet_hours_policy_preserves_deep_sleep_defaults);
     RUN_TEST(test_offline_partial_policy_enforces_both_caps);
     RUN_TEST(test_wifi_country_accepts_world_and_supported);
     RUN_TEST(test_wifi_country_rejects_unsupported_and_malformed);

@@ -60,6 +60,17 @@ bool dashboard_refresh_config_is_valid(uint8_t refresh_min, bool is_bw,
            refresh_min <= DASH_REFRESH_MAX;
 }
 
+dashboard_quiet_action_t dashboard_quiet_action(bool quiet_active,
+                                                bool keep_wifi_connected,
+                                                bool quiet_keep_connected)
+{
+    if (!quiet_active) return DASH_QUIET_INACTIVE;
+    if (keep_wifi_connected && quiet_keep_connected) {
+        return DASH_QUIET_PAUSE_CONNECTED;
+    }
+    return DASH_QUIET_DEEP_SLEEP;
+}
+
 bool offline_partial_refresh_allowed(uint8_t partial_count,
                                      uint8_t max_partials,
                                      uint16_t renders_since_full,

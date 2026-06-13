@@ -88,6 +88,8 @@ typedef struct {
     bool     pwd_present;
     bool     overflow;      /* SSID or password got truncated by form_decode */
     bool     q_on;          /* wN_q_on — quiet hours enabled */
+    bool     q_deep_sleep;  /* wN_q_ds — deep sleep during quiet hours */
+    bool     q_deep_sleep_present; /* wN_q_dsp compatibility marker */
     bool     q_start_present;
     bool     q_end_present;
     int      q_start;       /* wN_q_start — minutes since midnight, or -1 */
@@ -109,6 +111,8 @@ typedef struct {
     bool       to_present; /* True iff a `to` field was SEEN (parse may have failed). */
     int        at;         /* Direct-API request timeout, seconds (`at`). */
     bool       at_present; /* True iff an `at` field was SEEN (parse may have failed). */
+    bool       keep_connected; /* Device-wide always-connected mode (`kc`). */
+    bool       keep_connected_present; /* `kcp` compatibility marker. */
 } portal_form_t;
 
 /* Connection is driven explicitly by wifi_roam_connect (esp_wifi_connect on the
@@ -372,6 +376,14 @@ static void apply_field(portal_form_t *form,
         if (!parse_strict_int(val, vlen, &form->at)) form->at = INT_MIN;
         return;
     }
+    if (klen == 2 && key[0] == 'k' && key[1] == 'c') {
+        form->keep_connected = true;
+        return;
+    }
+    if (klen == 3 && strncmp(key, "kcp", 3) == 0) {
+        form->keep_connected_present = true;
+        return;
+    }
     if (klen < 4 || key[0] != 'w') return;
     int n = dec_digit(key[1]);
     if (n < 0 || n >= MAX_WIFI_NETWORKS || key[2] != '_') return;
@@ -407,6 +419,14 @@ static void apply_field(portal_form_t *form,
     }
     if (rlen == 4 && strncmp(rest, "q_on", 4) == 0) {
         net->q_on = true;
+        return;
+    }
+    if (rlen == 4 && strncmp(rest, "q_ds", 4) == 0) {
+        net->q_deep_sleep = true;
+        return;
+    }
+    if (rlen == 5 && strncmp(rest, "q_dsp", 5) == 0) {
+        net->q_deep_sleep_present = true;
         return;
     }
     if (rlen == 7 && strncmp(rest, "q_start", 7) == 0) {
@@ -810,7 +830,8 @@ static void render_api(httpd_req_t *req, int n, int k,
    per-network sleep window for this slot (minutes since local midnight). */
 static void render_network(httpd_req_t *req, int n,
                            const dash_wifi_profile_t *net,
-                           bool quiet_on, int quiet_start, int quiet_end)
+                           bool quiet_on, bool quiet_deep_sleep,
+                           int quiet_start, int quiet_end)
 {
     bool en = net && net->enabled;
     bool saved = net && (net->id || net->ssid[0] || net->password[0]);
@@ -886,6 +907,12 @@ static void render_network(httpd_req_t *req, int n,
         "<label class=\"check\"><input type=\"checkbox\" name=\"w%d_q_on\"%s> "
         "Quiet hours <span class=\"hint\">- skip updates between these times</span>"
         "</label>"
+        "<input type=\"hidden\" name=\"w%d_q_dsp\" value=\"1\">"
+        "<label class=\"check\"><input type=\"checkbox\" name=\"w%d_q_ds\"%s> "
+        "Use deep sleep during quiet hours</label>"
+        "<p style=\"margin:4px 0 0;color:#6b7280;font-size:12px\">"
+        "Deep sleep disconnects WiFi. When disabled in always-connected mode, "
+        "updates pause but WiFi stays associated.</p>"
         "<div class=\"quiet-times\">"
         "<label class=\"field\"><span class=\"lab\">Sleep from</span>"
         "<input type=\"time\" name=\"w%d_q_start\" value=\"%02d:%02d\"></label>"
@@ -893,6 +920,8 @@ static void render_network(httpd_req_t *req, int n,
         "<input type=\"time\" name=\"w%d_q_end\" value=\"%02d:%02d\"></label>"
         "</div></div>",
         n, quiet_on ? " checked" : "",
+        n,
+        n, quiet_deep_sleep ? " checked" : "",
         n, qs / 60, qs % 60,
         n, qe / 60, qe % 60);
     CHUNK(req, buf);
@@ -1024,9 +1053,10 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
         const dash_wifi_profile_t *net =
             (n < cfg->network_count) ? &cfg->networks[n] : NULL;
         bool q_on   = net && net->quiet_enabled;
+        bool q_deep_sleep = !net || !net->quiet_keep_connected;
         int  q_start = net ? net->quiet_start_min : 0;
         int  q_end   = net ? net->quiet_end_min : 0;
-        render_network(req, n, net, q_on, q_start, q_end);
+        render_network(req, n, net, q_on, q_deep_sleep, q_start, q_end);
     }
 
     /* WiFi region picker (closes the WiFi-networks section, opens its own). */
@@ -1058,6 +1088,19 @@ static void render_portal_page_from_cfg(httpd_req_t *req,
             ? "1-60 min. The 1-minute option requires the BW panel and at least "
               "2 partial refreshes."
             : "3-60 min. Default 5. Red-bearing frames take about 15 s of panel refresh.");
+    CHUNK(req, page_buf);
+
+    snprintf(page_buf, sizeof(page_buf),
+        "<div class=\"interval-grid\" style=\"margin-top:14px\">"
+        "<input type=\"hidden\" name=\"kcp\" value=\"1\">"
+        "<label class=\"check full\" style=\"margin:0\">"
+        "<input type=\"checkbox\" name=\"kc\"%s> Keep WiFi connected</label>"
+        "<p class=\"full\" style=\"margin:0;color:#6b7280;font-size:12px\">"
+        "Keeps the device awake and associated between updates. This disables "
+        "normal deep sleep, increases power use, and is intended for USB or "
+        "mains-powered installations. WiFi modem sleep is still used while idle."
+        "</p></div>",
+        cfg->keep_wifi_connected ? " checked" : "");
     CHUNK(req, page_buf);
 
     /* BW per-region partial cap (max_partials). Mirrors the interval control. */
@@ -1234,6 +1277,9 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
                                    dash_config_v2_t *cfg)
 {
     storage_cfg_v2_defaults(cfg);
+    cfg->keep_wifi_connected = form->keep_connected_present
+        ? (form->keep_connected ? 1 : 0)
+        : prev->keep_wifi_connected;
 
     /* Seed the next-id counter from the previous config so every new slot
      * minted during this save gets a distinct id. storage_next_profile_id
@@ -1359,6 +1405,9 @@ static esp_err_t apply_form_to_cfg(const portal_form_t *form,
                           nf->q_start >= 0 && nf->q_end >= 0 &&
                           nf->q_start != nf->q_end;
         nw->quiet_enabled = (nf->q_on && q_times_ok) ? 1 : 0;
+        nw->quiet_keep_connected = nf->q_deep_sleep_present
+            ? (nf->q_deep_sleep ? 0 : 1)
+            : (old ? old->quiet_keep_connected : 0);
         nw->quiet_start_min =
             (nf->q_start_present && nf->q_start >= 0) ? (uint16_t)nf->q_start : 0;
         nw->quiet_end_min =
@@ -1939,4 +1988,15 @@ void wifi_net_stop(void)
 {
     esp_wifi_disconnect();
     esp_wifi_stop();
+}
+
+bool wifi_net_is_connected(void)
+{
+    wifi_ap_record_t ap = {0};
+    return esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+}
+
+esp_err_t wifi_net_set_idle_power_save(bool enabled)
+{
+    return esp_wifi_set_ps(enabled ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
 }
