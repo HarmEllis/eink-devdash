@@ -90,3 +90,22 @@ forces a full refresh (another RTC flag) to clear it cleanly.
   location. For this single-owner desk dashboard that is the intended behavior.
 - The feature is inert until configured; existing devices migrate with quiet
   hours disabled.
+
+## Extension: always-connected operation
+
+As of 2026-06-13, the portal can enable a device-wide always-connected mode.
+Normal refresh intervals then use an in-process FreeRTOS wait with WiFi
+minimum-modem power save instead of deep sleep. The refresh cycle reuses a
+valid association and falls back to the existing scan/roam path after a
+disconnect.
+
+Each network also has a quiet-hours deep-sleep choice. It defaults to enabled,
+preserving the original behavior. When disabled together with always-connected
+mode, quiet hours pause API and display updates while the device stays awake
+and maintains its WiFi association.
+
+The two opt-ins reuse bytes that were zero in existing v6 data: the final
+reserved meta byte for the device-wide mode and a former alignment byte in
+each network profile for the quiet-hours override. Blob sizes, CRC coverage,
+the schema version, and the NVS partition layout remain unchanged. Static
+offset assertions enforce that compatibility.

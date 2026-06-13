@@ -25,6 +25,12 @@ esp_err_t wifi_net_open_config_window(void);
 /* Stop WiFi (call before deep sleep). */
 void wifi_net_stop(void);
 
+/* Connection/idle helpers for always-connected mode. The connection check is
+ * side-effect free; idle mode enables WiFi minimum-modem power save while the
+ * station remains associated. */
+bool wifi_net_is_connected(void);
+esp_err_t wifi_net_set_idle_power_save(bool enabled);
+
 /* Get the SoftAP provisioning SSID (MAC-derived, stable per device) and AP
  * password (random 12-char alphanumeric, generated once at first boot and
  * persisted in NVS). Use this to render them on the e-ink display. */

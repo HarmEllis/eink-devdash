@@ -91,13 +91,19 @@ typedef struct {
     char password[DASH_WIFI_PASSWORD_MAX + 1];
     uint8_t api_count;
     /* Per-network "quiet hours": a local-time window during which the device
-       skips the WiFi + API + e-paper refresh cycle and just deep-sleeps.
+       skips the WiFi + API + e-paper refresh cycle. It deep-sleeps by default;
+       always-connected mode can instead remain associated while updates pause.
        quiet_enabled is 0/1; quiet_start_min/quiet_end_min are minutes since
        local midnight in [0, DASH_QUIET_MIN_OF_DAY_MAX]. A window with
        start == end is treated as disabled. (v5 stored these as trailing
        parallel arrays for single-blob layout compatibility; since v6 each
        network blob owns its quiet fields.) */
     uint8_t quiet_enabled;
+    /* Zero preserves the historical/default behavior: quiet hours use deep
+       sleep. One keeps the device awake and WiFi associated while updates are
+       paused. This occupies a byte that was padding in pre-existing v6 blobs,
+       so old blobs decode as zero without a schema or size change. */
+    uint8_t quiet_keep_connected;
     uint16_t quiet_start_min;
     uint16_t quiet_end_min;
     dash_api_profile_t apis[MAX_APIS_PER_NETWORK];
@@ -126,6 +132,9 @@ typedef struct {
        their respective [MIN, MAX]. 0 means "unset" → normalized to DEFAULT. */
     uint8_t wifi_connect_timeout_s;
     uint8_t api_timeout_s;
+    /* Device-wide operating mode. Zero keeps the battery-friendly historical
+       behavior; one keeps WiFi associated between refresh cycles. */
+    uint8_t keep_wifi_connected;
     dash_wifi_profile_t networks[MAX_WIFI_NETWORKS];
 } dash_config_v2_t;
 

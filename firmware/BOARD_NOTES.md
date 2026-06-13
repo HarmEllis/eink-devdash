@@ -129,6 +129,11 @@ prefix. Field names match `design_handoff_eink_v4_provisioning/README.md`:
 | `wN_ssid`        | text     | SSID (1..32 chars).                              |
 | `wN_pass`        | password | New password. Empty + clearpw off ⇒ keep saved.  |
 | `wN_clearpw`     | checkbox | Force-erase saved password.                      |
+| `wN_q_on`        | checkbox | Quiet hours enabled for network N.               |
+| `wN_q_start`     | time     | Quiet-hours start in local `HH:MM`.               |
+| `wN_q_end`       | time     | Quiet-hours end in local `HH:MM`.                 |
+| `wN_q_ds`        | checkbox | Use deep sleep during quiet hours.                |
+| `wN_q_dsp`       | hidden   | Presence marker for backwards-compatible saves.  |
 | `wN_aK_i`        | hidden   | Profile id of API K under network N.             |
 | `wN_aK_on`       | checkbox | API K enabled.                                   |
 | `wN_aK_url`      | url      | `http://` only — TLS is out of scope.            |
@@ -137,6 +142,8 @@ prefix. Field names match `design_handoff_eink_v4_provisioning/README.md`:
 | `iv`             | number   | Refresh interval, 1..60 on BW with at least two partials; otherwise 3..60. |
 | `pv`             | number   | Panel variant, 0 = BWR / 1 = BW (stored in cfg.panel_variant). |
 | `mp`             | number   | Max partial refreshes, 1..100 (stored in cfg.max_partials). |
+| `kc`             | checkbox | Keep WiFi connected between refresh cycles.      |
+| `kcp`            | hidden   | Presence marker for backwards-compatible saves.  |
 
 `N ∈ 0..4`, `K ∈ 0..4`. Validation is inline in `handler_save()` (out-of-range
 `iv` / `mp` and the per-network/API checks all set a plain-text `reason`), with

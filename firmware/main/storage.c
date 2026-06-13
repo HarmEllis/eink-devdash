@@ -59,14 +59,13 @@ typedef struct {
        and therefore the old configuration, fully intact. */
     uint8_t net_bank[MAX_WIFI_NETWORKS];
     /* Reused from the former reserved[3] (always zero in pre-existing blobs):
-       the WiFi connect timeout and direct-API request timeout, in seconds.
-       Taking these from the reserved bytes keeps sizeof and every other field
-       offset identical, so old cfg_meta blobs still pass the len/CRC checks in
-       load_v6 and read these as 0 → normalized to DEFAULT. The offsets are
-       pinned by static asserts below. */
+       the WiFi connect timeout, direct-API request timeout, and always-connected
+       mode. Taking these from the reserved bytes keeps sizeof and every other
+       field offset identical, so old cfg_meta blobs still pass the len/CRC
+       checks and read the new mode as disabled. */
     uint8_t wifi_connect_timeout_s;
     uint8_t api_timeout_s;
-    uint8_t reserved[1];          /* zero */
+    uint8_t keep_wifi_connected;
     uint32_t crc32;               /* over this struct with crc32 zeroed */
 } dash_meta_blob_t;
 
@@ -200,8 +199,12 @@ _Static_assert(sizeof(dash_meta_blob_t) == 24,
                "meta blob size changed — old cfg_meta blobs would fail the "
                "len==sizeof check in load_v6; recheck migration");
 _Static_assert(offsetof(dash_meta_blob_t, wifi_connect_timeout_s) == 17 &&
-               offsetof(dash_meta_blob_t, api_timeout_s) == 18,
-               "timeout fields must reuse the old reserved[0]/[1] offsets");
+               offsetof(dash_meta_blob_t, api_timeout_s) == 18 &&
+               offsetof(dash_meta_blob_t, keep_wifi_connected) == 19,
+               "new meta fields must reuse the old reserved-byte offsets");
+_Static_assert(offsetof(dash_wifi_profile_t, quiet_keep_connected) == 105 &&
+               offsetof(dash_wifi_profile_t, quiet_start_min) == 106,
+               "quiet_keep_connected must consume the old profile padding byte");
 /* Absolute worst case: every slot momentarily occupies BOTH banks (all five
    networks changed in one save, old generation not yet released) plus
    old+new meta coexistence. Even that must fit, so a save can never run the
@@ -302,6 +305,7 @@ static bool meta_is_valid(const dash_meta_blob_t *m)
     if (!panel_variant_is_known(m->panel_variant)) return false;
     if (m->max_partials < DASH_MAX_PARTIALS_MIN ||
         m->max_partials > DASH_MAX_PARTIALS_MAX) return false;
+    if (m->keep_wifi_connected > 1) return false;
     if (!dashboard_refresh_config_is_valid(
             m->refresh_min,
             m->panel_variant == EINK_PANEL_WEACT_29_BW,
@@ -442,6 +446,7 @@ void storage_cfg_v2_defaults(dash_config_v2_t *cfg)
     cfg->max_partials = DASH_MAX_PARTIALS_DEFAULT;
     cfg->wifi_connect_timeout_s = DASH_WIFI_CONNECT_TIMEOUT_DEFAULT;
     cfg->api_timeout_s = DASH_API_TIMEOUT_DEFAULT;
+    cfg->keep_wifi_connected = 0;
     cfg->refresh_min = clamp_refresh(CONFIG_DEVDASH_REFRESH_MIN,
                                      cfg->panel_variant, cfg->max_partials);
 }
@@ -482,6 +487,7 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
     cfg->max_partials = clamp_max_partials(cfg->max_partials);
     cfg->wifi_connect_timeout_s = clamp_wifi_connect_timeout(cfg->wifi_connect_timeout_s);
     cfg->api_timeout_s = clamp_api_timeout(cfg->api_timeout_s);
+    cfg->keep_wifi_connected = cfg->keep_wifi_connected ? 1 : 0;
     cfg->refresh_min = clamp_refresh(cfg->refresh_min, cfg->panel_variant,
                                      cfg->max_partials);
     if (cfg->network_count > MAX_WIFI_NETWORKS) cfg->network_count = MAX_WIFI_NETWORKS;
@@ -510,6 +516,11 @@ void storage_cfg_v2_normalize(dash_config_v2_t *cfg)
             net->quiet_end_min = DASH_QUIET_MIN_OF_DAY_MAX;
         }
         net->quiet_enabled = net->quiet_enabled ? 1 : 0;
+        /* Only the explicitly written value 1 opts in. This byte was padding
+           in older v6 blobs, so treating any other value as zero keeps a blob
+           with non-canonical historical padding battery-safe. */
+        net->quiet_keep_connected =
+            net->quiet_keep_connected == 1 ? 1 : 0;
         if (net->quiet_start_min == net->quiet_end_min) {
             net->quiet_enabled = 0;
         }
@@ -583,6 +594,7 @@ static bool load_v6(nvs_handle_t h, dash_config_v2_t *cfg)
     cfg->max_partials = meta.max_partials;
     cfg->wifi_connect_timeout_s = meta.wifi_connect_timeout_s;
     cfg->api_timeout_s = meta.api_timeout_s;
+    cfg->keep_wifi_connected = meta.keep_wifi_connected;
     cfg->write_counter = meta.write_counter;
 
     dash_net_blob_t *blob = calloc(1, sizeof(*blob));
@@ -878,7 +890,8 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
         prev.panel_variant != cfg->panel_variant ||
         prev.max_partials != cfg->max_partials ||
         prev.wifi_connect_timeout_s != cfg->wifi_connect_timeout_s ||
-        prev.api_timeout_s != cfg->api_timeout_s;
+        prev.api_timeout_s != cfg->api_timeout_s ||
+        prev.keep_wifi_connected != cfg->keep_wifi_connected;
     bool need_meta = blobs_changed || meta_differs;
 
     /* Capacity guard: the exact entry cost of this save (defense-in-depth;
@@ -924,6 +937,7 @@ esp_err_t storage_save_v2(dash_config_v2_t *cfg)
         meta.max_partials = cfg->max_partials;
         meta.wifi_connect_timeout_s = cfg->wifi_connect_timeout_s;
         meta.api_timeout_s = cfg->api_timeout_s;
+        meta.keep_wifi_connected = cfg->keep_wifi_connected;
         memcpy(meta.net_bank, new_bank, sizeof(meta.net_bank));
         meta.write_counter =
             (have_prev ? prev.write_counter : cfg->write_counter) + 1;

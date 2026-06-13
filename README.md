@@ -415,7 +415,8 @@ against the ESP-IDF root certificate bundle.
 | API URL | For example `http://192.168.1.50:3000`, `http://devdash-api.local:3000`, or a relay URL |
 | Device token | Must match the API's `DEVICE_TOKEN` |
 | Refresh interval | 3 to 60 minutes; default 5 |
-| Quiet hours | Optional start/end time per WiFi network |
+| Keep WiFi connected | Keeps the device awake between updates, with WiFi modem sleep while idle |
+| Quiet hours | Optional start/end time and deep-sleep choice per WiFi network |
 | Display | Select BW or BWR |
 | Max partial refreshes | BW only; default 5 |
 
@@ -424,9 +425,16 @@ Empty password or token fields preserve the saved secret. Use the corresponding
 
 ### Quiet hours
 
-During a configured quiet-hours window, the device skips network and display
-updates and wakes roughly hourly to check whether the window has ended. A short
-BOOT press forces an immediate refresh.
+During a configured quiet-hours window, the device skips API and display
+updates. By default it disconnects WiFi, enters deep sleep, and wakes roughly
+hourly to check whether the window has ended. When **Keep WiFi connected** is
+enabled, the per-network quiet-hours option can instead keep the device awake
+and associated while updates remain paused.
+
+Keeping WiFi connected disables normal deep sleep between refreshes and
+increases power use. It is intended for USB or mains-powered installations;
+WiFi minimum-modem power save is enabled during idle waits. A long BOOT press
+still opens the setup portal while the device is waiting.
 
 The dashboard API supplies local time according to `DASHBOARD_TIME_ZONE`.
 After power loss, the device performs one normal refresh before quiet hours

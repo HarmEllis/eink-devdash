@@ -29,7 +29,8 @@ config DEVDASH_REFRESH_MIN
     range 3 60
     default 5
     help
-        Default minutes between dashboard refreshes (deep-sleep duration).
+        Default minutes between dashboard refreshes. This is the deep-sleep
+        duration in the normal mode and the awake wait in always-connected mode.
         The provisioning portal may allow a 1-minute interval for the BW panel
         when at least two partial refreshes separate regular full refreshes.
 
