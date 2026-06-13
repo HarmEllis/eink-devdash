@@ -1255,17 +1255,32 @@ static void render_saved_page(httpd_req_t *req)
 
 /* ── save flow ───────────────────────────────────────────────────────────── */
 
+static esp_timer_handle_t s_restart_timer;
+
 static void schedule_restart_cb(void *arg) { (void)arg; esp_restart(); }
 
 static void schedule_restart(uint32_t ms)
 {
-    static esp_timer_handle_t timer;
-    esp_timer_create_args_t args = {
-        .callback = schedule_restart_cb,
-        .name     = "prov_restart",
-    };
-    if (esp_timer_create(&args, &timer) != ESP_OK) return;
-    esp_timer_start_once(timer, (uint64_t)ms * 1000ULL);
+    if (!s_restart_timer) {
+        esp_timer_create_args_t args = {
+            .callback = schedule_restart_cb,
+            .name     = "prov_restart",
+        };
+        esp_err_t err = esp_timer_create(&args, &s_restart_timer);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Could not create provisioning restart timer: %s",
+                     esp_err_to_name(err));
+            return;
+        }
+    }
+    if (esp_timer_is_active(s_restart_timer)) return;
+
+    esp_err_t err =
+        esp_timer_start_once(s_restart_timer, (uint64_t)ms * 1000ULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not start provisioning restart timer: %s",
+                 esp_err_to_name(err));
+    }
 }
 
 /* Caller owns both `prev` (the previous on-disk config, loaded by
@@ -1867,6 +1882,7 @@ static esp_err_t run_provisioning_window(void)
     if (storage_get_or_init_ap_password(s_portal_password,
                                         sizeof(s_portal_password)) != ESP_OK) {
         ESP_LOGE(TAG, "AP password load/init failed");
+        esp_netif_destroy_default_wifi(ap_netif);
         prov_pm_lock_release();
         return ESP_FAIL;
     }

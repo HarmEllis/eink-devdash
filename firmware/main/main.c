@@ -1,6 +1,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
@@ -38,6 +39,7 @@ typedef struct {
 #define OFFLINE_EPISODE_MAGIC 0x0FF11E01u
 
 static RTC_DATA_ATTR offline_episode_t s_offline_episode;
+static size_t s_last_free_heap;
 
 static uint32_t offline_attempt_next(display_offline_reason_t reason)
 {
@@ -55,6 +57,24 @@ static uint32_t offline_attempt_next(display_offline_reason_t reason)
 static void offline_episode_clear(void)
 {
     memset(&s_offline_episode, 0, sizeof(s_offline_episode));
+}
+
+static void log_heap_state(const char *phase)
+{
+    size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t min_free_heap = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+    size_t largest_block =
+        heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    int64_t delta = s_last_free_heap == 0
+        ? 0
+        : (int64_t)free_heap - (int64_t)s_last_free_heap;
+
+    ESP_LOGI(TAG,
+             "Heap %s: free=%u min=%u largest=%u delta=%lld integrity=%s",
+             phase, (unsigned)free_heap, (unsigned)min_free_heap,
+             (unsigned)largest_block, (long long)delta,
+             heap_caps_check_integrity_all(false) ? "ok" : "FAILED");
+    s_last_free_heap = free_heap;
 }
 
 static void enter_deep_sleep_seconds(uint32_t seconds)
@@ -101,7 +121,9 @@ static void wait_awake_seconds(uint32_t seconds)
         }
     }
     ESP_LOGI(TAG, "Staying awake with WiFi idle for %u s", (unsigned)seconds);
+    log_heap_state("before idle");
     vTaskDelay(pdMS_TO_TICKS(seconds * 1000u));
+    log_heap_state("after idle");
     if (wifi_net_is_connected()) {
         esp_err_t err = wifi_net_set_idle_power_save(false);
         if (err != ESP_OK) {
