@@ -198,11 +198,13 @@ void app_main(void)
             .notifications = 1,
             .notifications_present = true,
         },
+        .claude_present = true,
         .claude = {
             .five_hour = { .used = 18, .limit = 200, .reset_in_seconds = 8200 },
             .weekly    = { .used = 4100, .limit = 10000, .reset_in_seconds = 304800 },
             .auth_error = false,
         },
+        .codex_present = true,
         .codex = {
             .short_pct = 32,
             .long_pct = 38,
@@ -210,6 +212,8 @@ void app_main(void)
             .short_reset_in_seconds = 3600,
             .long_reset_in_seconds = 313200,
         },
+        .antigravity_present = false,
+        .antigravity = {0},
         .updated_at = "14:38",
         .stale = false,
         .offline = false,

@@ -43,17 +43,32 @@ typedef struct {
     int short_pct;
     int long_pct;
     bool reached;
+    bool service_error;
     int short_reset_in_seconds;
     int long_reset_in_seconds;
     extra_usage_t extra_usage;
 } codex_data_t;
 
 typedef struct {
+    int short_pct;
+    int long_pct;
+    bool reached;
+    bool service_error;
+    int short_reset_in_seconds;
+    int long_reset_in_seconds;
+    extra_usage_t extra_usage;
+} antigravity_data_t;
+
+typedef struct {
     int schema_version;
     bool github_present;
     github_data_t github;
+    bool claude_present;
     claude_data_t claude;
+    bool codex_present;
     codex_data_t codex;
+    bool antigravity_present;
+    antigravity_data_t antigravity;
     char updated_at[32];
     /* Full local wall-clock ISO timestamp ("YYYY-MM-DDTHH:MM:SS") from the
        API's updatedAtLocalIso field. Used to set the RTC clock so the

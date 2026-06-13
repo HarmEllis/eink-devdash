@@ -1746,10 +1746,10 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
                                       data->github.service_error);
 
     /* ── Outer border ── */
-    hline(1,   1,   294);   /* top    */
-    hline(1,   126, 294);   /* bottom */
-    vline(1,   1,   126);   /* left   */
-    vline(294, 1,   126);   /* right  */
+    hline(0,   0,   295);   /* top    */
+    hline(0,   127, 295);   /* bottom */
+    vline(0,   0,   127);   /* left   */
+    vline(295, 0,   127);   /* right  */
 
     /* ── Header (y 2..14) ── */
     if (offline) {
@@ -1795,42 +1795,105 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
         }
     }
 
-    /* Header bottom hairline at y=15 */
-    hline(2, 15, 292);
+    /* Header bottom hairline at y=14 */
+    hline(1, 14, 293);
 
-    static const provider_layout_t compact_provider = {
-        .title_row_h = 10,
-        .row_gap = 0,
-        .bar_row_h = 11,
-        .bar_h = 9,
-        .seg_w = 3,
-        .row_label_w = 18,
-        .pct_w = 28,
-    };
+    struct provider_info {
+        const char *label;
+        int ses;
+        int wk;
+        int ses_reset;
+        int wk_reset;
+        const extra_usage_t *extra;
+        bool auth_err;
+        bool reached;
+    } active_providers[3];
+    int num_providers = 0;
+
+    if (data->claude_present) {
+        active_providers[num_providers++] = (struct provider_info){
+            .label = "CLAUDE", .ses = claude_ses, .wk = claude_wk,
+            .ses_reset = data->claude.five_hour.reset_in_seconds,
+            .wk_reset = data->claude.weekly.reset_in_seconds,
+            .extra = &data->claude.extra_usage,
+            .auth_err = data->claude.auth_error,
+            .reached = false,
+        };
+    }
+    if (data->codex_present) {
+        active_providers[num_providers++] = (struct provider_info){
+            .label = "CODEX", .ses = codex_ses, .wk = codex_wk,
+            .ses_reset = data->codex.short_reset_in_seconds,
+            .wk_reset = data->codex.long_reset_in_seconds,
+            .extra = &data->codex.extra_usage,
+            .auth_err = data->codex.service_error,
+            .reached = data->codex.reached,
+        };
+    }
+    if (data->antigravity_present) {
+        active_providers[num_providers++] = (struct provider_info){
+            .label = "AGY", .ses = data->antigravity.short_pct, .wk = data->antigravity.long_pct,
+            .ses_reset = data->antigravity.short_reset_in_seconds,
+            .wk_reset = data->antigravity.long_reset_in_seconds,
+            .extra = &data->antigravity.extra_usage,
+            .auth_err = data->antigravity.service_error,
+            .reached = data->antigravity.reached,
+        };
+    }
+
+    provider_layout_t layout;
+    int y_start, y_step;
+
+    if (num_providers == 3) {
+        layout = (provider_layout_t){
+            .title_row_h = 8,
+            .row_gap = 0,
+            .bar_row_h = 8,
+            .bar_h = 6,
+            .seg_w = 3,
+            .row_label_w = 18,
+            .pct_w = 28,
+        };
+        y_start = 17;
+        y_step = 36;
+    } else {
+        layout = (provider_layout_t){
+            .title_row_h = 10,
+            .row_gap = 0,
+            .bar_row_h = 11,
+            .bar_h = 9,
+            .seg_w = 3,
+            .row_label_w = 18,
+            .pct_w = 28,
+        };
+        y_start = 20;
+        y_step = 54;
+    }
+
     if (show_github) {
         /* Column divider at x=106. The narrower GitHub column leaves more
          * room for provider bars and their reset countdowns. */
-        vline(106, 16, 110);
+        vline(106, 15, 111);
 
         /* ── Left column — GitHub counters ── */
         char v[8];
         if (github_err) {
             draw_github_error_column(auth_err ? "AUTH FAIL" : "OFFLINE", true);
         } else {
-            icon_github_mark(6, 19, 0);
-            draw_str(20, 22, "GH", 0);
+            icon_github_mark(6, 18, 0);
+            draw_str(20, 21, "GH", 0);
 
             format_count_value(v, sizeof(v), data->github.issues);
-            draw_icon_row(42, icon_issue, 0, "ISS", v, 0);
+            draw_icon_row(41, icon_issue, 0, "ISS", v, 0);
 
             format_count_value(v, sizeof(v), data->github.prs);
-            draw_icon_row(64, icon_pr, 0, "PR", v, 0);
+            draw_icon_row(63, icon_pr, 0, "PR", v, 0);
 
-            int dep_y = 86;
+            int dep_y = 85;
             if (data->github.notifications_present) {
                 format_count_value(v, sizeof(v), data->github.notifications);
-                draw_icon_row(86, icon_inbox, 0, "INBOX", v, 0);
-                dep_y = 108;
+                draw_icon_row(85, icon_inbox, 0, "INBOX", v, 0);
+                dep_y = 107;
             }
 
             if (deps_alert)
@@ -1840,41 +1903,31 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
             draw_icon_row(dep_y, icon_shield, deps_alert, "DEP", v, deps_alert);
         }
 
-        /* ── Right column — compact provider bars ── */
-        draw_provider(112, 22, 182, &compact_provider, "CLAUDE",
-                      claude_ses, claude_wk,
-                      data->claude.five_hour.reset_in_seconds,
-                      data->claude.weekly.reset_in_seconds,
-                      &data->claude.extra_usage,
-                      data->claude.auth_error);
-        draw_provider(112, 76, 182, &compact_provider, "CODEX",
-                      codex_ses, codex_wk,
-                      data->codex.short_reset_in_seconds,
-                      data->codex.long_reset_in_seconds,
-                      &data->codex.extra_usage,
-                      false);
+        /* ── Right column — dynamic provider bars ── */
+        for (int i = 0; i < num_providers; i++) {
+            draw_provider(112, y_start + (i * y_step), 182, &layout, active_providers[i].label,
+                          active_providers[i].ses, active_providers[i].wk,
+                          active_providers[i].ses_reset, active_providers[i].wk_reset,
+                          active_providers[i].extra, active_providers[i].auth_err);
+        }
     } else {
         /* GitHub integration disabled upstream: use the whole canvas for the
          * provider panels without changing their vertical placement. */
-        draw_provider(4, 22, 288, &compact_provider, "CLAUDE",
-                      claude_ses, claude_wk,
-                      data->claude.five_hour.reset_in_seconds,
-                      data->claude.weekly.reset_in_seconds,
-                      &data->claude.extra_usage,
-                      data->claude.auth_error);
-        draw_provider(4, 76, 288, &compact_provider, "CODEX",
-                      codex_ses, codex_wk,
-                      data->codex.short_reset_in_seconds,
-                      data->codex.long_reset_in_seconds,
-                      &data->codex.extra_usage,
-                      false);
+        for (int i = 0; i < num_providers; i++) {
+            draw_provider(4, y_start + (i * y_step), 288, &layout, active_providers[i].label,
+                          active_providers[i].ses, active_providers[i].wk,
+                          active_providers[i].ses_reset, active_providers[i].wk_reset,
+                          active_providers[i].extra, active_providers[i].auth_err);
+        }
     }
 
-    bool alert_requested = deps_alert || auth_err || github_err || offline
-           || claude_ses > 80 || claude_wk > 80
-           || codex_ses > 80  || codex_wk  > 80
-           || data->codex.reached
-           || data->claude.auth_error;
+    bool alert_requested = deps_alert || auth_err || github_err || offline;
+    for (int i = 0; i < num_providers; i++) {
+        if (active_providers[i].ses > 80 || active_providers[i].wk > 80 ||
+            active_providers[i].reached || active_providers[i].auth_err) {
+            alert_requested = true;
+        }
+    }
     if (alert_requested_out) *alert_requested_out = alert_requested;
 
     if (s_sleeping_mode) draw_sleeping_footer();

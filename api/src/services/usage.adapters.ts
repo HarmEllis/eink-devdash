@@ -1,6 +1,7 @@
 import type { DashboardMetric, DashboardService, DashboardServiceAdapter } from './dashboard-service.js'
 import { getClaudeUsage, type ExtraUsage } from './claude.service.js'
 import { getCodexUsage } from './codex.service.js'
+import { getAntigravityUsage, type AntigravityUsage } from './antigravity.service.js'
 import { DASHBOARD_LOCALE, currencySymbol, formatAmount, isSupportedCurrency } from './currency.js'
 
 type ClaudeRateLimit = {
@@ -139,6 +140,43 @@ export function serviceFromCodexUsage(usage: CodexUsage): DashboardService {
   return service
 }
 
+export function serviceFromAntigravityUsage(usage: AntigravityUsage): DashboardService {
+  const service: DashboardService = {
+    id: 'antigravity',
+    kind: 'usage',
+    provider: 'antigravity',
+    label: 'AGY',
+    status: usage.status,
+    windows: [
+      {
+        id: 'short',
+        label: usage.short.label,
+        usedPercent: usage.short.usedPercent,
+        resetsAt: usage.short.resetsAt,
+        resetInSeconds: usage.short.resetInSeconds,
+        reachedLimit: usage.reachedLimit === 'short',
+      },
+      {
+        id: 'long',
+        label: usage.long.label,
+        usedPercent: usage.long.usedPercent,
+        resetsAt: usage.long.resetsAt,
+        resetInSeconds: usage.long.resetInSeconds,
+        reachedLimit: usage.reachedLimit === 'long',
+      },
+    ],
+  }
+
+  const metric = extraUsageMetric(
+    usage.spend != null && usage.spend > 0
+      ? { amount: usage.spend, percent: null, limit: null, currency: 'USD' }
+      : null,
+  )
+  if (metric) service.metrics = [metric]
+
+  return service
+}
+
 export function createClaudeUsageAdapter(
   options: UsageAdapterOptions<ClaudeUsage> = {},
 ): DashboardServiceAdapter {
@@ -163,9 +201,24 @@ export function createCodexUsageAdapter(
   }
 }
 
+export function createAntigravityUsageAdapter(
+  options: UsageAdapterOptions<AntigravityUsage> = {},
+): DashboardServiceAdapter {
+  return {
+    id: 'antigravity',
+    async getService(signal?: AbortSignal) {
+      const usage = await (options.getUsage ?? getAntigravityUsage)(signal)
+      if (usage.status === 'unavailable') return null
+      return serviceFromAntigravityUsage(usage)
+    },
+  }
+}
+
 export function createUsageAdapters(): DashboardServiceAdapter[] {
-  return [
+  const adapters = [
     createClaudeUsageAdapter(),
     createCodexUsageAdapter(),
+    createAntigravityUsageAdapter(),
   ]
+  return adapters
 }

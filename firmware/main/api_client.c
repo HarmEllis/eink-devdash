@@ -312,6 +312,7 @@ static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
     }
 
     const cJSON *cl = find_service(root, "claude");
+    out->claude_present = cl != NULL;
     if (cl) {
         const cJSON *fh = service_window(cl, "fiveHour");
         out->claude.five_hour.used             = json_int(fh, "used");
@@ -328,6 +329,7 @@ static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
     }
 
     const cJSON *cx = find_service(root, "codex");
+    out->codex_present = cx != NULL;
     if (cx) {
         const cJSON *short_window = service_window(cx, "short");
         const cJSON *long_window  = service_window(cx, "long");
@@ -338,7 +340,24 @@ static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
         out->codex.long_reset_in_seconds  = json_int(long_window,  "resetInSeconds");
         out->codex.reached = json_bool(short_window, "reachedLimit") ||
                              json_bool(long_window, "reachedLimit");
+        out->codex.service_error = service_auth_error(cx) || service_error(cx);
         parse_extra_usage(cx, &out->codex.extra_usage);
+    }
+
+    const cJSON *ag = find_service(root, "antigravity");
+    out->antigravity_present = ag != NULL;
+    if (ag) {
+        const cJSON *short_window = service_window(ag, "short");
+        const cJSON *long_window  = service_window(ag, "long");
+
+        out->antigravity.short_pct = round_percent(json_double(short_window, "usedPercent"));
+        out->antigravity.long_pct  = round_percent(json_double(long_window,  "usedPercent"));
+        out->antigravity.short_reset_in_seconds = json_int(short_window, "resetInSeconds");
+        out->antigravity.long_reset_in_seconds  = json_int(long_window,  "resetInSeconds");
+        out->antigravity.reached = json_bool(short_window, "reachedLimit") ||
+                                   json_bool(long_window, "reachedLimit");
+        out->antigravity.service_error = service_auth_error(ag) || service_error(ag);
+        parse_extra_usage(ag, &out->antigravity.extra_usage);
     }
 }
 
