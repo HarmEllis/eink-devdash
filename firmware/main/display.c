@@ -643,23 +643,6 @@ static void icon_big_cross_red(int ox, int oy)
     }
 }
 
-static void icon_warning_big(int ox, int oy, int use_red)
-{
-    for (int y = 0; y < 24; y++) {
-        int inset = (23 - y) / 2;
-        int w = 24 - inset * 2;
-        if (w <= 0) continue;
-        if (y == 23 || y > 18) {
-            fill_rect(ox + inset, oy + y, w, 1, 1, use_red);
-        } else {
-            fill_rect(ox + inset, oy + y, 1, 1, 1, use_red);
-            fill_rect(ox + inset + w - 1, oy + y, 1, 1, 1, use_red);
-        }
-    }
-    fill_rect(ox + 11, oy + 8, 2, 8, 1, use_red);
-    fill_rect(ox + 11, oy + 19, 2, 2, 1, use_red);
-}
-
 /* ── segmented bar ──────────────────────────────────────────────────────── */
 /* Filled segments past the 80% threshold render red when pct > 80. Empty
  * segments are hollow 1-px black boxes. */
@@ -716,126 +699,195 @@ static void format_reset_countdown(char *out, size_t out_sz, int seconds)
     else        snprintf(out, out_sz, "%dd%dh", d, h);
 }
 
+typedef enum {
+    PROVIDER_LOGO_SPARK,
+    PROVIDER_LOGO_RING,
+    PROVIDER_LOGO_LIFT,
+    PROVIDER_LOGO_DIAMOND,
+} provider_logo_t;
+
 typedef struct {
-    int title_row_h;
-    int row_gap;
-    int bar_row_h;
-    int bar_h;
-    int seg_w;
-    int row_label_w;
-    int pct_w;
-} provider_layout_t;
+    const char *label;
+    provider_logo_t logo;
+    const char *ses_label;
+    const char *wk_label;
+    int ses;
+    int wk;
+    int ses_reset;
+    int wk_reset;
+    const extra_usage_t *extra;
+    bool auth_err;
+    bool reached;
+} provider_info_t;
 
-/* ── provider bar block ─────────────────────────────────────────────────── */
-/* V3 updated layout. Compact mode sits next to the GitHub column; wide mode
- * spans the full panel when the API response has no GitHub object. */
-static void draw_provider(int ox, int oy, int width, const provider_layout_t *layout,
-                          const char *title, int ses, int wk,
-                          int ses_reset_s, int wk_reset_s,
-                          const extra_usage_t *extra,
-                          bool auth_err)
+static provider_logo_t provider_logo_from_name(const char *name)
 {
-    char pct_s[8], ses_s[8], wk_s[8];
+    if (name && strcmp(name, "spark") == 0) return PROVIDER_LOGO_SPARK;
+    if (name && strcmp(name, "ring") == 0) return PROVIDER_LOGO_RING;
+    if (name && strcmp(name, "lift") == 0) return PROVIDER_LOGO_LIFT;
+    return PROVIDER_LOGO_DIAMOND;
+}
 
-    draw_str(ox, oy, title, auth_err);
-
-    if (auth_err) {
-        snprintf(ses_s, sizeof(ses_s), "--");
-        snprintf(wk_s,  sizeof(wk_s),  "--");
-    } else {
-        format_reset_countdown(ses_s, sizeof(ses_s), ses_reset_s);
-        format_reset_countdown(wk_s,  sizeof(wk_s),  wk_reset_s);
-    }
-
-    const int text_gap = 2;
-    const int hg_gap   = 4;
-    const int hg_w     = 7;
-    int right = ox + width - 2;
-    int x_wk    = right - str_w(wk_s);
-    int x_slash = x_wk - text_gap - str_w("/");
-    int x_ses   = x_slash - text_gap - str_w(ses_s);
-    int x_hg    = x_ses - hg_gap - hg_w;
-    icon_hourglass(x_hg, oy, auth_err);
-    draw_str(x_ses,   oy, ses_s, auth_err || ses > 80);
-    draw_str(x_slash, oy, "/",   auth_err);
-    draw_str(x_wk,    oy, wk_s,  auth_err || wk  > 80);
-
-    int bar_x = ox + layout->row_label_w;
-    int bar_w = width - layout->row_label_w - layout->pct_w;
-    int ses_y = oy + layout->title_row_h + layout->row_gap;
-    int wk_y  = ses_y + layout->bar_row_h + 2;
-    int bar_dy = (layout->bar_row_h - layout->bar_h) / 2;
-
-    draw_str(ox, ses_y + 2, "5H", auth_err);
-    draw_bar_cfg(bar_x, ses_y + bar_dy, bar_w, layout->bar_h, layout->seg_w,
-                 auth_err ? 0 : ses);
-    if (auth_err) {
-        snprintf(pct_s, sizeof(pct_s), "ERR");
-    } else {
-        snprintf(pct_s, sizeof(pct_s), "%d%%", ses);
-    }
-    draw_str(ox + width - str_w(pct_s) - 2, ses_y + 2, pct_s, auth_err || ses > 80);
-
-    draw_str(ox, wk_y + 2, "WK", auth_err);
-    draw_bar_cfg(bar_x, wk_y + bar_dy, bar_w, layout->bar_h, layout->seg_w,
-                 auth_err ? 0 : wk);
-    if (auth_err) {
-        snprintf(pct_s, sizeof(pct_s), "ERR");
-    } else {
-        snprintf(pct_s, sizeof(pct_s), "%d%%", wk);
-    }
-    draw_str(ox + width - str_w(pct_s) - 2, wk_y + 2, pct_s, auth_err || wk > 80);
-
-    if (extra && extra->present) {
-        /* Extra-usage row: [currency symbol] [bar = % of monthly cap] [amount].
-           The bar uses the real utilization percent; when that is absent (env
-           override) it falls back to an amount-capped fill. */
-        /* Prefer the API's preformatted, locale-aware amount; only format the
-           numeric value ourselves when it is absent (older API / rejected). */
-        char amount_s[16];
-        if (extra->value_text[0] != '\0') {
-            snprintf(amount_s, sizeof(amount_s), "%s", extra->value_text);
-        } else {
-            format_spend_amount(amount_s, sizeof(amount_s), extra->amount,
-                                 extra->currency);
+static void icon_provider_logo(int ox, int oy, provider_logo_t logo,
+                               int scale, int use_red)
+{
+    static const uint8_t rows[][7] = {
+        { 0x49, 0x2A, 0x1C, 0x77, 0x1C, 0x2A, 0x49 },
+        { 0x1C, 0x22, 0x41, 0x41, 0x41, 0x22, 0x1C },
+        { 0x08, 0x00, 0x08, 0x14, 0x22, 0x41, 0x7F },
+        { 0x08, 0x14, 0x22, 0x41, 0x22, 0x14, 0x08 },
+    };
+    const uint8_t *bitmap = rows[logo];
+    for (int y = 0; y < 7; y++) {
+        for (int x = 0; x < 7; x++) {
+            if (bitmap[y] & (1u << (6 - x))) {
+                fill_rect(ox + x * scale, oy + y * scale,
+                          scale, scale, 1, use_red);
+            }
         }
-        bool has_spend = extra->amount > 0;
-
-        int bar_pct;
-        if (extra->percent_present) {
-            bar_pct = extra->percent;
-        } else {
-            int amt = (int)(extra->amount + 0.5);
-            bar_pct = amt < 0 ? 0 : (amt > 100 ? 100 : amt);
-        }
-
-        int spend_y = wk_y + layout->bar_row_h + 1;
-        /* The amount can be wider than the fixed pct column (e.g. "12.34" is
-           30px vs pct_w=28px), so shrink the bar to end just before it rather
-           than letting the text overlap the final segment. Never let it grow
-           past the session/week bars above: cap at bar_w so a short amount
-           leaves this bar at most as wide as the other two, never wider. */
-        int amount_x = ox + width - str_w(amount_s) - 2;
-        int spend_bar_w = amount_x - 2 - bar_x;
-        if (spend_bar_w > bar_w) spend_bar_w = bar_w;
-        if (spend_bar_w < 0) spend_bar_w = 0;
-        draw_currency_symbol(ox, spend_y + 1, extra->currency, auth_err);
-        draw_bar_cfg_ex(bar_x, spend_y + bar_dy, spend_bar_w, layout->bar_h,
-                        layout->seg_w, bar_pct, has_spend);
-        draw_str(amount_x, spend_y + 1, amount_s, auth_err || has_spend);
     }
 }
 
-/* ── icon row (left column) ─────────────────────────────────────────────── */
-/* Each row is 16 px tall; icon centered at y+3, label/value at y+4. */
-static void draw_icon_row(int row_y,
-                          void (*icon_fn)(int, int, int), int icon_red,
-                          const char *label,
-                          const char *value, int value_red)
+static void provider_reset_strings(const provider_info_t *provider,
+                                   char *ses, size_t ses_sz,
+                                   char *wk, size_t wk_sz)
 {
-    icon_fn(6, row_y + 3, icon_red);
-    draw_str(22, row_y + 4, label, 0);
-    draw_str(102 - str_w(value), row_y + 4, value, value_red);
+    if (provider->auth_err) {
+        snprintf(ses, ses_sz, "--");
+        snprintf(wk, wk_sz, "--");
+        return;
+    }
+    format_reset_countdown(ses, ses_sz, provider->ses_reset);
+    format_reset_countdown(wk, wk_sz, provider->wk_reset);
+}
+
+static void draw_provider_title(int ox, int oy, int width,
+                                const provider_info_t *provider,
+                                bool show_hourglass)
+{
+    char ses[8], wk[8], resets[20];
+    provider_reset_strings(provider, ses, sizeof(ses), wk, sizeof(wk));
+    snprintf(resets, sizeof(resets), "%s/%s", ses, wk);
+
+    icon_provider_logo(ox, oy, provider->logo, 1, provider->auth_err);
+    draw_str(ox + 11, oy, provider->label, provider->auth_err);
+
+    int reset_x = ox + width - str_w(resets);
+    if (show_hourglass) {
+        int hourglass_x = reset_x - 10;
+        icon_hourglass(hourglass_x, oy, provider->auth_err);
+    }
+    draw_str(reset_x, oy, resets,
+             provider->auth_err || provider->ses > 80 || provider->wk > 80);
+}
+
+static void draw_provider_percent_row(int ox, int oy, int width,
+                                      const char *label, int pct,
+                                      int label_w,
+                                      int bar_h, int seg_w,
+                                      bool auth_err)
+{
+    char value[8];
+    snprintf(value, sizeof(value), auth_err ? "ERR" : "%d%%", pct);
+    int bar_x = ox + label_w;
+    int value_x = ox + width - str_w(value);
+    int bar_w = value_x - 2 - bar_x;
+    if (bar_w < 0) bar_w = 0;
+
+    draw_str(ox, oy, label, auth_err);
+    draw_bar_cfg(bar_x, oy, bar_w, bar_h, seg_w, auth_err ? 0 : pct);
+    draw_str(value_x, oy, value, auth_err || pct > 80);
+}
+
+static void draw_provider_extra_row(int ox, int oy, int width,
+                                    const extra_usage_t *extra,
+                                    int label_w, int bar_h, int seg_w,
+                                    bool auth_err)
+{
+    if (!extra || !extra->present) return;
+
+    char amount[16];
+    if (extra->value_text[0] != '\0') {
+        snprintf(amount, sizeof(amount), "%s", extra->value_text);
+    } else {
+        format_spend_amount(amount, sizeof(amount), extra->amount,
+                            extra->currency);
+    }
+
+    int pct;
+    if (extra->percent_present) {
+        pct = extra->percent;
+    } else {
+        int rounded = (int)(extra->amount + 0.5);
+        pct = rounded < 0 ? 0 : (rounded > 100 ? 100 : rounded);
+    }
+
+    int bar_x = ox + label_w;
+    int amount_x = ox + width - str_w(amount);
+    int bar_w = amount_x - 2 - bar_x;
+    if (bar_w < 0) bar_w = 0;
+    draw_currency_symbol(ox, oy, extra->currency, auth_err);
+    draw_bar_cfg_ex(bar_x, oy, bar_w, bar_h, seg_w, pct,
+                    extra->amount > 0);
+    draw_str(amount_x, oy, amount, auth_err || extra->amount > 0);
+}
+
+static void draw_provider_grid(int ox, int oy, int width,
+                               const provider_info_t *provider)
+{
+    draw_provider_title(ox, oy, width, provider, false);
+    draw_provider_percent_row(ox, oy + 13, width, provider->ses_label, provider->ses,
+                              15, 6, 3, provider->auth_err);
+    draw_provider_percent_row(ox, oy + 22, width, provider->wk_label, provider->wk,
+                              15, 6, 3, provider->auth_err);
+    draw_provider_extra_row(ox, oy + 31, width, provider->extra,
+                            15, 6, 3, provider->auth_err);
+}
+
+static void draw_provider_row(int ox, int oy, int width,
+                              const provider_info_t *provider)
+{
+    draw_provider_title(ox, oy, width, provider, true);
+    draw_provider_percent_row(ox, oy + 14, width, provider->ses_label, provider->ses,
+                              18, 8, 3, provider->auth_err);
+    draw_provider_percent_row(ox, oy + 23, width, provider->wk_label, provider->wk,
+                              18, 8, 3, provider->auth_err);
+    draw_provider_extra_row(ox, oy + 32, width, provider->extra,
+                            18, 8, 3, provider->auth_err);
+}
+
+static void draw_provider_hero(int ox, int oy, int width,
+                               const provider_info_t *provider)
+{
+    char ses[8], wk[8], resets[20];
+    provider_reset_strings(provider, ses, sizeof(ses), wk, sizeof(wk));
+    snprintf(resets, sizeof(resets), "%s/%s", ses, wk);
+
+    icon_provider_logo(ox, oy, provider->logo, 3, provider->auth_err);
+    draw_str2x(ox + 29, oy + 3, provider->label, provider->auth_err);
+    int reset_x = ox + width - str_w(resets);
+    icon_hourglass(reset_x - 10, oy + 7, provider->auth_err);
+    draw_str(reset_x, oy + 7, resets,
+             provider->auth_err || provider->ses > 80 || provider->wk > 80);
+
+    draw_provider_percent_row(ox, oy + 28, width, provider->ses_label, provider->ses,
+                              26, 12, 4, provider->auth_err);
+    draw_provider_percent_row(ox, oy + 47, width, provider->wk_label, provider->wk,
+                              26, 12, 4, provider->auth_err);
+    draw_provider_extra_row(ox, oy + 66, width, provider->extra,
+                            26, 12, 4, provider->auth_err);
+}
+
+static void draw_github_strip_chip(int icon_x,
+                                   void (*icon)(int,int,int),
+                                   const char *label,
+                                   const char *value,
+                                   int value_right,
+                                   bool use_red)
+{
+    icon(icon_x, 18, use_red);
+    draw_str(icon_x + 14, 20, label, 0);
+    draw_str(value_right - str_w(value), 20, value, use_red);
 }
 
 static void format_count_value(char *out, size_t out_sz, int value)
@@ -847,13 +899,38 @@ static void format_count_value(char *out, size_t out_sz, int value)
     }
 }
 
-static void draw_github_error_column(const char *label, bool use_red)
+static void draw_github_strip(const github_data_t *github)
 {
-    icon_github_mark(6, 19, use_red);
-    draw_str(20, 22, "GH", use_red);
+    char issues[8], prs[8], inbox[8], deps[8];
+    bool error = github->auth_error || github->service_error;
 
-    icon_warning_big(51, 64, use_red);
-    draw_str(54 - str_w(label) / 2, 94, label, use_red);
+    icon_github_mark(5, 18, error);
+    draw_str(19, 20, "GH", error);
+    if (error) {
+        const char *label = github->auth_error ? "AUTH FAIL" : "OFFLINE";
+        draw_str(290 - str_w(label), 20, label, 1);
+        hline(2, 32, 292);
+        return;
+    }
+
+    format_count_value(issues, sizeof(issues), github->issues);
+    format_count_value(prs, sizeof(prs), github->prs);
+    format_count_value(inbox, sizeof(inbox), github->notifications);
+    if (github->dependabot > 0) {
+        format_count_value(deps, sizeof(deps), github->dependabot);
+        strlcat(deps, "!", sizeof(deps));
+    } else {
+        format_count_value(deps, sizeof(deps), github->dependabot);
+    }
+
+    draw_github_strip_chip(38, icon_issue, "ISS", issues, 94, false);
+    draw_github_strip_chip(97, icon_pr, "PR", prs, 148, false);
+    if (github->notifications_present) {
+        draw_github_strip_chip(151, icon_inbox, "INBOX", inbox, 226, false);
+    }
+    draw_github_strip_chip(229, icon_shield, "DEP", deps, 291,
+                           github->dependabot > 0);
+    hline(2, 32, 292);
 }
 
 /* ── device handle ──────────────────────────────────────────────────────── */
@@ -861,14 +938,21 @@ static eink_handle_t s_eink;
 static bool          s_initialized        = false;
 
 /* Refresh-cycle state lives in RTC slow memory: survives deep-sleep timer
- * wakeups (so the per-region differential refresh stays valid across naps) but
- * resets on power-on / external reset (where the panel content is undefined
- * anyway and we want a FULL_COLOR refresh). */
+ * wakeups and software restarts (so differential refresh stays valid across
+ * naps), but resets on cold boot / power loss where panel state is undefined.
+ * DISPLAY_RTC_STATE_MAGIC invalidates this cache when its in-memory ABI changes
+ * across an OTA. */
 static RTC_DATA_ATTR bool    s_first_refresh_done = false;
 static RTC_DATA_ATTR bool    s_last_red_state      = false;
 static RTC_DATA_ATTR bool    s_last_content_valid  = false;
 static RTC_DATA_ATTR bool    s_last_bw_valid       = false;
 static RTC_DATA_ATTR bool    s_last_data_valid     = false;
+#define DISPLAY_RTC_STATE_MAGIC 0x44563432u
+/* Keep this marker before dashboard_data_t. When that struct changes across an
+   OTA, this address previously held its schema_version field, so the new magic
+   cannot accidentally validate the old RTC layout. Change the magic whenever
+   the cached data shape or partial-refresh region contract changes. */
+static RTC_DATA_ATTR uint32_t s_display_rtc_state_magic;
 static RTC_DATA_ATTR dashboard_data_t s_last_data;
 static RTC_DATA_ATTR uint8_t s_last_bw_buf[EINK_BUF_SIZE];
 static int64_t s_last_full_refresh_us = 0;
@@ -903,9 +987,9 @@ static eink_panel_variant_t s_panel_variant = EINK_PANEL_WEACT_29_BWR;
 static bool                 s_variant_known = false;
 static uint8_t              s_refresh_min   = CONFIG_DEVDASH_REFRESH_MIN;
 
-/* Per-region partial machinery (BW path). REGION_COUNT_MAX is the
-   maximum of Layout A (7 regions) and Layout B (3 regions); the active
-   layout fills the prefix and the unused tail stays zero-initialised. */
+/* Per-region partial machinery (BW path). The active V4 layouts use at most six
+   entries. Keep the historical capacity of seven so OTA does not shift the RTC
+   variables that follow this array. */
 #define REGION_COUNT_MAX 7
 static RTC_DATA_ATTR uint8_t  s_region_partial_count[REGION_COUNT_MAX];
 static RTC_DATA_ATTR uint8_t  s_offline_partial_count;
@@ -930,22 +1014,24 @@ typedef struct {
     int lx, ly, lw, lh;
 } region_logical_t;
 
-/* Layout A — show_github == true (7 regions). */
+/* V4 GitHub-strip layout. The four provider cells remain separate partial
+   regions so an unchanged quota group does not need another panel update. */
 static const region_logical_t s_regions_with_github[] = {
-    {   0,  0, 296, 16 },  /* header_clock: branding / sync / updated / status */
-    {   0, 16, 110, 24 },  /* gh_title */
-    {   0, 40, 110, 24 },  /* gh_issues */
-    {   0, 64, 110, 24 },  /* gh_prs */
-    {   0, 88, 110, 24 },  /* gh_inbox */
-    {   0,112, 110, 16 },  /* gh_deps */
-    { 110, 16, 186,112 },  /* providers: CLAUDE / CODEX compact columns */
+    {   0,  0, 296, 16 },  /* header */
+    {   0, 16, 296, 16 },  /* GitHub strip */
+    {   0, 32, 148, 48 },  /* provider top-left */
+    { 148, 32, 148, 48 },  /* provider top-right */
+    {   0, 80, 148, 48 },  /* provider bottom-left */
+    { 148, 80, 148, 48 },  /* provider bottom-right */
 };
 
-/* Layout B — show_github == false (3 regions). */
+/* No-GitHub layout uses the same 2x2 provider grid with taller rows. */
 static const region_logical_t s_regions_no_github[] = {
-    { 0,  0, 296, 16 },   /* header_clock */
-    { 0, 16, 296, 56 },   /* provider_top: CLAUDE wide row */
-    { 0, 72, 296, 56 },   /* provider_bot: CODEX wide row  */
+    {   0,  0, 296, 16 },  /* header */
+    {   0, 16, 148, 56 },  /* provider top-left */
+    { 148, 16, 148, 56 },  /* provider top-right */
+    {   0, 72, 148, 56 },  /* provider bottom-left */
+    { 148, 72, 148, 56 },  /* provider bottom-right */
 };
 
 static eink_panel_variant_t effective_panel_variant(void)
@@ -1088,6 +1174,29 @@ static void disp_meta_set_last_full(uint32_t v)
     s_last_full_wall_s = v;
 }
 
+static void validate_display_rtc_state(void)
+{
+    if (s_display_rtc_state_magic == DISPLAY_RTC_STATE_MAGIC) return;
+
+    ESP_LOGI(TAG, "Display RTC state layout changed; invalidating refresh cache");
+    s_first_refresh_done = false;
+    s_last_red_state = false;
+    s_last_content_valid = false;
+    s_last_bw_valid = false;
+    s_last_data_valid = false;
+    memset(&s_last_data, 0, sizeof(s_last_data));
+    memset(s_last_bw_buf, 0, sizeof(s_last_bw_buf));
+    s_force_full_next_render = false;
+    memset(s_region_partial_count, 0, sizeof(s_region_partial_count));
+    s_offline_partial_count = 0;
+    s_force_full_refresh = false;
+    s_renders_since_full = 0;
+    s_last_dashboard_show_github = false;
+    s_last_dashboard_layout_valid = false;
+    s_last_full_wall_s = 0;
+    s_display_rtc_state_magic = DISPLAY_RTC_STATE_MAGIC;
+}
+
 void display_force_full_refresh_next(void)
 {
     s_force_full_refresh = true;
@@ -1111,6 +1220,8 @@ void display_set_max_partials(uint8_t max_partials)
 
 void display_set_panel_variant(eink_panel_variant_t v)
 {
+    validate_display_rtc_state();
+
     const eink_panel_variant_t old_raw = s_panel_variant;
     const bool                 was_known = s_variant_known;
     const eink_panel_variant_t old_eff =
@@ -1393,6 +1504,7 @@ static void draw_unreachable_poster(display_offline_reason_t reason,
 
 static void ensure_init(void)
 {
+    validate_display_rtc_state();
     if (!s_initialized) {
         ESP_ERROR_CHECK(eink_init(&s_eink, effective_panel_variant()));
         s_initialized = true;
@@ -1730,14 +1842,6 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     memset(bw_buf,  0xFF, sizeof(bw_buf));   /* all white */
     memset(red_buf, 0x00, sizeof(red_buf));  /* no red    */
 
-    /* Derive percentages from raw counts */
-    int claude_ses = (data->claude.five_hour.limit > 0)
-        ? data->claude.five_hour.used * 100 / data->claude.five_hour.limit : 0;
-    int claude_wk  = (data->claude.weekly.limit > 0)
-        ? data->claude.weekly.used  * 100 / data->claude.weekly.limit  : 0;
-    int codex_ses  = data->codex.short_pct;
-    int codex_wk   = data->codex.long_pct;
-
     bool offline    = data->offline;
     bool show_github = data->github_present;
     bool deps_alert = show_github && data->github.dependabot > 0;
@@ -1798,126 +1902,51 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     /* Header bottom hairline at y=14 */
     hline(1, 14, 293);
 
-    struct provider_info {
-        const char *label;
-        int ses;
-        int wk;
-        int ses_reset;
-        int wk_reset;
-        const extra_usage_t *extra;
-        bool auth_err;
-        bool reached;
-    } active_providers[3];
-    int num_providers = 0;
-
-    if (data->claude_present) {
-        active_providers[num_providers++] = (struct provider_info){
-            .label = "CLAUDE", .ses = claude_ses, .wk = claude_wk,
-            .ses_reset = data->claude.five_hour.reset_in_seconds,
-            .wk_reset = data->claude.weekly.reset_in_seconds,
-            .extra = &data->claude.extra_usage,
-            .auth_err = data->claude.auth_error,
-            .reached = false,
-        };
+    provider_info_t active_providers[4];
+    int num_providers = data->usage_count;
+    if (num_providers > DASH_MAX_USAGE_SERVICES) {
+        num_providers = DASH_MAX_USAGE_SERVICES;
     }
-    if (data->codex_present) {
-        active_providers[num_providers++] = (struct provider_info){
-            .label = "CODEX", .ses = codex_ses, .wk = codex_wk,
-            .ses_reset = data->codex.short_reset_in_seconds,
-            .wk_reset = data->codex.long_reset_in_seconds,
-            .extra = &data->codex.extra_usage,
-            .auth_err = data->codex.service_error,
-            .reached = data->codex.reached,
-        };
-    }
-    if (data->antigravity_present) {
-        active_providers[num_providers++] = (struct provider_info){
-            .label = "AGY", .ses = data->antigravity.short_pct, .wk = data->antigravity.long_pct,
-            .ses_reset = data->antigravity.short_reset_in_seconds,
-            .wk_reset = data->antigravity.long_reset_in_seconds,
-            .extra = &data->antigravity.extra_usage,
-            .auth_err = data->antigravity.service_error,
-            .reached = data->antigravity.reached,
+    for (int i = 0; i < num_providers; i++) {
+        const usage_service_data_t *service = &data->usage[i];
+        const usage_window_data_t *short_window = &service->windows[0];
+        const usage_window_data_t *long_window = &service->windows[1];
+        active_providers[i] = (provider_info_t){
+            .label = service->label,
+            .logo = provider_logo_from_name(service->icon),
+            .ses_label = service->window_count > 0 ? short_window->label : "--",
+            .wk_label = service->window_count > 1 ? long_window->label : "--",
+            .ses = service->window_count > 0 ? short_window->used_pct : 0,
+            .wk = service->window_count > 1 ? long_window->used_pct : 0,
+            .ses_reset = service->window_count > 0
+                ? short_window->reset_in_seconds : 0,
+            .wk_reset = service->window_count > 1
+                ? long_window->reset_in_seconds : 0,
+            .extra = &service->extra_usage,
+            .auth_err = service->service_error,
+            .reached = (service->window_count > 0 && short_window->reached) ||
+                       (service->window_count > 1 && long_window->reached),
         };
     }
 
-    provider_layout_t layout;
-    int y_start, y_step;
+    if (show_github) draw_github_strip(&data->github);
 
-    if (num_providers == 3) {
-        layout = (provider_layout_t){
-            .title_row_h = 8,
-            .row_gap = 0,
-            .bar_row_h = 8,
-            .bar_h = 6,
-            .seg_w = 3,
-            .row_label_w = 18,
-            .pct_w = 28,
-        };
-        y_start = 17;
-        y_step = 36;
-    } else {
-        layout = (provider_layout_t){
-            .title_row_h = 10,
-            .row_gap = 0,
-            .bar_row_h = 11,
-            .bar_h = 9,
-            .seg_w = 3,
-            .row_label_w = 18,
-            .pct_w = 28,
-        };
-        y_start = 20;
-        y_step = 54;
-    }
-
-    if (show_github) {
-        /* Column divider at x=106. The narrower GitHub column leaves more
-         * room for provider bars and their reset countdowns. */
-        vline(106, 15, 111);
-
-        /* ── Left column — GitHub counters ── */
-        char v[8];
-        if (github_err) {
-            draw_github_error_column(auth_err ? "AUTH FAIL" : "OFFLINE", true);
-        } else {
-            icon_github_mark(6, 18, 0);
-            draw_str(20, 21, "GH", 0);
-
-            format_count_value(v, sizeof(v), data->github.issues);
-            draw_icon_row(41, icon_issue, 0, "ISS", v, 0);
-
-            format_count_value(v, sizeof(v), data->github.prs);
-            draw_icon_row(63, icon_pr, 0, "PR", v, 0);
-
-            int dep_y = 85;
-            if (data->github.notifications_present) {
-                format_count_value(v, sizeof(v), data->github.notifications);
-                draw_icon_row(85, icon_inbox, 0, "INBOX", v, 0);
-                dep_y = 107;
-            }
-
-            if (deps_alert)
-                snprintf(v, sizeof(v), "%d!", data->github.dependabot);
-            else
-                format_count_value(v, sizeof(v), data->github.dependabot);
-            draw_icon_row(dep_y, icon_shield, deps_alert, "DEP", v, deps_alert);
-        }
-
-        /* ── Right column — dynamic provider bars ── */
-        for (int i = 0; i < num_providers; i++) {
-            draw_provider(112, y_start + (i * y_step), 182, &layout, active_providers[i].label,
-                          active_providers[i].ses, active_providers[i].wk,
-                          active_providers[i].ses_reset, active_providers[i].wk_reset,
-                          active_providers[i].extra, active_providers[i].auth_err);
-        }
-    } else {
-        /* GitHub integration disabled upstream: use the whole canvas for the
-         * provider panels without changing their vertical placement. */
-        for (int i = 0; i < num_providers; i++) {
-            draw_provider(4, y_start + (i * y_step), 288, &layout, active_providers[i].label,
-                          active_providers[i].ses, active_providers[i].wk,
-                          active_providers[i].ses_reset, active_providers[i].wk_reset,
-                          active_providers[i].extra, active_providers[i].auth_err);
+    int body_top = show_github ? 37 : 19;
+    if (num_providers == 1) {
+        draw_provider_hero(6, body_top, 288, &active_providers[0]);
+    } else if (num_providers == 2) {
+        int second_y = show_github ? 82 : 73;
+        draw_provider_row(6, body_top, 288, &active_providers[0]);
+        hline(6, show_github ? 80 : 71, 282);
+        draw_provider_row(6, second_y, 288, &active_providers[1]);
+    } else if (num_providers >= 3) {
+        const int col_x[] = { 6, 156 };
+        const int row_y[] = { body_top, show_github ? 83 : 75 };
+        vline(148, show_github ? 35 : 17, show_github ? 90 : 108);
+        hline(6, show_github ? 81 : 72, 282);
+        for (int i = 0; i < num_providers && i < 4; i++) {
+            draw_provider_grid(col_x[i % 2], row_y[i / 2], 138,
+                               &active_providers[i]);
         }
     }
 
@@ -2156,11 +2185,7 @@ static void draw_boot_source_list(int lx, int ly)
     lx += str_w_adv("github", FONT_BOOT_W) + FONT_BOOT_W;
     fill_rect(lx + 1, ly + 3, 2, 2, 1, 0);
     lx += 2 * FONT_BOOT_W;
-    draw_str_adv(lx, ly, "claude", 1, FONT_BOOT_W);
-    lx += str_w_adv("claude", FONT_BOOT_W) + FONT_BOOT_W;
-    fill_rect(lx + 1, ly + 3, 2, 2, 1, 0);
-    lx += 2 * FONT_BOOT_W;
-    draw_str_adv(lx, ly, "codex", 1, FONT_BOOT_W);
+    draw_str_adv(lx, ly, "ai usage", 1, FONT_BOOT_W);
 }
 
 static const char *display_firmware_version(void)

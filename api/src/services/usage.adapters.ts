@@ -74,6 +74,7 @@ export function serviceFromClaudeUsage(usage: ClaudeUsage): DashboardService {
     kind: 'usage',
     provider: 'claude',
     label: 'Claude',
+    icon: 'spark',
     status: usage.authError ? 'auth_error' : 'ok',
     windows: [
       {
@@ -105,6 +106,7 @@ export function serviceFromCodexUsage(usage: CodexUsage): DashboardService {
     kind: 'usage',
     provider: 'codex',
     label: 'Codex',
+    icon: 'ring',
     status: usage.status,
     source: usage.source,
     planType: usage.planType,
@@ -140,41 +142,64 @@ export function serviceFromCodexUsage(usage: CodexUsage): DashboardService {
   return service
 }
 
-export function serviceFromAntigravityUsage(usage: AntigravityUsage): DashboardService {
-  const service: DashboardService = {
-    id: 'antigravity',
-    kind: 'usage',
-    provider: 'antigravity',
-    label: 'AGY',
-    status: usage.status,
-    windows: [
-      {
-        id: 'short',
-        label: usage.short.label,
-        usedPercent: usage.short.usedPercent,
-        resetsAt: usage.short.resetsAt,
-        resetInSeconds: usage.short.resetInSeconds,
-        reachedLimit: usage.reachedLimit === 'short',
-      },
-      {
-        id: 'long',
-        label: usage.long.label,
-        usedPercent: usage.long.usedPercent,
-        resetsAt: usage.long.resetsAt,
-        resetInSeconds: usage.long.resetInSeconds,
-        reachedLimit: usage.reachedLimit === 'long',
-      },
-    ],
-  }
+function antigravityWindows(
+  short: AntigravityUsage['short'],
+  long: AntigravityUsage['long'],
+  reachedLimit: AntigravityUsage['reachedLimit'],
+) {
+  return [
+    {
+      id: 'short',
+      label: short.label,
+      usedPercent: short.usedPercent,
+      resetsAt: short.resetsAt,
+      resetInSeconds: short.resetInSeconds,
+      reachedLimit: reachedLimit === 'short',
+    },
+    {
+      id: 'long',
+      label: long.label,
+      usedPercent: long.usedPercent,
+      resetsAt: long.resetsAt,
+      resetInSeconds: long.resetInSeconds,
+      reachedLimit: reachedLimit === 'long',
+    },
+  ]
+}
 
-  const metric = extraUsageMetric(
-    usage.spend != null && usage.spend > 0
-      ? { amount: usage.spend, percent: null, limit: null, currency: 'USD' }
-      : null,
-  )
-  if (metric) service.metrics = [metric]
+export function serviceFromAntigravityUsage(usage: AntigravityUsage): DashboardService[] {
+  const groups = usage.groups.length > 0
+    ? usage.groups
+    : [{
+        id: 'gemini' as const,
+        label: 'Antigravity',
+        short: usage.short,
+        long: usage.long,
+        reachedLimit: usage.reachedLimit,
+      }]
 
-  return service
+  return groups.map((group, index) => {
+    const service: DashboardService = {
+      id: index === 0 ? 'antigravity' : `antigravity-${group.id}`,
+      kind: 'usage',
+      provider: 'antigravity',
+      label: group.label,
+      icon: 'lift',
+      status: usage.status,
+      windows: antigravityWindows(group.short, group.long, group.reachedLimit),
+    }
+
+    if (index === 0) {
+      const metric = extraUsageMetric(
+        usage.spend != null && usage.spend > 0
+          ? { amount: usage.spend, percent: null, limit: null, currency: 'USD' }
+          : null,
+      )
+      if (metric) service.metrics = [metric]
+    }
+
+    return service
+  })
 }
 
 export function createClaudeUsageAdapter(
@@ -204,12 +229,18 @@ export function createCodexUsageAdapter(
 export function createAntigravityUsageAdapter(
   options: UsageAdapterOptions<AntigravityUsage> = {},
 ): DashboardServiceAdapter {
+  const readServices = async (signal?: AbortSignal) => {
+    const usage = await (options.getUsage ?? getAntigravityUsage)(signal)
+    if (usage.status === 'unavailable') return []
+    return serviceFromAntigravityUsage(usage)
+  }
   return {
     id: 'antigravity',
     async getService(signal?: AbortSignal) {
-      const usage = await (options.getUsage ?? getAntigravityUsage)(signal)
-      if (usage.status === 'unavailable') return null
-      return serviceFromAntigravityUsage(usage)
+      return (await readServices(signal))[0] ?? null
+    },
+    async getServices(signal?: AbortSignal) {
+      return readServices(signal)
     },
   }
 }

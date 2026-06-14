@@ -2,6 +2,7 @@ export const DASHBOARD_SCHEMA_VERSION = 2
 
 export type DashboardServiceKind = 'code-host' | 'usage'
 export type DashboardServiceStatus = 'ok' | 'unavailable' | 'auth_error' | 'error'
+export type DashboardServiceIcon = 'spark' | 'ring' | 'lift' | 'diamond' | 'generic'
 
 export type DashboardCounter = {
   id: string
@@ -40,6 +41,9 @@ export type DashboardService = {
   kind: DashboardServiceKind
   provider: string
   label: string
+  // Abstract display primitive, not a provider identity. Unknown/missing values
+  // fall back to the generic diamond in firmware.
+  icon?: DashboardServiceIcon
   status: DashboardServiceStatus
   counters?: DashboardCounter[]
   windows?: DashboardUsageWindow[]
@@ -51,4 +55,7 @@ export type DashboardService = {
 export type DashboardServiceAdapter = {
   id: string
   getService(signal?: AbortSignal): Promise<DashboardService | null>
+  // Providers with shared quota groups can emit multiple normal usage tiles
+  // from one upstream fetch.
+  getServices?(signal?: AbortSignal): Promise<DashboardService[]>
 }

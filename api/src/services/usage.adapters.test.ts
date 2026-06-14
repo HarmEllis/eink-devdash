@@ -20,6 +20,7 @@ test('serviceFromClaudeUsage maps Claude limits to a generic usage service', () 
       kind: 'usage',
       provider: 'claude',
       label: 'Claude',
+      icon: 'spark',
       status: 'ok',
       windows: [
         { id: 'fiveHour', label: '5h', used: 42, limit: 100, resetInSeconds: 300 },
@@ -91,6 +92,7 @@ test('serviceFromCodexUsage maps Codex limits to a generic usage service', () =>
       kind: 'usage',
       provider: 'codex',
       label: 'Codex',
+      icon: 'ring',
       status: 'ok',
       source: 'chatgpt',
       planType: 'plus',
@@ -148,32 +150,77 @@ test('serviceFromAntigravityUsage maps live quota windows and status', () => {
       short: { usedPercent: 100, label: '5h', resetsAt: 1779232450, resetInSeconds: 300 },
       long: { usedPercent: 34.2, label: '7d', resetsAt: 1779641619, resetInSeconds: 600 },
       reachedLimit: 'short',
-    }),
-    {
-      id: 'antigravity',
-      kind: 'usage',
-      provider: 'antigravity',
-      label: 'AGY',
-      status: 'ok',
-      windows: [
+      groups: [
         {
-          id: 'short',
-          label: '5h',
-          usedPercent: 100,
-          resetsAt: 1779232450,
-          resetInSeconds: 300,
-          reachedLimit: true,
+          id: 'gemini',
+          label: 'Gemini',
+          short: { usedPercent: 8, label: '5h', resetsAt: 1779232451, resetInSeconds: 301 },
+          long: { usedPercent: 12, label: '7d', resetsAt: 1779641620, resetInSeconds: 601 },
+          reachedLimit: null,
         },
         {
-          id: 'long',
-          label: '7d',
-          usedPercent: 34.2,
-          resetsAt: 1779641619,
-          resetInSeconds: 600,
-          reachedLimit: false,
+          id: 'claudeGpt',
+          label: 'Claude/GPT',
+          short: { usedPercent: 100, label: '5h', resetsAt: 1779232450, resetInSeconds: 300 },
+          long: { usedPercent: 34.2, label: '7d', resetsAt: 1779641619, resetInSeconds: 600 },
+          reachedLimit: 'short',
         },
       ],
-    },
+    }),
+    [
+      {
+        id: 'antigravity',
+        kind: 'usage',
+        provider: 'antigravity',
+        label: 'Gemini',
+        icon: 'lift',
+        status: 'ok',
+        windows: [
+          {
+            id: 'short',
+            label: '5h',
+            usedPercent: 8,
+            resetsAt: 1779232451,
+            resetInSeconds: 301,
+            reachedLimit: false,
+          },
+          {
+            id: 'long',
+            label: '7d',
+            usedPercent: 12,
+            resetsAt: 1779641620,
+            resetInSeconds: 601,
+            reachedLimit: false,
+          },
+        ],
+      },
+      {
+        id: 'antigravity-claudeGpt',
+        kind: 'usage',
+        provider: 'antigravity',
+        label: 'Claude/GPT',
+        icon: 'lift',
+        status: 'ok',
+        windows: [
+          {
+            id: 'short',
+            label: '5h',
+            usedPercent: 100,
+            resetsAt: 1779232450,
+            resetInSeconds: 300,
+            reachedLimit: true,
+          },
+          {
+            id: 'long',
+            label: '7d',
+            usedPercent: 34.2,
+            resetsAt: 1779641619,
+            resetInSeconds: 600,
+            reachedLimit: false,
+          },
+        ],
+      },
+    ],
   )
 })
 
@@ -184,6 +231,7 @@ test('Antigravity adapter is omitted when credentials are unavailable', async ()
       short: { usedPercent: 0, label: '5h', resetsAt: null, resetInSeconds: 0 },
       long: { usedPercent: 0, label: '7d', resetsAt: null, resetInSeconds: 0 },
       reachedLimit: null,
+      groups: [],
     }),
   })
 

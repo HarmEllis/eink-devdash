@@ -100,6 +100,42 @@ test('parseAntigravityQuotaSummary selects the binding model group per window', 
       resetInSeconds: 6 * 24 * 60 * 60,
     },
     reachedLimit: 'short',
+    groups: [
+      {
+        id: 'gemini',
+        label: 'Gemini',
+        short: {
+          label: '5h',
+          usedPercent: 45.68,
+          resetsAt: Date.parse('2026-06-13T23:00:00Z') / 1000,
+          resetInSeconds: 3 * 60 * 60,
+        },
+        long: {
+          label: '7d',
+          usedPercent: 7.61,
+          resetsAt: Date.parse('2026-06-20T20:00:00Z') / 1000,
+          resetInSeconds: 7 * 24 * 60 * 60,
+        },
+        reachedLimit: null,
+      },
+      {
+        id: 'claudeGpt',
+        label: 'Claude/GPT',
+        short: {
+          label: '5h',
+          usedPercent: 100,
+          resetsAt: Date.parse('2026-06-13T22:00:00Z') / 1000,
+          resetInSeconds: 2 * 60 * 60,
+        },
+        long: {
+          label: '7d',
+          usedPercent: 34.2,
+          resetsAt: Date.parse('2026-06-19T20:00:00Z') / 1000,
+          resetInSeconds: 6 * 24 * 60 * 60,
+        },
+        reachedLimit: 'short',
+      },
+    ],
   })
 })
 
@@ -138,6 +174,7 @@ test('getAntigravityUsage refreshes an expired token and retrieves live quotas',
       assert.equal(usage.short.usedPercent, 100)
       assert.equal(usage.long.usedPercent, 34.2)
       assert.equal(usage.reachedLimit, 'short')
+      assert.equal(usage.groups.length, 2)
       assert.equal(requests.length, 2)
     })
   } finally {
@@ -158,6 +195,7 @@ test('getAntigravityUsage reports rejected credentials as an auth error', async 
     assert.equal(usage.status, 'auth_error')
     assert.equal(usage.short.usedPercent, 0)
     assert.equal(usage.long.usedPercent, 0)
+    assert.deepEqual(usage.groups, [])
   } finally {
     if (previousToken === undefined) delete process.env.ANTIGRAVITY_TOKEN
     else process.env.ANTIGRAVITY_TOKEN = previousToken

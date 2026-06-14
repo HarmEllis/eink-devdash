@@ -98,3 +98,36 @@ test('buildDashboardPayload emits schemaVersion 2 with bounded services', async 
   assert.equal('claude' in payload, false)
   assert.equal('codex' in payload, false)
 })
+
+test('buildDashboardPayload flattens grouped adapters and caps usage services at four', async () => {
+  const usage = (id: string) => ({
+    id,
+    kind: 'usage' as const,
+    provider: 'test',
+    label: id,
+    status: 'ok' as const,
+    windows: [],
+  })
+  const payload = await buildDashboardPayload(
+    INSTANT,
+    [
+      {
+        id: 'grouped',
+        async getService() {
+          return usage('fallback')
+        },
+        async getServices() {
+          return ['one', 'two', 'three', 'four', 'five'].map(usage)
+        },
+      },
+    ],
+    'Europe/Amsterdam',
+  )
+
+  assert.deepEqual(payload.services.map((service) => service.id), [
+    'one',
+    'two',
+    'three',
+    'four',
+  ])
+})

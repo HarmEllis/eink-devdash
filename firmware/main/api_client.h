@@ -13,12 +13,6 @@ typedef struct {
     bool service_error;
 } github_data_t;
 
-typedef struct {
-    int used;
-    int limit;
-    int reset_in_seconds;
-} rate_limit_t;
-
 /* Extra-usage ("usage credits") spend, rendered as a currency row:
    [symbol] [bar = percent] [amount]. `percent_present` is false for the env
    override path (no percent source) → the device uses an amount-capped bar. */
@@ -27,48 +21,37 @@ typedef struct {
     double amount;          /* major currency units spent (e.g. 0.91) */
     int percent;            /* 0..100 share of the monthly cap consumed */
     bool percent_present;   /* false → fall back to an amount-capped bar */
-    char currency[4];       /* ISO-4217 code, e.g. "EUR"/"USD"; empty → "$" */
+    char currency[4];       /* Supported ISO-4217 code: "EUR" or "USD" */
     char value_text[16];    /* API-preformatted, locale-aware amount string
                                (e.g. "0,91"); empty → format `amount` locally */
 } extra_usage_t;
 
-typedef struct {
-    rate_limit_t five_hour;
-    rate_limit_t weekly;
-    extra_usage_t extra_usage;
-    bool auth_error;
-} claude_data_t;
+#define DASH_MAX_USAGE_SERVICES 4
+#define DASH_USAGE_LABEL_LEN 11
+#define DASH_WINDOW_LABEL_LEN 3
 
 typedef struct {
-    int short_pct;
-    int long_pct;
+    char label[DASH_WINDOW_LABEL_LEN];
+    int used_pct;
+    int reset_in_seconds;
     bool reached;
-    bool service_error;
-    int short_reset_in_seconds;
-    int long_reset_in_seconds;
-    extra_usage_t extra_usage;
-} codex_data_t;
+} usage_window_data_t;
 
 typedef struct {
-    int short_pct;
-    int long_pct;
-    bool reached;
+    char label[DASH_USAGE_LABEL_LEN];
+    char icon[12];
+    usage_window_data_t windows[2];
+    int window_count;
     bool service_error;
-    int short_reset_in_seconds;
-    int long_reset_in_seconds;
     extra_usage_t extra_usage;
-} antigravity_data_t;
+} usage_service_data_t;
 
 typedef struct {
     int schema_version;
     bool github_present;
     github_data_t github;
-    bool claude_present;
-    claude_data_t claude;
-    bool codex_present;
-    codex_data_t codex;
-    bool antigravity_present;
-    antigravity_data_t antigravity;
+    usage_service_data_t usage[DASH_MAX_USAGE_SERVICES];
+    int usage_count;
     char updated_at[32];
     /* Full local wall-clock ISO timestamp ("YYYY-MM-DDTHH:MM:SS") from the
        API's updatedAtLocalIso field. Used to set the RTC clock so the
