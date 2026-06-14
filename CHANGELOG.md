@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-14
+
+This release introduces Antigravity as a new provider with live quota usage, refactors the firmware and API to a generic multi-provider usage grid supporting up to four providers, and fixes several display layout and bar-width inconsistencies.
+
+### Added
+
+- **Antigravity provider**: live quota consumption from the Antigravity API, split into separate tiles per quota group (Gemini and Claude/GPT). Requires `ANTIGRAVITY_API_KEY` in the API environment.
+- **Generic multi-provider usage grid**: the firmware now renders up to four providers using hero (1), row (2), and grid (3–4) layout modes. An abstract icon field (`spark`, `ring`, `lift`, `diamond`, `generic`) drives the per-provider logo; no firmware rebuild is needed when the set of providers changes.
+- **`getServices()` adapter method**: usage adapters can now emit multiple service tiles from a single provider entry; `buildDashboardPayload` flattens them and caps the combined tile count at four.
+
+### Changed
+
+- All named provider structs in the firmware (`claude`, `codex`, `antigravity`) are replaced by a generic `usage[4]` array; `parse_usage_service` reads any `kind:usage` tile by label, icon, and metric fields.
+- `DISPLAY_RTC_STATE_MAGIC` is bumped so that a partial-refresh RTC cache from an older firmware build is invalidated automatically after an OTA update.
+- The README dashboard screenshot now reflects the new multi-provider grid layout.
+
+### Fixed
+
+- Percentage bars now use a fixed right-edge anchor at the "100%" position, so all bars in a cell end at the same x coordinate and the right edge no longer jumps when the value text changes width (e.g. "9%" → "100%").
+- The extra-usage (spend) bar uses the same fixed-anchor logic, preventing it from rendering wider than the percentage bars above it when the amount text is short.
+- Header text is vertically centred (y offset corrected by 1 px) across all screens; icons were already at the correct position.
+- The bottom-row cell gap in 2- and 4-provider layouts is now consistent with the top-row gap (both 5 px below the divider).
+
 ## [0.8.0] - 2026-06-13
 
 This release adds an always-connected WiFi mode for USB/mains-powered installations and hardens heap management for long-running operation.
@@ -182,6 +205,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.9.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.6.0...v0.7.0
