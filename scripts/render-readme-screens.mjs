@@ -464,12 +464,12 @@ function drawHeaderConnectionSlots(f, wifiSlot, apiSlot) {
   let x = (296 - width) / 2;
   iconWifi(f, x, 3);
   x += iconW + gap;
-  f.drawStr(x, 5, wifi, 0);
+  f.drawStr(x, 4, wifi, 0);
   if (!apiSlot) return;
   x += strW(wifi) + gap;
-  iconArrowRight(f, x, 5);
+  iconArrowRight(f, x, 4);
   x += arrowW + gap;
-  f.drawStr(x, 5, api, 0);
+  f.drawStr(x, 4, api, 0);
 }
 
 function iconGlobe(f, ox, oy) {
@@ -539,65 +539,62 @@ function formatResetCountdown(seconds) {
   return h < 10 ? `${d}d ${h}h` : `${d}d${h}h`;
 }
 
-function drawProvider(f, ox, oy, width, layout, title, ses, wk, sesResetS, wkResetS, extra = null) {
-  f.drawStr(ox, oy, title, 0);
+const providerLogos = {
+  spark: [0x49, 0x2a, 0x1c, 0x77, 0x1c, 0x2a, 0x49],
+  ring: [0x1c, 0x22, 0x41, 0x41, 0x41, 0x22, 0x1c],
+  lift: [0x08, 0x00, 0x08, 0x14, 0x22, 0x41, 0x7f],
+  generic: [0x08, 0x14, 0x22, 0x41, 0x22, 0x14, 0x08],
+};
 
-  const sesS = formatResetCountdown(sesResetS);
-  const wkS = formatResetCountdown(wkResetS);
-  const textGap = 2;
-  const hgGap = 4;
-  const hgW = 7;
-  const right = ox + width - 2;
-  const xWk = right - strW(wkS);
-  const xSlash = xWk - textGap - strW("/");
-  const xSes = xSlash - textGap - strW(sesS);
-  const xHg = xSes - hgGap - hgW;
-  iconHourglass(f, xHg, oy, 0);
-  f.drawStr(xSes, oy, sesS, ses > 80);
-  f.drawStr(xSlash, oy, "/", 0);
-  f.drawStr(xWk, oy, wkS, wk > 80);
-
-  const barX = ox + layout.rowLabelW;
-  const barW = width - layout.rowLabelW - layout.pctW;
-  const sesY = oy + layout.titleRowH + layout.rowGap;
-  const wkY = sesY + layout.barRowH + 2;
-  const barDy = Math.floor((layout.barRowH - layout.barH) / 2);
-
-  f.drawStr(ox, sesY + 2, "5H", 0);
-  drawBarCfg(f, barX, sesY + barDy, barW, layout.barH, layout.segW, ses);
-  const sesPct = `${ses}%`;
-  f.drawStr(ox + width - strW(sesPct) - 2, sesY + 2, sesPct, ses > 80);
-
-  f.drawStr(ox, wkY + 2, "WK", 0);
-  drawBarCfg(f, barX, wkY + barDy, barW, layout.barH, layout.segW, wk);
-  const wkPct = `${wk}%`;
-  f.drawStr(ox + width - strW(wkPct) - 2, wkY + 2, wkPct, wk > 80);
-
-  if (extra !== null) {
-    // Extra-usage row: [currency symbol] [bar = % of monthly cap] [amount].
-    // The bar uses the real utilization percent; when absent (env override) it
-    // falls back to an amount-capped fill. Mirrors firmware draw_provider:
-    // prefer the API's preformatted valueText, else format the number locally.
-    const amountText = extra.valueText ?? formatSpendAmount(extra.amount, extra.currency);
-    const hasSpend = extra.amount > 0;
-    let barPct;
-    if (extra.percent != null) {
-      barPct = extra.percent;
-    } else {
-      const amt = Math.round(extra.amount);
-      barPct = amt < 0 ? 0 : amt > 100 ? 100 : amt;
+function iconProvider(f, ox, oy, name, scale = 1) {
+  const rows = providerLogos[name] ?? providerLogos.generic;
+  for (let y = 0; y < 7; y++) {
+    for (let x = 0; x < 7; x++) {
+      if (rows[y] & (1 << (6 - x))) {
+        f.fillRect(ox + x * scale, oy + y * scale, scale, scale, 1, 0);
+      }
     }
-    const spendY = wkY + layout.barRowH + 1;
-    // The amount can be wider than the fixed pct column, so shrink the bar to
-    // end just before it rather than overlapping. Cap at barW so a short amount
-    // leaves this bar at most as wide as the other two, never wider (mirrors
-    // firmware).
-    const amountX = ox + width - strW(amountText) - 2;
-    const spendBarW = Math.max(0, Math.min(barW, amountX - 2 - barX));
-    drawCurrencySymbol(f, ox, spendY + 1, extra.currency, 0);
-    drawBarCfg(f, barX, spendY + barDy, spendBarW, layout.barH, layout.segW, barPct, hasSpend);
-    f.drawStr(amountX, spendY + 1, amountText, hasSpend);
   }
+}
+
+function drawProviderTitle(f, ox, oy, width, provider, hourglass = false) {
+  const resets = `${formatResetCountdown(provider.windows[0].reset)}/${formatResetCountdown(provider.windows[1].reset)}`;
+  iconProvider(f, ox, oy, provider.icon);
+  f.drawStr(ox + 11, oy, provider.label, 0);
+  const resetX = ox + width - strW(resets);
+  if (hourglass) iconHourglass(f, resetX - 10, oy, 0);
+  f.drawStr(resetX, oy, resets, provider.windows.some((window) => window.pct > 80));
+}
+
+function drawUsageRow(f, ox, oy, width, label, pct, labelW, barH, segW) {
+  const value = `${pct}%`;
+  const barX = ox + labelW;
+  const valueX = ox + width - strW(value);
+  const fixedEndX = ox + width - strW("100%") - 2;
+  const barEndX = Math.min(fixedEndX, valueX - 2);
+  f.drawStr(ox, oy, label, 0);
+  drawBarCfg(f, barX, oy, Math.max(0, barEndX - barX), barH, segW, pct);
+  f.drawStr(valueX, oy, value, pct > 80);
+}
+
+function drawMetricRow(f, ox, oy, width, metric, labelW, barH, segW) {
+  if (!metric) return;
+  const amount = metric.valueText ?? formatSpendAmount(metric.amount, metric.currency);
+  const amountX = ox + width - strW(amount);
+  const barX = ox + labelW;
+  const fixedEndX = ox + width - strW("100%") - 2;
+  const barEndX = Math.min(fixedEndX, amountX - 2);
+  drawCurrencySymbol(f, ox, oy, metric.currency, 0);
+  drawBarCfg(f, barX, oy, Math.max(0, barEndX - barX), barH, segW,
+    metric.percent ?? Math.min(100, Math.round(metric.amount)), metric.amount > 0);
+  f.drawStr(amountX, oy, amount, metric.amount > 0);
+}
+
+function drawProviderGrid(f, ox, oy, width, provider) {
+  drawProviderTitle(f, ox, oy, width, provider);
+  drawUsageRow(f, ox, oy + 13, width, provider.windows[0].label, provider.windows[0].pct, 15, 6, 3);
+  drawUsageRow(f, ox, oy + 22, width, provider.windows[1].label, provider.windows[1].pct, 15, 6, 3);
+  drawMetricRow(f, ox, oy + 31, width, provider.metric, 15, 6, 3);
 }
 
 function drawIconRow(f, rowY, iconFn, iconRed, label, value, valueRed) {
@@ -622,39 +619,19 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
   const data = {
     githubPresent,
     github: { issues: 12, prs: 4, notifications: 1, dependabot: 0, authError: githubError === "auth" },
-    claude: {
-      fiveHour: { used: 18, limit: 200, resetInSeconds: 8200 },
-      weekly: { used: 4100, limit: 10000, resetInSeconds: 304800 },
-      extra: { amount: 0.91, percent: 5, limit: 17, currency: "EUR", valueText: "0,91" },
-    },
-    codex: {
-      shortPct: 32,
-      longPct: 38,
-      reached: false,
-      shortReset: 3600,
-      longReset: 313200,
-      extra: { amount: 3, percent: null, limit: null, currency: "USD", valueText: "3" },
-    },
-    antigravity: {
-      shortPct: 45,
-      longPct: 12,
-      reached: false,
-      shortReset: 7200,
-      longReset: 86400,
-      extra: null,
-    },
+    usage: [
+      { label: "CLAUDE", icon: "spark", windows: [{ label: "5H", pct: 9, reset: 8200 }, { label: "7D", pct: 41, reset: 304800 }], metric: { amount: 0.91, percent: 5, currency: "EUR", valueText: "0,91" } },
+      { label: "CODEX", icon: "ring", windows: [{ label: "5H", pct: 32, reset: 3600 }, { label: "7D", pct: 38, reset: 313200 }], metric: { amount: 3, percent: null, currency: "USD", valueText: "3" } },
+      { label: "GEMINI", icon: "lift", windows: [{ label: "5H", pct: 0, reset: 18000 }, { label: "7D", pct: 8, reset: 542160 }] },
+      { label: "CLAUDE/GPT", icon: "lift", windows: [{ label: "5H", pct: 0, reset: 18000 }, { label: "7D", pct: 34, reset: 544380 }] },
+    ],
     updatedAt: "14:38",
     refreshMin: 5,
     stale: false,
     offline: false,
   };
 
-  const claudeSes = Math.floor((data.claude.fiveHour.used * 100) / data.claude.fiveHour.limit);
-  const claudeWk = Math.floor((data.claude.weekly.used * 100) / data.claude.weekly.limit);
-  const codexSes = data.codex.shortPct;
-  const codexWk = data.codex.longPct;
   const depsAlert = data.github.dependabot > 0;
-  const authErr = data.github.authError;
 
   f.hline(0, 0, 295);
   f.hline(0, 127, 295);
@@ -662,58 +639,46 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
   f.vline(295, 0, 127);
 
   iconBoxLogo(f, 6, 4);
-  f.drawStr(19, 5, "DEVDASH", 0);
+  f.drawStr(19, 4, "DEVDASH", 0);
   drawHeaderConnectionSlots(f, 1, 1);
   const next = `+${data.refreshMin ?? 5}m`;
   const xNext = 290 - strW(next);
   const xClock = xNext - 2 - strW(data.updatedAt);
   const xSync = xClock - 4 - 8;
   iconSync(f, xSync, 4);
-  f.drawStr(xClock, 5, data.updatedAt, 0);
-  f.drawStr(xNext, 5, next, 0);
+  f.drawStr(xClock, 4, data.updatedAt, 0);
+  f.drawStr(xNext, 4, next, 0);
   f.hline(1, 14, 293);
 
-  const activeProviders = [
-    { label: "CLAUDE", ses: claudeSes, wk: claudeWk, sesReset: data.claude.fiveHour.resetInSeconds, wkReset: data.claude.weekly.resetInSeconds, extra: data.claude.extra },
-    { label: "CODEX", ses: codexSes, wk: codexWk, sesReset: data.codex.shortReset, wkReset: data.codex.longReset, extra: data.codex.extra },
-    { label: "AGY", ses: data.antigravity.shortPct, wk: data.antigravity.longPct, sesReset: data.antigravity.shortReset, wkReset: data.antigravity.longReset, extra: data.antigravity.extra },
-  ];
-
-  let layout, yStart, yStep;
-  if (activeProviders.length === 3) {
-    layout = { titleRowH: 8, rowGap: 0, barRowH: 8, barH: 6, segW: 3, rowLabelW: 18, pctW: 28 };
-    yStart = 17; yStep = 36;
-  } else {
-    layout = { titleRowH: 10, rowGap: 0, barRowH: 11, barH: 9, segW: 3, rowLabelW: 18, pctW: 28 };
-    yStart = 20; yStep = 54;
-  }
-
   if (data.githubPresent) {
-    f.vline(106, 15, 111);
     if (githubError) {
-      drawGithubErrorColumn(f, githubError === "auth" ? "AUTH FAIL" : "OFFLINE", 1);
+      iconGithubMark(f, 5, 18, 1);
+      f.drawStr(19, 20, "GH", 1);
+      const error = githubError === "auth" ? "AUTH FAIL" : "OFFLINE";
+      f.drawStr(290 - strW(error), 20, error, 1);
     } else {
-      iconGithubMark(f, 6, 18, 0);
-      f.drawStr(20, 21, "GH", 0);
-      drawIconRow(f, 41, iconIssue, 0, "ISS", formatCountValue(data.github.issues), 0);
-      drawIconRow(f, 63, iconPr, 0, "PR", formatCountValue(data.github.prs), 0);
-      let depY = 85;
-      if (data.github.notifications !== null) {
-        drawIconRow(f, 85, iconInbox, 0, "INBOX", formatCountValue(data.github.notifications), 0);
-        depY = 107;
-      }
-      drawIconRow(f, depY, iconShield, depsAlert, "DEP", depsAlert ? `${data.github.dependabot}!` : formatCountValue(data.github.dependabot), depsAlert);
+      const chip = (x, icon, label, value, right, red = false) => {
+        icon(f, x, 18, red);
+        f.drawStr(x + 14, 20, label, 0);
+        f.drawStr(right - strW(value), 20, value, red);
+      };
+      iconGithubMark(f, 5, 18, 0);
+      f.drawStr(19, 20, "GH", 0);
+      chip(38, iconIssue, "ISS", formatCountValue(data.github.issues), 94);
+      chip(97, iconPr, "PR", formatCountValue(data.github.prs), 148);
+      chip(151, iconInbox, "INBOX", formatCountValue(data.github.notifications), 226);
+      chip(229, iconShield, "DEP", depsAlert ? `${data.github.dependabot}!` : "0", 291, depsAlert);
     }
-    for (let i = 0; i < activeProviders.length; i++) {
-      const p = activeProviders[i];
-      drawProvider(f, 112, yStart + (i * yStep), 182, layout, p.label, p.ses, p.wk, p.sesReset, p.wkReset, p.extra);
-    }
-  } else {
-    for (let i = 0; i < activeProviders.length; i++) {
-      const p = activeProviders[i];
-      drawProvider(f, 4, yStart + (i * yStep), 288, layout, p.label, p.ses, p.wk, p.sesReset, p.wkReset, p.extra);
-    }
+    f.hline(2, 32, 292);
   }
+
+  const bodyTop = data.githubPresent ? 37 : 19;
+  f.vline(148, data.githubPresent ? 35 : 17, data.githubPresent ? 90 : 108);
+  f.hline(6, data.githubPresent ? 81 : 72, 282);
+  const xs = [6, 156], ys = [bodyTop, data.githubPresent ? 86 : 77];
+  data.usage.forEach((provider, index) => {
+    drawProviderGrid(f, xs[index % 2], ys[Math.floor(index / 2)], 138, provider);
+  });
   return f;
 }
 
@@ -730,11 +695,7 @@ function drawBootSourceList(f, lx, ly) {
   lx += strWAdv("github", FONT_BOOT_W) + FONT_BOOT_W;
   f.fillRect(lx + 1, ly + 3, 2, 2, 1, 0);
   lx += 2 * FONT_BOOT_W;
-  f.drawStrAdv(lx, ly, "claude", 1, FONT_BOOT_W);
-  lx += strWAdv("claude", FONT_BOOT_W) + FONT_BOOT_W;
-  f.fillRect(lx + 1, ly + 3, 2, 2, 1, 0);
-  lx += 2 * FONT_BOOT_W;
-  f.drawStrAdv(lx, ly, "codex", 1, FONT_BOOT_W);
+  f.drawStrAdv(lx, ly, "ai usage", 1, FONT_BOOT_W);
 }
 
 function drawBootFooter(f) {
@@ -858,9 +819,9 @@ function drawS1Chrome(f) {
   f.vline(294, 1, 126);
 
   iconBoxLogo(f, 6, 4);
-  f.drawStr(19, 5, "DEVDASH", 0);
+  f.drawStr(19, 4, "DEVDASH", 0);
   const setup = "SETUP";
-  f.drawStr(290 - strW(setup), 5, setup, 0);
+  f.drawStr(290 - strW(setup), 4, setup, 0);
 
   f.hline(2, 15, 292);
   f.hline(2, 113, 292);
@@ -1014,8 +975,8 @@ function drawResetChrome(f, title) {
   f.vline(294, 1, 126);
 
   iconBoxLogo(f, 6, 4);
-  f.drawStr(19, 5, "DEVDASH", 0);
-  f.drawStr(290 - strW(title), 5, title, 0);
+  f.drawStr(19, 4, "DEVDASH", 0);
+  f.drawStr(290 - strW(title), 4, title, 0);
 
   f.hline(2, 15, 292);
 }

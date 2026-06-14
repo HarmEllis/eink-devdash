@@ -11,11 +11,20 @@ export type AntigravityWindow = {
   resetInSeconds: number
 }
 
+export type AntigravityGroup = {
+  id: 'gemini' | 'claudeGpt'
+  label: string
+  short: AntigravityWindow
+  long: AntigravityWindow
+  reachedLimit: 'short' | 'long' | null
+}
+
 export type AntigravityUsage = {
   status: AntigravityStatus
   short: AntigravityWindow
   long: AntigravityWindow
   reachedLimit: 'short' | 'long' | null
+  groups: AntigravityGroup[]
   spend?: number | null
 }
 
@@ -54,6 +63,7 @@ function emptyUsage(status: AntigravityStatus): AntigravityUsage {
     reachedLimit: null,
     short: emptyWindow('5h'),
     long: emptyWindow('7d'),
+    groups: [],
   }
 
   const overage = Number.parseFloat(process.env.ANTIGRAVITY_OVERAGE_USD?.trim() ?? '')
@@ -203,7 +213,7 @@ function windowFromCandidate(
 export function parseAntigravityQuotaSummary(
   payload: unknown,
   nowMs = Date.now(),
-): Pick<AntigravityUsage, 'short' | 'long' | 'reachedLimit'> {
+): Pick<AntigravityUsage, 'short' | 'long' | 'reachedLimit' | 'groups'> {
   const root =
     payload && typeof payload === 'object' && 'response' in payload
       ? (payload as { response?: unknown }).response
@@ -215,11 +225,30 @@ export function parseAntigravityQuotaSummary(
 
   let short: QuotaCandidate | null = null
   let long: QuotaCandidate | null = null
+  const groupCandidates = new Map<
+    AntigravityGroup['id'],
+    { label: string; short: QuotaCandidate | null; long: QuotaCandidate | null }
+  >()
 
   for (const group of groups) {
     if (!group || typeof group !== 'object') continue
-    const buckets = (group as { buckets?: unknown }).buckets
+    const value = group as { displayName?: unknown; buckets?: unknown }
+    const buckets = value.buckets
     if (!Array.isArray(buckets)) continue
+    const displayName = typeof value.displayName === 'string' ? value.displayName : ''
+    const normalizedName = displayName.toLowerCase()
+    const groupId: AntigravityGroup['id'] | null = normalizedName.includes('gemini')
+      ? 'gemini'
+      : normalizedName.includes('claude') || normalizedName.includes('gpt')
+        ? 'claudeGpt'
+        : null
+    const knownGroup = groupId
+      ? (groupCandidates.get(groupId) ?? {
+          label: groupId === 'gemini' ? 'Gemini' : 'Claude/GPT',
+          short: null,
+          long: null,
+        })
+      : null
 
     for (const bucket of buckets) {
       if (!bucket || typeof bucket !== 'object') continue
@@ -235,9 +264,17 @@ export function parseAntigravityQuotaSummary(
         resetTime: typeof value.resetTime === 'string' ? value.resetTime : null,
       }
 
-      if (value.window === '5h') short = selectCandidate(short, candidate)
-      if (value.window === 'weekly') long = selectCandidate(long, candidate)
+      if (value.window === '5h') {
+        short = selectCandidate(short, candidate)
+        if (knownGroup) knownGroup.short = selectCandidate(knownGroup.short, candidate)
+      }
+      if (value.window === 'weekly') {
+        long = selectCandidate(long, candidate)
+        if (knownGroup) knownGroup.long = selectCandidate(knownGroup.long, candidate)
+      }
     }
+
+    if (groupId && knownGroup) groupCandidates.set(groupId, knownGroup)
   }
 
   if (!short || !long) {
@@ -249,7 +286,27 @@ export function parseAntigravityQuotaSummary(
   const reachedLimit =
     shortWindow.usedPercent >= 100 ? 'short' : longWindow.usedPercent >= 100 ? 'long' : null
 
-  return { short: shortWindow, long: longWindow, reachedLimit }
+  const parsedGroups: AntigravityGroup[] = []
+  for (const id of ['gemini', 'claudeGpt'] as const) {
+    const group = groupCandidates.get(id)
+    if (!group?.short || !group.long) continue
+    const groupShort = windowFromCandidate('5h', group.short, nowMs)
+    const groupLong = windowFromCandidate('7d', group.long, nowMs)
+    parsedGroups.push({
+      id,
+      label: group.label,
+      short: groupShort,
+      long: groupLong,
+      reachedLimit:
+        groupShort.usedPercent >= 100
+          ? 'short'
+          : groupLong.usedPercent >= 100
+            ? 'long'
+            : null,
+    })
+  }
+
+  return { short: shortWindow, long: longWindow, reachedLimit, groups: parsedGroups }
 }
 
 export async function getAntigravityUsage(signal?: AbortSignal): Promise<AntigravityUsage> {

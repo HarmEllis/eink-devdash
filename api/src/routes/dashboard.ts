@@ -84,6 +84,8 @@ export type DashboardPayload = {
   updatedAtLocalIso: string
 }
 
+const MAX_USAGE_SERVICES = 4
+
 export function createDashboardAdapters(): DashboardServiceAdapter[] {
   return [
     ...createCodeHostAdapters(),
@@ -97,8 +99,17 @@ export async function buildDashboardPayload(
   timeZone: string = DASHBOARD_TIME_ZONE,
   opts: { signal?: AbortSignal } = {},
 ): Promise<DashboardPayload> {
-  const services = (await Promise.all(adapters.map((adapter) => adapter.getService(opts.signal))))
-    .filter((service): service is DashboardService => service !== null)
+  const results = await Promise.all(adapters.map(async (adapter) => {
+    if (adapter.getServices) return adapter.getServices(opts.signal)
+    const service = await adapter.getService(opts.signal)
+    return service ? [service] : []
+  }))
+  let usageCount = 0
+  const services = results.flat().filter((service) => {
+    if (service.kind !== 'usage') return true
+    usageCount += 1
+    return usageCount <= MAX_USAGE_SERVICES
+  })
 
   return {
     schemaVersion: DASHBOARD_SCHEMA_VERSION,

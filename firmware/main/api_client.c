@@ -247,20 +247,24 @@ static bool valid_amount_text(const char *s)
     return seen_int_digit && (!seen_sep || seen_frac_digit);
 }
 
-/* Parse the optional `extraUsage` metric into the shared spend struct. Absent
-   metric → not present. `usedPercent` may be omitted (env override) → the
+/* Parse the optional `extraUsage` metric into the shared third-row representation.
+   Absent metric → not present. `usedPercent` may be omitted (env override) → the
    device renders an amount-capped bar instead. `valueText` is the API's
    preformatted, locale-aware amount; when valid the device draws it verbatim,
-   otherwise it formats `value` itself. The legacy `spend` metric is
-   intentionally not read; this is its currency-aware replacement. */
+   otherwise it formats `value` itself. Only USD/EUR are accepted. */
 static void parse_extra_usage(const cJSON *service, extra_usage_t *out)
 {
     memset(out, 0, sizeof(*out));
     const cJSON *metric = find_service_item(service, "metrics", "extraUsage");
     if (!metric) return;
 
+    const char *unit = json_string(metric, "unit");
+    if (!unit || (strcmp(unit, "EUR") != 0 && strcmp(unit, "USD") != 0)) return;
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(metric, "value");
+    if (!value || !cJSON_IsNumber(value)) return;
+
     out->present = true;
-    out->amount = json_double(metric, "value");
+    out->amount = value->valuedouble;
 
     const cJSON *pct = cJSON_GetObjectItemCaseSensitive(metric, "usedPercent");
     if (pct && cJSON_IsNumber(pct)) {
@@ -268,22 +272,14 @@ static void parse_extra_usage(const cJSON *service, extra_usage_t *out)
         out->percent_present = true;
     }
 
-    const char *unit = json_string(metric, "unit");
-    if (unit) {
-        strncpy(out->currency, unit, sizeof(out->currency) - 1);
-        out->currency[sizeof(out->currency) - 1] = '\0';
-    }
+    strncpy(out->currency, unit, sizeof(out->currency) - 1);
+    out->currency[sizeof(out->currency) - 1] = '\0';
 
     const char *vt = json_string(metric, "valueText");
     if (valid_amount_text(vt)) {
         strncpy(out->value_text, vt, sizeof(out->value_text) - 1);
         out->value_text[sizeof(out->value_text) - 1] = '\0';
     }
-}
-
-static const cJSON *service_window(const cJSON *service, const char *id)
-{
-    return find_service_item(service, "windows", id);
 }
 
 static bool service_auth_error(const cJSON *service)
@@ -294,7 +290,67 @@ static bool service_auth_error(const cJSON *service)
 static bool service_error(const cJSON *service)
 {
     return json_string_equals(service, "status", "error") ||
-           json_string_equals(service, "status", "unavailable");
+           json_string_equals(service, "status", "unavailable") ||
+           json_string_equals(service, "status", "auth_error");
+}
+
+static void copy_ascii_label(char *dst, size_t dst_sz,
+                             const char *src, const char *fallback)
+{
+    const char *value = src && src[0] ? src : fallback;
+    size_t out = 0;
+    while (value && value[out] && out + 1 < dst_sz) {
+        unsigned char c = (unsigned char)value[out];
+        dst[out] = (c >= 32 && c <= 126) ? (char)c : '?';
+        out++;
+    }
+    dst[out] = '\0';
+}
+
+static void ascii_upper(char *value)
+{
+    for (; value && *value; value++) {
+        if (*value >= 'a' && *value <= 'z') *value = (char)(*value - 'a' + 'A');
+    }
+}
+
+static int usage_window_percent(const cJSON *window)
+{
+    const cJSON *pct = cJSON_GetObjectItemCaseSensitive(window, "usedPercent");
+    if (pct && cJSON_IsNumber(pct)) return round_percent(pct->valuedouble);
+
+    double used = json_double(window, "used");
+    double limit = json_double(window, "limit");
+    return limit > 0 ? round_percent(used * 100.0 / limit) : 0;
+}
+
+static void parse_usage_service(const cJSON *service, usage_service_data_t *out)
+{
+    copy_ascii_label(out->label, sizeof(out->label),
+                     json_string(service, "label"), "USAGE");
+    ascii_upper(out->label);
+    copy_ascii_label(out->icon, sizeof(out->icon),
+                     json_string(service, "icon"), "generic");
+    out->service_error = service_error(service);
+
+    const cJSON *windows = cJSON_GetObjectItemCaseSensitive(service, "windows");
+    if (windows && cJSON_IsArray(windows)) {
+        const cJSON *window = NULL;
+        cJSON_ArrayForEach(window, windows) {
+            if (out->window_count >= 2) break;
+            if (!cJSON_IsObject(window)) continue;
+            usage_window_data_t *parsed = &out->windows[out->window_count++];
+            copy_ascii_label(parsed->label, sizeof(parsed->label),
+                             json_string(window, "label"),
+                             out->window_count == 1 ? "5H" : "WK");
+            ascii_upper(parsed->label);
+            parsed->used_pct = usage_window_percent(window);
+            parsed->reset_in_seconds = json_int(window, "resetInSeconds");
+            parsed->reached = json_bool(window, "reachedLimit");
+        }
+    }
+
+    parse_extra_usage(service, &out->extra_usage);
 }
 
 static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
@@ -311,53 +367,17 @@ static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)
         out->github.service_error = service_error(gh);
     }
 
-    const cJSON *cl = find_service(root, "claude");
-    out->claude_present = cl != NULL;
-    if (cl) {
-        const cJSON *fh = service_window(cl, "fiveHour");
-        out->claude.five_hour.used             = json_int(fh, "used");
-        out->claude.five_hour.limit            = json_int(fh, "limit");
-        out->claude.five_hour.reset_in_seconds = json_int(fh, "resetInSeconds");
-
-        const cJSON *wk = service_window(cl, "weekly");
-        out->claude.weekly.used             = json_int(wk, "used");
-        out->claude.weekly.limit            = json_int(wk, "limit");
-        out->claude.weekly.reset_in_seconds = json_int(wk, "resetInSeconds");
-
-        parse_extra_usage(cl, &out->claude.extra_usage);
-        out->claude.auth_error = service_auth_error(cl);
-    }
-
-    const cJSON *cx = find_service(root, "codex");
-    out->codex_present = cx != NULL;
-    if (cx) {
-        const cJSON *short_window = service_window(cx, "short");
-        const cJSON *long_window  = service_window(cx, "long");
-
-        out->codex.short_pct = round_percent(json_double(short_window, "usedPercent"));
-        out->codex.long_pct  = round_percent(json_double(long_window,  "usedPercent"));
-        out->codex.short_reset_in_seconds = json_int(short_window, "resetInSeconds");
-        out->codex.long_reset_in_seconds  = json_int(long_window,  "resetInSeconds");
-        out->codex.reached = json_bool(short_window, "reachedLimit") ||
-                             json_bool(long_window, "reachedLimit");
-        out->codex.service_error = service_auth_error(cx) || service_error(cx);
-        parse_extra_usage(cx, &out->codex.extra_usage);
-    }
-
-    const cJSON *ag = find_service(root, "antigravity");
-    out->antigravity_present = ag != NULL;
-    if (ag) {
-        const cJSON *short_window = service_window(ag, "short");
-        const cJSON *long_window  = service_window(ag, "long");
-
-        out->antigravity.short_pct = round_percent(json_double(short_window, "usedPercent"));
-        out->antigravity.long_pct  = round_percent(json_double(long_window,  "usedPercent"));
-        out->antigravity.short_reset_in_seconds = json_int(short_window, "resetInSeconds");
-        out->antigravity.long_reset_in_seconds  = json_int(long_window,  "resetInSeconds");
-        out->antigravity.reached = json_bool(short_window, "reachedLimit") ||
-                                   json_bool(long_window, "reachedLimit");
-        out->antigravity.service_error = service_auth_error(ag) || service_error(ag);
-        parse_extra_usage(ag, &out->antigravity.extra_usage);
+    const cJSON *services = cJSON_GetObjectItemCaseSensitive(root, "services");
+    if (services && cJSON_IsArray(services)) {
+        const cJSON *service = NULL;
+        cJSON_ArrayForEach(service, services) {
+            if (out->usage_count >= DASH_MAX_USAGE_SERVICES) break;
+            if (!cJSON_IsObject(service) ||
+                !json_string_equals(service, "kind", "usage")) {
+                continue;
+            }
+            parse_usage_service(service, &out->usage[out->usage_count++]);
+        }
     }
 }
 

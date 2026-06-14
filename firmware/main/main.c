@@ -198,22 +198,45 @@ void app_main(void)
             .notifications = 1,
             .notifications_present = true,
         },
-        .claude_present = true,
-        .claude = {
-            .five_hour = { .used = 18, .limit = 200, .reset_in_seconds = 8200 },
-            .weekly    = { .used = 4100, .limit = 10000, .reset_in_seconds = 304800 },
-            .auth_error = false,
+        .usage_count = 4,
+        .usage = {
+            {
+                .label = "CLAUDE",
+                .icon = "spark",
+                .windows = {
+                    { .label = "5H", .used_pct = 9, .reset_in_seconds = 8200 },
+                    { .label = "7D", .used_pct = 41, .reset_in_seconds = 304800 },
+                },
+                .window_count = 2,
+            },
+            {
+                .label = "CODEX",
+                .icon = "ring",
+                .windows = {
+                    { .label = "5H", .used_pct = 32, .reset_in_seconds = 3600 },
+                    { .label = "7D", .used_pct = 38, .reset_in_seconds = 313200 },
+                },
+                .window_count = 2,
+            },
+            {
+                .label = "GEMINI",
+                .icon = "lift",
+                .windows = {
+                    { .label = "5H", .used_pct = 0, .reset_in_seconds = 18000 },
+                    { .label = "7D", .used_pct = 8, .reset_in_seconds = 542160 },
+                },
+                .window_count = 2,
+            },
+            {
+                .label = "CLAUDE/GPT",
+                .icon = "lift",
+                .windows = {
+                    { .label = "5H", .used_pct = 0, .reset_in_seconds = 18000 },
+                    { .label = "7D", .used_pct = 34, .reset_in_seconds = 544380 },
+                },
+                .window_count = 2,
+            },
         },
-        .codex_present = true,
-        .codex = {
-            .short_pct = 32,
-            .long_pct = 38,
-            .reached = false,
-            .short_reset_in_seconds = 3600,
-            .long_reset_in_seconds = 313200,
-        },
-        .antigravity_present = false,
-        .antigravity = {0},
         .updated_at = "14:38",
         .stale = false,
         .offline = false,

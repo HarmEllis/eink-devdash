@@ -498,7 +498,23 @@ ESP32-S3 firmware
 The API exposes one provider-neutral dashboard schema. Provider adapters live
 in `api/src/services/usage.adapters.ts` and
 `api/src/services/code-host.adapters.ts`; the relay forwards the resulting
-payload without provider-specific parsing.
+payload without provider-specific parsing. The firmware also treats usage
+services generically: it does not match provider IDs or names.
+
+The display contract is intentionally bounded by the 296x128 panel:
+
+- the first four `kind: "usage"` services become tiles, in API order;
+- each tile uses its API-provided `label` (up to 10 ASCII characters) and
+  optional abstract `icon` (`spark`, `ring`, `lift`, `diamond`, or `generic`);
+- the first two windows are rendered, using their API-provided two-character
+  labels and either `usedPercent` or `used / limit`;
+- the first supported USD/EUR extra-usage metric, when present, is rendered as
+  the optional third bar.
+
+This means a new LLM provider can be added entirely in the API by returning the
+same generic service shape. Firmware changes are still required to exceed four
+tiles, show more than two windows or one metric per tile, add a new icon
+primitive, or support a new metric rendering style.
 
 ## API reference
 
@@ -536,9 +552,11 @@ Returns a schema version 2 dashboard document with a bounded `services` array:
       "kind": "usage",
       "provider": "codex",
       "label": "Codex",
+      "icon": "ring",
       "status": "ok",
       "windows": [
-        { "id": "short", "label": "5h", "usedPercent": 37 }
+        { "id": "short", "label": "5h", "usedPercent": 37 },
+        { "id": "long", "label": "7d", "usedPercent": 21 }
       ]
     }
   ],
@@ -550,8 +568,9 @@ Returns a schema version 2 dashboard document with a bounded `services` array:
 
 Services are omitted when their provider or credentials are not configured.
 Codex usage uses the live app-server response when available and falls back to
-the latest local session data. Antigravity usage reports the most depleted
-model group independently for its five-hour and weekly quota windows.
+the latest local session data. Antigravity publishes its Gemini and Claude/GPT
+shared-quota groups as separate generic usage services, each with its own
+five-hour and weekly windows.
 
 ### `GET /ota/manifest`
 
