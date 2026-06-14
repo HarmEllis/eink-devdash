@@ -635,6 +635,14 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
       longReset: 313200,
       extra: { amount: 3, percent: null, limit: null, currency: "USD", valueText: "3" },
     },
+    antigravity: {
+      shortPct: 45,
+      longPct: 12,
+      reached: false,
+      shortReset: 7200,
+      longReset: 86400,
+      extra: null,
+    },
     updatedAt: "14:38",
     refreshMin: 5,
     stale: false,
@@ -648,10 +656,10 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
   const depsAlert = data.github.dependabot > 0;
   const authErr = data.github.authError;
 
-  f.hline(1, 1, 294);
-  f.hline(1, 126, 294);
-  f.vline(1, 1, 126);
-  f.vline(294, 1, 126);
+  f.hline(0, 0, 295);
+  f.hline(0, 127, 295);
+  f.vline(0, 0, 127);
+  f.vline(295, 0, 127);
 
   iconBoxLogo(f, 6, 4);
   f.drawStr(19, 5, "DEVDASH", 0);
@@ -663,39 +671,48 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
   iconSync(f, xSync, 4);
   f.drawStr(xClock, 5, data.updatedAt, 0);
   f.drawStr(xNext, 5, next, 0);
-  f.hline(2, 15, 292);
+  f.hline(1, 14, 293);
 
-  const compactProvider = {
-    titleRowH: 10,
-    rowGap: 0,
-    barRowH: 11,
-    barH: 9,
-    segW: 3,
-    rowLabelW: 18,
-    pctW: 28,
-  };
+  const activeProviders = [
+    { label: "CLAUDE", ses: claudeSes, wk: claudeWk, sesReset: data.claude.fiveHour.resetInSeconds, wkReset: data.claude.weekly.resetInSeconds, extra: data.claude.extra },
+    { label: "CODEX", ses: codexSes, wk: codexWk, sesReset: data.codex.shortReset, wkReset: data.codex.longReset, extra: data.codex.extra },
+    { label: "AGY", ses: data.antigravity.shortPct, wk: data.antigravity.longPct, sesReset: data.antigravity.shortReset, wkReset: data.antigravity.longReset, extra: data.antigravity.extra },
+  ];
+
+  let layout, yStart, yStep;
+  if (activeProviders.length === 3) {
+    layout = { titleRowH: 8, rowGap: 0, barRowH: 8, barH: 6, segW: 3, rowLabelW: 18, pctW: 28 };
+    yStart = 17; yStep = 36;
+  } else {
+    layout = { titleRowH: 10, rowGap: 0, barRowH: 11, barH: 9, segW: 3, rowLabelW: 18, pctW: 28 };
+    yStart = 20; yStep = 54;
+  }
 
   if (data.githubPresent) {
-    f.vline(106, 16, 110);
+    f.vline(106, 15, 111);
     if (githubError) {
       drawGithubErrorColumn(f, githubError === "auth" ? "AUTH FAIL" : "OFFLINE", 1);
     } else {
-      iconGithubMark(f, 6, 19, 0);
-      f.drawStr(20, 22, "GH", 0);
-      drawIconRow(f, 42, iconIssue, 0, "ISS", formatCountValue(data.github.issues), 0);
-      drawIconRow(f, 64, iconPr, 0, "PR", formatCountValue(data.github.prs), 0);
-      let depY = 86;
+      iconGithubMark(f, 6, 18, 0);
+      f.drawStr(20, 21, "GH", 0);
+      drawIconRow(f, 41, iconIssue, 0, "ISS", formatCountValue(data.github.issues), 0);
+      drawIconRow(f, 63, iconPr, 0, "PR", formatCountValue(data.github.prs), 0);
+      let depY = 85;
       if (data.github.notifications !== null) {
-        drawIconRow(f, 86, iconInbox, 0, "INBOX", formatCountValue(data.github.notifications), 0);
-        depY = 108;
+        drawIconRow(f, 85, iconInbox, 0, "INBOX", formatCountValue(data.github.notifications), 0);
+        depY = 107;
       }
       drawIconRow(f, depY, iconShield, depsAlert, "DEP", depsAlert ? `${data.github.dependabot}!` : formatCountValue(data.github.dependabot), depsAlert);
     }
-    drawProvider(f, 112, 22, 182, compactProvider, "CLAUDE", claudeSes, claudeWk, data.claude.fiveHour.resetInSeconds, data.claude.weekly.resetInSeconds, data.claude.extra);
-    drawProvider(f, 112, 76, 182, compactProvider, "CODEX", codexSes, codexWk, data.codex.shortReset, data.codex.longReset, data.codex.extra);
+    for (let i = 0; i < activeProviders.length; i++) {
+      const p = activeProviders[i];
+      drawProvider(f, 112, yStart + (i * yStep), 182, layout, p.label, p.ses, p.wk, p.sesReset, p.wkReset, p.extra);
+    }
   } else {
-    drawProvider(f, 4, 22, 288, compactProvider, "CLAUDE", claudeSes, claudeWk, data.claude.fiveHour.resetInSeconds, data.claude.weekly.resetInSeconds, data.claude.extra);
-    drawProvider(f, 4, 76, 288, compactProvider, "CODEX", codexSes, codexWk, data.codex.shortReset, data.codex.longReset, data.codex.extra);
+    for (let i = 0; i < activeProviders.length; i++) {
+      const p = activeProviders[i];
+      drawProvider(f, 4, yStart + (i * yStep), 288, layout, p.label, p.ses, p.wk, p.sesReset, p.wkReset, p.extra);
+    }
   }
   return f;
 }

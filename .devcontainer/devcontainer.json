@@ -12,7 +12,8 @@
   },
   "mounts": [
     "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind,readonly",
-    "source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind,readonly"
+    "source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind,readonly",
+    "source=${localEnv:HOME}/.gemini,target=/home/node/.gemini,type=bind,readonly"
   ],
   "forwardPorts": [3000, 8080],
   "portsAttributes": {

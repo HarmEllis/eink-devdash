@@ -1,7 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { serviceFromClaudeUsage, serviceFromCodexUsage } from './usage.adapters.js'
+import {
+  createAntigravityUsageAdapter,
+  serviceFromAntigravityUsage,
+  serviceFromClaudeUsage,
+  serviceFromCodexUsage,
+} from './usage.adapters.js'
 
 test('serviceFromClaudeUsage maps Claude limits to a generic usage service', () => {
   assert.deepEqual(
@@ -134,4 +139,53 @@ test('serviceFromCodexUsage omits the extraUsage metric without overage spend', 
     const service = serviceFromCodexUsage({ ...baseCodexUsage, spend })
     assert.equal(service.metrics, undefined)
   }
+})
+
+test('serviceFromAntigravityUsage maps live quota windows and status', () => {
+  assert.deepEqual(
+    serviceFromAntigravityUsage({
+      status: 'ok',
+      short: { usedPercent: 100, label: '5h', resetsAt: 1779232450, resetInSeconds: 300 },
+      long: { usedPercent: 34.2, label: '7d', resetsAt: 1779641619, resetInSeconds: 600 },
+      reachedLimit: 'short',
+    }),
+    {
+      id: 'antigravity',
+      kind: 'usage',
+      provider: 'antigravity',
+      label: 'AGY',
+      status: 'ok',
+      windows: [
+        {
+          id: 'short',
+          label: '5h',
+          usedPercent: 100,
+          resetsAt: 1779232450,
+          resetInSeconds: 300,
+          reachedLimit: true,
+        },
+        {
+          id: 'long',
+          label: '7d',
+          usedPercent: 34.2,
+          resetsAt: 1779641619,
+          resetInSeconds: 600,
+          reachedLimit: false,
+        },
+      ],
+    },
+  )
+})
+
+test('Antigravity adapter is omitted when credentials are unavailable', async () => {
+  const adapter = createAntigravityUsageAdapter({
+    getUsage: async () => ({
+      status: 'unavailable',
+      short: { usedPercent: 0, label: '5h', resetsAt: null, resetInSeconds: 0 },
+      long: { usedPercent: 0, label: '7d', resetsAt: null, resetInSeconds: 0 },
+      reachedLimit: null,
+    }),
+  })
+
+  assert.equal(await adapter.getService(), null)
 })

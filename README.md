@@ -1,8 +1,8 @@
 # eink-devdash
 
 A physical developer dashboard for an ESP32-S3 and a 2.9-inch e-ink display.
-It shows GitHub activity, Claude Code limits, and Codex usage, then deep-sleeps
-between configurable refreshes.
+It shows GitHub activity plus Claude Code, Codex, and Antigravity usage, then
+deep-sleeps between configurable refreshes.
 
 The same firmware supports the WeAct Studio 2.9-inch SSD1680 Black/White (BW)
 and Black/White/Red (BWR) panels. BW is recommended for faster partial
@@ -149,6 +149,9 @@ contains all supported variables.
 | `CODEX_LIVE_USAGE` | no | `true` | Set to `false` to use only the on-disk Codex session fallback. |
 | `CODEX_OVERAGE_USD` | no | empty | Manual overage spend in USD for the Codex extra-usage bar (ChatGPT-auth exposes no dollar figure). Empty or `0` hides the bar; a value > 0 shows a `$` symbol, an amount-capped bar, and the amount. |
 | `CLAUDE_OVERAGE_USD` | no | empty | Optional override for the Claude extra-usage bar, which is otherwise read live from Claude's OAuth usage credits (currency symbol, bar = % of the monthly cap, amount consumed). If set (> 0) it forces a manual USD amount-capped bar. |
+| `ANTIGRAVITY_TOKEN` | no | empty | Direct Antigravity OAuth access-token override. Normally the mounted credential file is used instead. |
+| `ANTIGRAVITY_TOKEN_PATH` | no | `~/.gemini/antigravity-cli/antigravity-oauth-token` | Override the Antigravity OAuth credential-file path. |
+| `ANTIGRAVITY_OVERAGE_USD` | no | empty | Manual overage spend in USD for the Antigravity extra-usage bar. Empty or `0` hides the bar. |
 | `DASHBOARD_LOCALE` | no | `nl-NL` | BCP-47 locale for the extra-usage amount's decimal separator (`nl-NL` → `0,91`, `en-US` → `0.91`). Invalid/unsupported values fall back to the default. |
 | `DASHBOARD_TIME_ZONE` | no | `Europe/Amsterdam` | IANA timezone used for timestamps and quiet hours. |
 | `MDNS_ENABLED` | no | `true` | Enables `.local` advertisement. |
@@ -162,9 +165,10 @@ repository issues and pull requests must be counted. GitHub's notifications
 API requires a separate classic token with `notifications` scope.
 
 The container mounts `~/.claude` read-write so it can refresh Claude OAuth
-credentials, and mounts `~/.codex` read-only for Codex authentication and
-session data. Matching `HOST_UID` and `HOST_GID` prevents permission failures
-when the API refreshes the Claude credentials file.
+credentials. It mounts `~/.codex` and `~/.gemini` read-only for Codex session
+data and Antigravity authentication. Antigravity refreshes expired access
+tokens in memory. Matching `HOST_UID` and `HOST_GID` prevents permission
+failures when the API refreshes the Claude credentials file.
 
 ## Optional Cloudflare relay
 
@@ -479,6 +483,7 @@ Docker host
     GitHub counters and notifications
     Claude Code usage
     Codex usage
+    Antigravity usage
     Optional outbound relay publisher
           |
           | HTTP on LAN or on-demand HTTPS through the relay
@@ -545,7 +550,8 @@ Returns a schema version 2 dashboard document with a bounded `services` array:
 
 Services are omitted when their provider or credentials are not configured.
 Codex usage uses the live app-server response when available and falls back to
-the latest local session data.
+the latest local session data. Antigravity usage reports the most depleted
+model group independently for its five-hour and weekly quota windows.
 
 ### `GET /ota/manifest`
 
