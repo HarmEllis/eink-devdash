@@ -598,8 +598,8 @@ static void draw_header_connection_slots(void)
 
     int x = (296 - width) / 2;
     const int icon_y = 3;
-    const int arrow_y = 5;
-    const int text_y = 5;
+    const int arrow_y = 4;
+    const int text_y = 4;
 
     icon_wifi(x, icon_y);
     x += icon_w + gap;
@@ -704,6 +704,7 @@ typedef enum {
     PROVIDER_LOGO_RING,
     PROVIDER_LOGO_LIFT,
     PROVIDER_LOGO_DIAMOND,
+    PROVIDER_LOGO_COUNT_,  /* sentinel — add a row to rows[] in icon_provider_logo when extending */
 } provider_logo_t;
 
 typedef struct {
@@ -737,6 +738,8 @@ static void icon_provider_logo(int ox, int oy, provider_logo_t logo,
         { 0x08, 0x00, 0x08, 0x14, 0x22, 0x41, 0x7F },
         { 0x08, 0x14, 0x22, 0x41, 0x22, 0x14, 0x08 },
     };
+    _Static_assert(sizeof(rows)/sizeof(rows[0]) == PROVIDER_LOGO_COUNT_,
+                   "rows[] must have one entry per logo; add a row when extending provider_logo_t");
     const uint8_t *bitmap = rows[logo];
     for (int y = 0; y < 7; y++) {
         for (int x = 0; x < 7; x++) {
@@ -761,13 +764,19 @@ static void provider_reset_strings(const provider_info_t *provider,
     format_reset_countdown(wk, wk_sz, provider->wk_reset);
 }
 
+static void format_reset_pair(const provider_info_t *provider, char *out, size_t out_sz)
+{
+    char ses[8], wk[8];
+    provider_reset_strings(provider, ses, sizeof(ses), wk, sizeof(wk));
+    snprintf(out, out_sz, "%s/%s", ses, wk);
+}
+
 static void draw_provider_title(int ox, int oy, int width,
                                 const provider_info_t *provider,
                                 bool show_hourglass)
 {
-    char ses[8], wk[8], resets[20];
-    provider_reset_strings(provider, ses, sizeof(ses), wk, sizeof(wk));
-    snprintf(resets, sizeof(resets), "%s/%s", ses, wk);
+    char resets[20];
+    format_reset_pair(provider, resets, sizeof(resets));
 
     icon_provider_logo(ox, oy, provider->logo, 1, provider->auth_err);
     draw_str(ox + 11, oy, provider->label, provider->auth_err);
@@ -791,7 +800,12 @@ static void draw_provider_percent_row(int ox, int oy, int width,
     snprintf(value, sizeof(value), auth_err ? "ERR" : "%d%%", pct);
     int bar_x = ox + label_w;
     int value_x = ox + width - str_w(value);
-    int bar_w = value_x - 2 - bar_x;
+    /* Anchor the bar's right edge at the position where "100%" would sit so
+       all percentage bars are the same width regardless of digit count.
+       Shrink only when the actual value text would overlap that fixed edge. */
+    int fixed_end_x = ox + width - str_w("100%") - 2;
+    int bar_end_x = (value_x - 2 < fixed_end_x) ? value_x - 2 : fixed_end_x;
+    int bar_w = bar_end_x - bar_x;
     if (bar_w < 0) bar_w = 0;
 
     draw_str(ox, oy, label, auth_err);
@@ -859,9 +873,8 @@ static void draw_provider_row(int ox, int oy, int width,
 static void draw_provider_hero(int ox, int oy, int width,
                                const provider_info_t *provider)
 {
-    char ses[8], wk[8], resets[20];
-    provider_reset_strings(provider, ses, sizeof(ses), wk, sizeof(wk));
-    snprintf(resets, sizeof(resets), "%s/%s", ses, wk);
+    char resets[20];
+    format_reset_pair(provider, resets, sizeof(resets));
 
     icon_provider_logo(ox, oy, provider->logo, 3, provider->auth_err);
     draw_str2x(ox + 29, oy + 3, provider->label, provider->auth_err);
@@ -1858,15 +1871,15 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     /* ── Header (y 2..14) ── */
     if (offline) {
         icon_cross_sync(6, 4);
-        draw_str(19, 5, "OFFLINE", 1);
+        draw_str(19, 4, "OFFLINE", 1);
     } else {
         icon_box_logo(6, 4);
-        draw_str(19, 5, "DEVDASH", 0);
+        draw_str(19, 4, "DEVDASH", 0);
         if ((!header_status || !header_status[0]) && !s_sleeping_mode) {
             draw_header_connection_slots();
         }
         if (header_status && header_status[0]) {
-            draw_str(290 - str_w(header_status), 5, header_status, 0);
+            draw_str(290 - str_w(header_status), 4, header_status, 0);
         } else if (s_sleeping_mode) {
             /* Sleeping: [moon] [HH:MM] of the last sync, no "+Nm" interval —
              * the device is parked, so the next-refresh hint is meaningless. */
@@ -1876,7 +1889,7 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
             const int x_clock  = 290 - clock_w;
             const int x_moon   = x_clock - icon_gap - moon_w;
             icon_moon(x_moon, 4, 1);
-            draw_str(x_clock, 5, data->updated_at, 0);
+            draw_str(x_clock, 4, data->updated_at, 0);
         } else {
             /* Right-anchored cluster: [sync] [HH:MM] [+Nm], all 5x7 font.
              * Wider intervals shift the clock/sync group left. */
@@ -1894,8 +1907,8 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
                 fill_rect(x_sync - 5, 7, 3, 3, 1, 0);
             }
             icon_sync(x_sync, 4);
-            draw_str(x_clock, 5, data->updated_at, 0);
-            draw_str(x_next,  5, next, 0);
+            draw_str(x_clock, 4, data->updated_at, 0);
+            draw_str(x_next,  4, next, 0);
         }
     }
 
@@ -1935,13 +1948,13 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     if (num_providers == 1) {
         draw_provider_hero(6, body_top, 288, &active_providers[0]);
     } else if (num_providers == 2) {
-        int second_y = show_github ? 82 : 73;
+        int second_y = show_github ? 85 : 76;
         draw_provider_row(6, body_top, 288, &active_providers[0]);
         hline(6, show_github ? 80 : 71, 282);
         draw_provider_row(6, second_y, 288, &active_providers[1]);
     } else if (num_providers >= 3) {
         const int col_x[] = { 6, 156 };
-        const int row_y[] = { body_top, show_github ? 83 : 75 };
+        const int row_y[] = { body_top, show_github ? 86 : 77 };
         vline(148, show_github ? 35 : 17, show_github ? 90 : 108);
         hline(6, show_github ? 81 : 72, 282);
         for (int i = 0; i < num_providers && i < 4; i++) {
@@ -2142,7 +2155,7 @@ static bool display_show_compact_status(const char *status)
               HEADER_STATUS_W, HEADER_STATUS_H, 0, 0);
     hline(HEADER_STATUS_X, 1, HEADER_STATUS_W);
     hline(HEADER_STATUS_X, 15, HEADER_STATUS_W);
-    draw_str(290 - str_w(status), 5, status, 0);
+    draw_str(290 - str_w(status), 4, status, 0);
     eink_rect_t diff_rect = {0};
     bool has_bw_diff = find_bw_diff_rect(s_last_bw_buf, bw_buf, &diff_rect);
     if (!has_bw_diff) {
@@ -2289,8 +2302,8 @@ static void display_show_wait_page(display_context_t ctx,
     vline(294, 1,   126);
 
     icon_box_logo(6, 4);
-    draw_str(19, 5, "DEVDASH", 0);
-    draw_str(290 - str_w(header_status), 5, header_status, 0);
+    draw_str(19, 4, "DEVDASH", 0);
+    draw_str(290 - str_w(header_status), 4, header_status, 0);
     hline(2, 15, 292);
 
     icon_wifi(24, 44);
@@ -2375,9 +2388,9 @@ static void draw_s1_chrome(void)
 
     /* Header (y 2..14) */
     icon_box_logo(6, 4);
-    draw_str(19, 5, "DEVDASH", 0);
+    draw_str(19, 4, "DEVDASH", 0);
     static const char *SETUP = "SETUP";
-    draw_str(290 - str_w(SETUP), 5, SETUP, 0);
+    draw_str(290 - str_w(SETUP), 4, SETUP, 0);
 
     /* Header bottom hairline + footer top hairline */
     hline(2, 15,  292);
@@ -2508,8 +2521,8 @@ static void draw_reset_chrome(const char *title)
     vline(294, 1,   126);
 
     icon_box_logo(6, 4);
-    draw_str(19, 5, "DEVDASH", 0);
-    draw_str(290 - str_w(title), 5, title, 0);
+    draw_str(19, 4, "DEVDASH", 0);
+    draw_str(290 - str_w(title), 4, title, 0);
 
     hline(2, 15, 292);
 }
@@ -2659,7 +2672,7 @@ void display_show_offline(display_offline_reason_t reason,
         static const int8_t d2[] = {0,7, 1,6, 2,5, 3,4, 5,3, 6,2, 7,1};
         for (int i = 0; i < 7; i++)
             lpix(6 + d2[i*2], 4 + d2[i*2+1], 1, 0);
-        draw_str(19, 5, "OFFLINE", 0);
+        draw_str(19, 4, "OFFLINE", 0);
         hline(2, 15, 292);
         draw_str(6, 30, offline_message_for_reason(reason), 0);
         display_full_refresh(/*need_red=*/false, "offline-setup-timeout");

@@ -247,18 +247,16 @@ static bool valid_amount_text(const char *s)
     return seen_int_digit && (!seen_sep || seen_frac_digit);
 }
 
-/* Parse the first optional metric into the shared third-row representation.
-   The current renderer supports the currency-aware extra-usage shape:
-   only USD/EUR are accepted, `usedPercent` may be omitted (amount-capped
-   fallback), and `valueText` is drawn verbatim when it is a valid short ASCII
-   amount. */
+/* Parse the optional `extraUsage` metric into the shared third-row representation.
+   Absent metric → not present. `usedPercent` may be omitted (env override) → the
+   device renders an amount-capped bar instead. `valueText` is the API's
+   preformatted, locale-aware amount; when valid the device draws it verbatim,
+   otherwise it formats `value` itself. Only USD/EUR are accepted. */
 static void parse_extra_usage(const cJSON *service, extra_usage_t *out)
 {
     memset(out, 0, sizeof(*out));
-    const cJSON *metrics = cJSON_GetObjectItemCaseSensitive(service, "metrics");
-    const cJSON *metric =
-        metrics && cJSON_IsArray(metrics) ? cJSON_GetArrayItem(metrics, 0) : NULL;
-    if (!metric || !cJSON_IsObject(metric)) return;
+    const cJSON *metric = find_service_item(service, "metrics", "extraUsage");
+    if (!metric) return;
 
     const char *unit = json_string(metric, "unit");
     if (!unit || (strcmp(unit, "EUR") != 0 && strcmp(unit, "USD") != 0)) return;
