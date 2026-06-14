@@ -464,12 +464,12 @@ function drawHeaderConnectionSlots(f, wifiSlot, apiSlot) {
   let x = (296 - width) / 2;
   iconWifi(f, x, 3);
   x += iconW + gap;
-  f.drawStr(x, 5, wifi, 0);
+  f.drawStr(x, 4, wifi, 0);
   if (!apiSlot) return;
   x += strW(wifi) + gap;
-  iconArrowRight(f, x, 5);
+  iconArrowRight(f, x, 4);
   x += arrowW + gap;
-  f.drawStr(x, 5, api, 0);
+  f.drawStr(x, 4, api, 0);
 }
 
 function iconGlobe(f, ox, oy) {
@@ -570,8 +570,10 @@ function drawUsageRow(f, ox, oy, width, label, pct, labelW, barH, segW) {
   const value = `${pct}%`;
   const barX = ox + labelW;
   const valueX = ox + width - strW(value);
+  const fixedEndX = ox + width - strW("100%") - 2;
+  const barEndX = Math.min(fixedEndX, valueX - 2);
   f.drawStr(ox, oy, label, 0);
-  drawBarCfg(f, barX, oy, Math.max(0, valueX - 2 - barX), barH, segW, pct);
+  drawBarCfg(f, barX, oy, Math.max(0, barEndX - barX), barH, segW, pct);
   f.drawStr(valueX, oy, value, pct > 80);
 }
 
@@ -635,15 +637,15 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
   f.vline(295, 0, 127);
 
   iconBoxLogo(f, 6, 4);
-  f.drawStr(19, 5, "DEVDASH", 0);
+  f.drawStr(19, 4, "DEVDASH", 0);
   drawHeaderConnectionSlots(f, 1, 1);
   const next = `+${data.refreshMin ?? 5}m`;
   const xNext = 290 - strW(next);
   const xClock = xNext - 2 - strW(data.updatedAt);
   const xSync = xClock - 4 - 8;
   iconSync(f, xSync, 4);
-  f.drawStr(xClock, 5, data.updatedAt, 0);
-  f.drawStr(xNext, 5, next, 0);
+  f.drawStr(xClock, 4, data.updatedAt, 0);
+  f.drawStr(xNext, 4, next, 0);
   f.hline(1, 14, 293);
 
   if (data.githubPresent) {
@@ -671,7 +673,7 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
   const bodyTop = data.githubPresent ? 37 : 19;
   f.vline(148, data.githubPresent ? 35 : 17, data.githubPresent ? 90 : 108);
   f.hline(6, data.githubPresent ? 81 : 72, 282);
-  const xs = [6, 156], ys = [bodyTop, data.githubPresent ? 83 : 75];
+  const xs = [6, 156], ys = [bodyTop, data.githubPresent ? 86 : 77];
   data.usage.forEach((provider, index) => {
     drawProviderGrid(f, xs[index % 2], ys[Math.floor(index / 2)], 138, provider);
   });
@@ -815,9 +817,9 @@ function drawS1Chrome(f) {
   f.vline(294, 1, 126);
 
   iconBoxLogo(f, 6, 4);
-  f.drawStr(19, 5, "DEVDASH", 0);
+  f.drawStr(19, 4, "DEVDASH", 0);
   const setup = "SETUP";
-  f.drawStr(290 - strW(setup), 5, setup, 0);
+  f.drawStr(290 - strW(setup), 4, setup, 0);
 
   f.hline(2, 15, 292);
   f.hline(2, 113, 292);
@@ -971,8 +973,8 @@ function drawResetChrome(f, title) {
   f.vline(294, 1, 126);
 
   iconBoxLogo(f, 6, 4);
-  f.drawStr(19, 5, "DEVDASH", 0);
-  f.drawStr(290 - strW(title), 5, title, 0);
+  f.drawStr(19, 4, "DEVDASH", 0);
+  f.drawStr(290 - strW(title), 4, title, 0);
 
   f.hline(2, 15, 292);
 }
