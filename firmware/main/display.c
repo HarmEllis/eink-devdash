@@ -838,7 +838,9 @@ static void draw_provider_extra_row(int ox, int oy, int width,
 
     int bar_x = ox + label_w;
     int amount_x = ox + width - str_w(amount);
-    int bar_w = amount_x - 2 - bar_x;
+    int fixed_end_x = ox + width - str_w("100%") - 2;
+    int bar_end_x = (amount_x - 2 < fixed_end_x) ? amount_x - 2 : fixed_end_x;
+    int bar_w = bar_end_x - bar_x;
     if (bar_w < 0) bar_w = 0;
     draw_currency_symbol(ox, oy, extra->currency, auth_err);
     draw_bar_cfg_ex(bar_x, oy, bar_w, bar_h, seg_w, pct,

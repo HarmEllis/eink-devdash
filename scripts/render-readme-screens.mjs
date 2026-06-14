@@ -582,8 +582,10 @@ function drawMetricRow(f, ox, oy, width, metric, labelW, barH, segW) {
   const amount = metric.valueText ?? formatSpendAmount(metric.amount, metric.currency);
   const amountX = ox + width - strW(amount);
   const barX = ox + labelW;
+  const fixedEndX = ox + width - strW("100%") - 2;
+  const barEndX = Math.min(fixedEndX, amountX - 2);
   drawCurrencySymbol(f, ox, oy, metric.currency, 0);
-  drawBarCfg(f, barX, oy, Math.max(0, amountX - 2 - barX), barH, segW,
+  drawBarCfg(f, barX, oy, Math.max(0, barEndX - barX), barH, segW,
     metric.percent ?? Math.min(100, Math.round(metric.amount)), metric.amount > 0);
   f.drawStr(amountX, oy, amount, metric.amount > 0);
 }
