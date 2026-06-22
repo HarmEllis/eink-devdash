@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-22
+
+This release adds two pacing aids to the provider usage bars: a last-hour activity slice that shows how much of each window's usage is recent, and a recommended daily-limit tick on the 7-day bar that helps spread the remaining weekly budget evenly across the remaining days.
+
+### Added
+
+- **Last-hour usage slice**: an in-memory usage history tracks how much of each window's usage accrued in the last hour, emitted as the additive `recentPercent` field. The firmware renders this recent portion as hollow boxes with top/bottom centre marks (older usage stays solid-filled). Warm-up falls back to the oldest sample so the slice appears within a couple of polls after a restart, and a window-reset guard avoids flagging a tumbling-window reset as recent activity.
+- **Weekly daily-limit tick**: the 7-day usage bar can show a small dash at a recommended daily-limit position, configured with `WEEK_TICK_MODE` (`ceiling` marks today's ceiling — current usage plus an equal share of the remaining weekly budget over the remaining days; `even-pace` marks where usage should be by now if spread evenly across the week). `WORK_DAYS` restricts the calculation to the days you actually use your quota; working time is integrated continuously over the exact window rather than counted by calendar dates.
+
+### Changed
+
+- `docker-compose.yml` passes `WEEK_TICK_MODE` and `WORK_DAYS` through to the API container.
+- The README colour key and environment-variable table document the new slice and tick, and the dashboard screenshot was regenerated to reflect them.
+
+### Fixed
+
+- Corrected a tick/extra-usage-row overlap in the 2-provider layout.
+
 ## [0.9.0] - 2026-06-14
 
 This release introduces Antigravity as a new provider with live quota usage, refactors the firmware and API to a generic multi-provider usage grid supporting up to four providers, and fixes several display layout and bar-width inconsistencies.
@@ -205,6 +223,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.10.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.0...v0.7.1
