@@ -33,6 +33,8 @@ typedef struct {
 typedef struct {
     char label[DASH_WINDOW_LABEL_LEN];
     int used_pct;
+    int recent_pct;        /* usage accrued in the last hour (0..used_pct), grey slice */
+    int tick_pct;          /* recommended daily-limit marker (0..100), -1 = none */
     int reset_in_seconds;
     bool reached;
 } usage_window_data_t;

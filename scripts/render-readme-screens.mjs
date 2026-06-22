@@ -503,23 +503,48 @@ function iconWarningBig(f, ox, oy, useRed) {
   f.fillRect(ox + 11, oy + 19, 2, 2, 1, useRed);
 }
 
-function drawBarCfg(f, ox, oy, width, height, segW, pct, forceRed = false) {
+function drawBarCfg(f, ox, oy, width, height, segW, pct, forceRed = false, recentPct = 0, tickPct = -1) {
   pct = Math.max(0, Math.min(100, pct));
+  recentPct = Math.max(0, Math.min(pct, recentPct));
   const stride = segW + 1;
   const cols = Math.floor((width + 1) / stride);
   const filled = Math.floor((pct * cols + 50) / 100);
   const thresh = Math.floor((80 * cols + 50) / 100);
+  const recentCols = Math.floor((recentPct * cols + 50) / 100);
+  const recentStart = filled - recentCols; // grey covers [recentStart, filled)
   for (let i = 0; i < cols; i++) {
     const sx = ox + i * stride;
     if (i < filled) {
       const isRed = forceRed || (pct > 80 && i >= thresh);
-      f.fillRect(sx, oy, segW, height, 1, isRed);
+      if (!isRed && i >= recentStart) {
+        // last-hour block: hollow box with the middle two pixels filled
+        f.hline(sx, oy, segW);
+        f.hline(sx, oy + height - 1, segW);
+        f.vline(sx, oy + 1, height - 2);
+        f.vline(sx + segW - 1, oy + 1, height - 2);
+        const cx = sx + Math.floor((segW - 1) / 2);
+        const cy = oy + Math.floor(height / 2) - 1;
+        f.lpix(cx, cy - 1, 1, 0); // top-middle filled
+        f.lpix(cx, cy + 2, 1, 0); // bottom-middle filled, middle two open
+      } else {
+        f.fillRect(sx, oy, segW, height, 1, isRed);
+      }
     } else {
       f.hline(sx, oy, segW);
       f.hline(sx, oy + height - 1, segW);
       f.vline(sx, oy + 1, height - 2);
       f.vline(sx + segW - 1, oy + 1, height - 2);
     }
+  }
+
+  if (tickPct >= 0) {
+    tickPct = Math.min(100, tickPct);
+    const tickCols = Math.floor((tickPct * cols + 50) / 100);
+    // Horizontal dash under the segment at the recommended limit, 1px below.
+    let idx = tickCols - 1;
+    if (idx < 0) idx = 0;
+    if (idx > cols - 1) idx = cols - 1;
+    f.hline(ox + idx * stride, oy + height + 1, segW);
   }
 }
 
@@ -566,14 +591,14 @@ function drawProviderTitle(f, ox, oy, width, provider, hourglass = false) {
   f.drawStr(resetX, oy, resets, provider.windows.some((window) => window.pct > 80));
 }
 
-function drawUsageRow(f, ox, oy, width, label, pct, labelW, barH, segW) {
+function drawUsageRow(f, ox, oy, width, label, pct, labelW, barH, segW, recentPct = 0, tickPct = -1) {
   const value = `${pct}%`;
   const barX = ox + labelW;
   const valueX = ox + width - strW(value);
   const fixedEndX = ox + width - strW("100%") - 2;
   const barEndX = Math.min(fixedEndX, valueX - 2);
   f.drawStr(ox, oy, label, 0);
-  drawBarCfg(f, barX, oy, Math.max(0, barEndX - barX), barH, segW, pct);
+  drawBarCfg(f, barX, oy, Math.max(0, barEndX - barX), barH, segW, pct, false, recentPct, tickPct);
   f.drawStr(valueX, oy, value, pct > 80);
 }
 
@@ -592,8 +617,10 @@ function drawMetricRow(f, ox, oy, width, metric, labelW, barH, segW) {
 
 function drawProviderGrid(f, ox, oy, width, provider) {
   drawProviderTitle(f, ox, oy, width, provider);
-  drawUsageRow(f, ox, oy + 13, width, provider.windows[0].label, provider.windows[0].pct, 15, 6, 3);
-  drawUsageRow(f, ox, oy + 22, width, provider.windows[1].label, provider.windows[1].pct, 15, 6, 3);
+  drawUsageRow(f, ox, oy + 13, width, provider.windows[0].label, provider.windows[0].pct, 15, 6, 3,
+    provider.windows[0].recent ?? 0, -1);
+  drawUsageRow(f, ox, oy + 22, width, provider.windows[1].label, provider.windows[1].pct, 15, 6, 3,
+    provider.windows[1].recent ?? 0, provider.windows[1].tick ?? -1);
   drawMetricRow(f, ox, oy + 31, width, provider.metric, 15, 6, 3);
 }
 
@@ -620,10 +647,10 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
     githubPresent,
     github: { issues: 12, prs: 4, notifications: 1, dependabot: 0, authError: githubError === "auth" },
     usage: [
-      { label: "CLAUDE", icon: "spark", windows: [{ label: "5H", pct: 9, reset: 8200 }, { label: "7D", pct: 41, reset: 304800 }], metric: { amount: 0.91, percent: 5, currency: "EUR", valueText: "0,91" } },
-      { label: "CODEX", icon: "ring", windows: [{ label: "5H", pct: 32, reset: 3600 }, { label: "7D", pct: 38, reset: 313200 }], metric: { amount: 3, percent: null, currency: "USD", valueText: "3" } },
-      { label: "GEMINI", icon: "lift", windows: [{ label: "5H", pct: 0, reset: 18000 }, { label: "7D", pct: 8, reset: 542160 }] },
-      { label: "CLAUDE/GPT", icon: "lift", windows: [{ label: "5H", pct: 0, reset: 18000 }, { label: "7D", pct: 34, reset: 544380 }] },
+      { label: "CLAUDE", icon: "spark", windows: [{ label: "5H", pct: 9, recent: 4, reset: 8200 }, { label: "7D", pct: 41, recent: 6, tick: 57, reset: 304800 }], metric: { amount: 0.91, percent: 5, currency: "EUR", valueText: "0,91" } },
+      { label: "CODEX", icon: "ring", windows: [{ label: "5H", pct: 32, recent: 8, reset: 3600 }, { label: "7D", pct: 38, recent: 5, tick: 52, reset: 313200 }], metric: { amount: 3, percent: null, currency: "USD", valueText: "3" } },
+      { label: "GEMINI", icon: "lift", windows: [{ label: "5H", pct: 0, reset: 18000 }, { label: "7D", pct: 8, recent: 2, tick: 30, reset: 542160 }] },
+      { label: "CLAUDE/GPT", icon: "lift", windows: [{ label: "5H", pct: 0, reset: 18000 }, { label: "7D", pct: 34, recent: 7, tick: 47, reset: 544380 }] },
     ],
     updatedAt: "14:38",
     refreshMin: 5,

@@ -5,8 +5,11 @@ import {
   DASHBOARD_SCHEMA_VERSION,
   type DashboardService,
   type DashboardServiceAdapter,
+  type DashboardUsageWindow,
 } from '../services/dashboard-service.js'
 import { createUsageAdapters } from '../services/usage.adapters.js'
+import { recordAndComputeRecent, usageHistoryKey } from '../services/usage-history.js'
+import { WEEK_TICK_MODE, WORK_DAYS, computeWeekTick } from '../services/week-tick.js'
 
 const DEFAULT_TIME_ZONE = 'Europe/Amsterdam'
 
@@ -86,6 +89,58 @@ export type DashboardPayload = {
 
 const MAX_USAGE_SERVICES = 4
 
+// Long/weekly window ids across providers (Claude: 'weekly', Codex/Antigravity:
+// 'long'). Only this window carries the recommended daily-limit tick.
+const LONG_WINDOW_IDS = new Set(['weekly', 'long'])
+
+/* Effective used percentage of a window, mirroring the firmware's
+ * usage_window_percent: prefer usedPercent, else used/limit. */
+function effectiveUsedPercent(window: DashboardUsageWindow): number | null {
+  if (typeof window.usedPercent === 'number') {
+    return Math.min(Math.max(window.usedPercent, 0), 100)
+  }
+  if (typeof window.used === 'number' && typeof window.limit === 'number' && window.limit > 0) {
+    return Math.min(Math.max((window.used / window.limit) * 100, 0), 100)
+  }
+  return null
+}
+
+/* Attach the last-hour grey slice (recentPercent) to every usage window and the
+ * recommended daily-limit tick (tickPercent) to the long/weekly window. Computed
+ * here, in the single shared build path, so the firmware stays stateless. */
+function enrichUsageWindows(services: DashboardService[], timeZone: string, now: Date): void {
+  const nowMs = now.getTime()
+  for (const service of services) {
+    if (service.kind !== 'usage' || !service.windows) continue
+    for (const window of service.windows) {
+      const used = effectiveUsedPercent(window)
+      if (used == null) continue
+
+      // Only an absolute reset instant when there is a real countdown. A
+      // fallback resetInSeconds of 0 (missing headers/quota) would otherwise
+      // make resetAt mirror "now" and falsely trip the window-reset guard
+      // against the ~1h-old baseline, flagging the entire usage as recent.
+      const resetAt = window.resetInSeconds != null && window.resetInSeconds > 0
+        ? nowMs + window.resetInSeconds * 1000
+        : null
+      const recent = recordAndComputeRecent(usageHistoryKey(service.id, window.id), used, resetAt, nowMs)
+      window.recentPercent = Math.min(Math.round(recent), Math.round(used))
+
+      if (LONG_WINDOW_IDS.has(window.id) && window.resetInSeconds != null) {
+        const tick = computeWeekTick({
+          usedPercent: used,
+          resetInSeconds: window.resetInSeconds,
+          mode: WEEK_TICK_MODE,
+          workDays: WORK_DAYS,
+          timeZone,
+          now: nowMs,
+        })
+        if (tick != null) window.tickPercent = Math.round(tick)
+      }
+    }
+  }
+}
+
 export function createDashboardAdapters(): DashboardServiceAdapter[] {
   return [
     ...createCodeHostAdapters(),
@@ -110,6 +165,8 @@ export async function buildDashboardPayload(
     usageCount += 1
     return usageCount <= MAX_USAGE_SERVICES
   })
+
+  enrichUsageWindows(services, resolveTimeZone(timeZone), now)
 
   return {
     schemaVersion: DASHBOARD_SCHEMA_VERSION,
