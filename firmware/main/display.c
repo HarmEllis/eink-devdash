@@ -645,21 +645,42 @@ static void icon_big_cross_red(int ox, int oy)
 
 /* ── segmented bar ──────────────────────────────────────────────────────── */
 /* Filled segments past the 80% threshold render red when pct > 80. Empty
- * segments are hollow 1-px black boxes. */
-static void draw_bar_cfg_ex(int ox, int oy, int width, int height, int seg_w,
-                            int pct, bool force_red)
+ * segments are hollow 1-px black boxes. `recent_pct` (0..pct) renders the most
+ * recent slice of the fill as a hollow box with its top- and bottom-middle
+ * pixels filled (the "last hour" look) instead of solid black; the >80% red
+ * zone keeps red (alert beats recency). `tick_pct` (>=0) draws a short dash
+ * under the segment at the recommended limit; pass -1 for none. */
+static void draw_bar_cfg_full(int ox, int oy, int width, int height, int seg_w,
+                              int pct, bool force_red, int recent_pct, int tick_pct)
 {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
+    if (recent_pct < 0) recent_pct = 0;
+    if (recent_pct > pct) recent_pct = pct;
     int stride = seg_w + 1;
     int cols = (width + 1) / stride;
     int filled = (pct * cols + 50) / 100;
     int thresh = (80 * cols + 50) / 100;
+    int recent_cols = (recent_pct * cols + 50) / 100;
+    int recent_start = filled - recent_cols; /* grey covers [recent_start, filled) */
     for (int i = 0; i < cols; i++) {
         int sx = ox + i * stride;
         if (i < filled) {
             int is_red = force_red || ((pct > 80) && (i >= thresh));
-            fill_rect(sx, oy, seg_w, height, 1, is_red);
+            if (!is_red && i >= recent_start) {
+                /* last-hour block: hollow box with the top- and bottom-middle
+                 * pixels filled, the middle two left open */
+                hline(sx, oy, seg_w);
+                hline(sx, oy + height - 1, seg_w);
+                vline(sx, oy + 1, height - 2);
+                vline(sx + seg_w - 1, oy + 1, height - 2);
+                int cx = sx + (seg_w - 1) / 2;
+                int cy = oy + height / 2 - 1;
+                lpix(cx, cy - 1, 1, 0);
+                lpix(cx, cy + 2, 1, 0);
+            } else {
+                fill_rect(sx, oy, seg_w, height, 1, is_red);
+            }
         } else {
             /* outlined empty box: 1 px black border, white interior */
             hline(sx, oy, seg_w);
@@ -668,11 +689,22 @@ static void draw_bar_cfg_ex(int ox, int oy, int width, int height, int seg_w,
             vline(sx + seg_w - 1, oy + 1, height - 2);
         }
     }
+
+    if (tick_pct >= 0) {
+        if (tick_pct > 100) tick_pct = 100;
+        int tick_cols = (tick_pct * cols + 50) / 100;
+        /* short dash under the segment at the recommended limit, 1 px below */
+        int idx = tick_cols - 1;
+        if (idx < 0) idx = 0;
+        if (idx > cols - 1) idx = cols - 1;
+        hline(ox + idx * stride, oy + height + 1, seg_w);
+    }
 }
 
-static void draw_bar_cfg(int ox, int oy, int width, int height, int seg_w, int pct)
+static void draw_bar_cfg_ex(int ox, int oy, int width, int height, int seg_w,
+                            int pct, bool force_red)
 {
-    draw_bar_cfg_ex(ox, oy, width, height, seg_w, pct, false);
+    draw_bar_cfg_full(ox, oy, width, height, seg_w, pct, force_red, 0, -1);
 }
 
 /* Format remaining seconds as a compact countdown string ("0h47", "2h14",
@@ -714,6 +746,9 @@ typedef struct {
     const char *wk_label;
     int ses;
     int wk;
+    int ses_recent;   /* last-hour usage within the 5h window (grey slice) */
+    int wk_recent;    /* last-hour usage within the 7d window (grey slice) */
+    int wk_tick;      /* recommended daily-limit marker on the 7d bar, -1 = none */
     int ses_reset;
     int wk_reset;
     const extra_usage_t *extra;
@@ -792,6 +827,7 @@ static void draw_provider_title(int ox, int oy, int width,
 
 static void draw_provider_percent_row(int ox, int oy, int width,
                                       const char *label, int pct,
+                                      int recent_pct, int tick_pct,
                                       int label_w,
                                       int bar_h, int seg_w,
                                       bool auth_err)
@@ -809,7 +845,8 @@ static void draw_provider_percent_row(int ox, int oy, int width,
     if (bar_w < 0) bar_w = 0;
 
     draw_str(ox, oy, label, auth_err);
-    draw_bar_cfg(bar_x, oy, bar_w, bar_h, seg_w, auth_err ? 0 : pct);
+    draw_bar_cfg_full(bar_x, oy, bar_w, bar_h, seg_w, auth_err ? 0 : pct,
+                      false, auth_err ? 0 : recent_pct, auth_err ? -1 : tick_pct);
     draw_str(value_x, oy, value, auth_err || pct > 80);
 }
 
@@ -853,9 +890,9 @@ static void draw_provider_grid(int ox, int oy, int width,
 {
     draw_provider_title(ox, oy, width, provider, false);
     draw_provider_percent_row(ox, oy + 13, width, provider->ses_label, provider->ses,
-                              15, 6, 3, provider->auth_err);
+                              provider->ses_recent, -1, 15, 6, 3, provider->auth_err);
     draw_provider_percent_row(ox, oy + 22, width, provider->wk_label, provider->wk,
-                              15, 6, 3, provider->auth_err);
+                              provider->wk_recent, provider->wk_tick, 15, 6, 3, provider->auth_err);
     draw_provider_extra_row(ox, oy + 31, width, provider->extra,
                             15, 6, 3, provider->auth_err);
 }
@@ -865,10 +902,12 @@ static void draw_provider_row(int ox, int oy, int width,
 {
     draw_provider_title(ox, oy, width, provider, true);
     draw_provider_percent_row(ox, oy + 14, width, provider->ses_label, provider->ses,
-                              18, 8, 3, provider->auth_err);
+                              provider->ses_recent, -1, 18, 8, 3, provider->auth_err);
     draw_provider_percent_row(ox, oy + 23, width, provider->wk_label, provider->wk,
-                              18, 8, 3, provider->auth_err);
-    draw_provider_extra_row(ox, oy + 32, width, provider->extra,
+                              provider->wk_recent, provider->wk_tick, 18, 8, 3, provider->auth_err);
+    /* +33 (not +32) so the 7d tick dash at oy+23+8+1 has a clear row and the
+       extra row's top border does not overdraw it. */
+    draw_provider_extra_row(ox, oy + 33, width, provider->extra,
                             18, 8, 3, provider->auth_err);
 }
 
@@ -886,9 +925,9 @@ static void draw_provider_hero(int ox, int oy, int width,
              provider->auth_err || provider->ses > 80 || provider->wk > 80);
 
     draw_provider_percent_row(ox, oy + 28, width, provider->ses_label, provider->ses,
-                              26, 12, 4, provider->auth_err);
+                              provider->ses_recent, -1, 26, 12, 4, provider->auth_err);
     draw_provider_percent_row(ox, oy + 47, width, provider->wk_label, provider->wk,
-                              26, 12, 4, provider->auth_err);
+                              provider->wk_recent, provider->wk_tick, 26, 12, 4, provider->auth_err);
     draw_provider_extra_row(ox, oy + 66, width, provider->extra,
                             26, 12, 4, provider->auth_err);
 }
@@ -1933,6 +1972,9 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
             .wk_label = service->window_count > 1 ? long_window->label : "--",
             .ses = service->window_count > 0 ? short_window->used_pct : 0,
             .wk = service->window_count > 1 ? long_window->used_pct : 0,
+            .ses_recent = service->window_count > 0 ? short_window->recent_pct : 0,
+            .wk_recent = service->window_count > 1 ? long_window->recent_pct : 0,
+            .wk_tick = service->window_count > 1 ? long_window->tick_pct : -1,
             .ses_reset = service->window_count > 0
                 ? short_window->reset_in_seconds : 0,
             .wk_reset = service->window_count > 1

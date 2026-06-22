@@ -19,6 +19,12 @@ refreshes; BWR adds red alert highlights.
 Red ink highlights alerts such as Dependabot findings, high usage, and
 authentication errors.
 
+On the 5H and 7D usage bars, solid filled boxes are usage from before the last
+hour and outlined boxes (with a top and bottom centre mark) are usage from the
+last hour. When `WEEK_TICK_MODE` is set, the 7D bar also shows a small dash
+under the box at the recommended daily-limit position, so the remaining weekly
+budget lasts evenly across the remaining days (configurable with `WORK_DAYS`).
+
 ## Contents
 
 - [Hardware](#hardware)
@@ -154,6 +160,8 @@ contains all supported variables.
 | `ANTIGRAVITY_OVERAGE_USD` | no | empty | Manual overage spend in USD for the Antigravity extra-usage bar. Empty or `0` hides the bar. |
 | `DASHBOARD_LOCALE` | no | `nl-NL` | BCP-47 locale for the extra-usage amount's decimal separator (`nl-NL` → `0,91`, `en-US` → `0.91`). Invalid/unsupported values fall back to the default. |
 | `DASHBOARD_TIME_ZONE` | no | `Europe/Amsterdam` | IANA timezone used for timestamps and quiet hours. |
+| `WEEK_TICK_MODE` | no | empty | Recommended daily-limit tick on the 7-day usage bar. Empty hides it. `ceiling` marks today's ceiling (current usage plus an equal share of the remaining weekly budget spread over the remaining days); `even-pace` marks where usage should be by now if spread evenly across the week. |
+| `WORK_DAYS` | no | empty | Days you actually use your quota, for the `WEEK_TICK_MODE` calculation. Comma-separated weekday abbreviations (e.g. `mon,tue,thu,fri`); empty counts all 7 days. Day boundaries use `DASHBOARD_TIME_ZONE`. |
 | `MDNS_ENABLED` | no | `true` | Enables `.local` advertisement. |
 | `MDNS_NAME` | no | `devdash-api` | Hostname advertised under `.local`. |
 | `OTA_ENABLED` | no | `true` | Set to `false` to stop advertising firmware updates. |

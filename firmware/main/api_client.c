@@ -345,6 +345,12 @@ static void parse_usage_service(const cJSON *service, usage_service_data_t *out)
                              out->window_count == 1 ? "5H" : "WK");
             ascii_upper(parsed->label);
             parsed->used_pct = usage_window_percent(window);
+            const cJSON *recent = cJSON_GetObjectItemCaseSensitive(window, "recentPercent");
+            parsed->recent_pct = (recent && cJSON_IsNumber(recent))
+                ? round_percent(recent->valuedouble) : 0;
+            const cJSON *tick = cJSON_GetObjectItemCaseSensitive(window, "tickPercent");
+            parsed->tick_pct = (tick && cJSON_IsNumber(tick))
+                ? round_percent(tick->valuedouble) : -1;
             parsed->reset_in_seconds = json_int(window, "resetInSeconds");
             parsed->reached = json_bool(window, "reachedLimit");
         }
