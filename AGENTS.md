@@ -10,6 +10,21 @@ Conversational chat with the maintainer can be in Dutch, but the moment
 something lands in the repo it switches to English. If you find existing
 Dutch content while editing, translate it as part of your change.
 
+## Reviews
+
+Non-trivial plans and code changes are reviewed by **Gemini** before the
+maintainer is asked to sign off. Run the review with the `agy` CLI (Gemini) in a
+dedicated tmux pane so the exchange stays observable:
+
+- Open a tmux pane and start `agy` in it (drive it with the `tmux-cli` skill, or
+  use `agy -p "<prompt>"` for a one-shot non-interactive review).
+- Give Gemini the plan or the diff plus the review goal, and capture its verdict
+  and findings.
+- Address the findings, then ask the maintainer for the go-ahead.
+
+The review prompt and any in-repo review notes follow the English-only language
+policy above.
+
 ## Devcontainer is mandatory
 
 All firmware build steps and flash-server commands MUST run **inside the
