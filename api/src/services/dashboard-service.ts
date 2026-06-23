@@ -20,8 +20,10 @@ export type DashboardUsageWindow = {
   resetInSeconds?: number
   resetsAt?: number | null
   reachedLimit?: boolean
-  // Additive (schema stays 2). Portion of the window's usage accrued in the last
-  // hour (0..effective usedPercent); the firmware renders it as a grey slice.
+  // Additive (schema stays 2). Portion of the window's usage accrued recently
+  // (0..effective usedPercent); the firmware renders it as a grey slice. The
+  // window is the last hour for short windows and "today" (since local midnight)
+  // for the long/weekly (7d) window.
   recentPercent?: number
   // Recommended daily-limit marker position (0..100) on the long/weekly window;
   // emitted only when WEEK_TICK_MODE is set. Older firmware ignores it.

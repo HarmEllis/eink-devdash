@@ -19,9 +19,11 @@ refreshes; BWR adds red alert highlights.
 Red ink highlights alerts such as Dependabot findings, high usage, and
 authentication errors.
 
-On the 5H and 7D usage bars, solid filled boxes are usage from before the last
-hour and outlined boxes (with a top and bottom centre mark) are usage from the
-last hour. When `WEEK_TICK_MODE` is set, the 7D bar also shows a small dash
+On the usage bars, solid filled boxes are older usage and outlined boxes (with a
+top and bottom centre mark) are recent usage. "Recent" is the last hour on the
+5H bar and today (since local midnight, in `DASHBOARD_TIME_ZONE`) on the 7D bar,
+so the outline on the 7D bar shows how much of the weekly budget you have used
+today. When `WEEK_TICK_MODE` is set, the 7D bar also shows a small dash
 under the box at the recommended daily-limit position, so the remaining weekly
 budget lasts evenly across the remaining days (configurable with `WORK_DAYS`).
 

@@ -79,6 +79,60 @@ export function formatLocalIso(
   return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}:${get('second')}`
 }
 
+/* Local wall-clock fields of `instant` in `timeZone`. Midnight is normalised
+ * from hour "24" to 0 (some Intl implementations render it as 24 under h23). */
+function wallClock(timeZone: string, instant: number) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(instant))
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value)
+  const hour = get('hour')
+  return {
+    y: get('year'),
+    m: get('month'),
+    d: get('day'),
+    h: hour === 24 ? 0 : hour,
+    mi: get('minute'),
+    s: get('second'),
+  }
+}
+
+/* Offset (ms) of `timeZone` at `instant`: how far the local wall clock is ahead
+ * of UTC, i.e. localWallTimeAsUtc - instant. */
+function tzOffsetMs(timeZone: string, instant: number): number {
+  const w = wallClock(timeZone, instant)
+  return Date.UTC(w.y, w.m - 1, w.d, w.h, w.mi, w.s) - instant
+}
+
+/* Epoch ms of the start of `now`'s local calendar day in `timeZone` (00:00:00
+ * local). DST-safe: the offset at local midnight can differ from the offset at
+ * `now`, so a naive "subtract the formatted h/m/s" would shift the result by an
+ * hour on transition days. We resolve the target wall time to an instant and
+ * verify it maps back to local midnight; if 00:00 does not exist (a zone that
+ * springs forward exactly at midnight) we return the first valid instant of the
+ * day (the later candidate, e.g. 01:00 local). */
+export function startOfLocalDayMs(now: Date, timeZone: string): number {
+  const tz = resolveTimeZone(timeZone)
+  const w = wallClock(tz, now.getTime())
+  const guess = Date.UTC(w.y, w.m - 1, w.d, 0, 0, 0)
+  const candidateA = guess - tzOffsetMs(tz, guess)
+  const candidateB = guess - tzOffsetMs(tz, candidateA)
+  const isLocalMidnight = (instant: number) => {
+    const c = wallClock(tz, instant)
+    return c.y === w.y && c.m === w.m && c.d === w.d && c.h === 0 && c.mi === 0 && c.s === 0
+  }
+  if (isLocalMidnight(candidateA)) return candidateA
+  if (isLocalMidnight(candidateB)) return candidateB
+  return Math.max(candidateA, candidateB)
+}
+
 export type DashboardPayload = {
   schemaVersion: typeof DASHBOARD_SCHEMA_VERSION
   services: DashboardService[]
@@ -110,6 +164,10 @@ function effectiveUsedPercent(window: DashboardUsageWindow): number | null {
  * here, in the single shared build path, so the firmware stays stateless. */
 function enrichUsageWindows(services: DashboardService[], timeZone: string, now: Date): void {
   const nowMs = now.getTime()
+  // The 7d/weekly slice means "today" (since local midnight); short windows keep
+  // the last-hour slice. Compute the day cutoff once; short windows fall back to
+  // recordAndComputeRecent's default (~1h ago).
+  const dayCutoff = startOfLocalDayMs(now, timeZone)
   for (const service of services) {
     if (service.kind !== 'usage' || !service.windows) continue
     for (const window of service.windows) {
@@ -119,11 +177,12 @@ function enrichUsageWindows(services: DashboardService[], timeZone: string, now:
       // Only an absolute reset instant when there is a real countdown. A
       // fallback resetInSeconds of 0 (missing headers/quota) would otherwise
       // make resetAt mirror "now" and falsely trip the window-reset guard
-      // against the ~1h-old baseline, flagging the entire usage as recent.
+      // against the baseline, flagging the entire usage as recent.
       const resetAt = window.resetInSeconds != null && window.resetInSeconds > 0
         ? nowMs + window.resetInSeconds * 1000
         : null
-      const recent = recordAndComputeRecent(usageHistoryKey(service.id, window.id), used, resetAt, nowMs)
+      const cutoff = LONG_WINDOW_IDS.has(window.id) ? dayCutoff : undefined
+      const recent = recordAndComputeRecent(usageHistoryKey(service.id, window.id), used, resetAt, nowMs, cutoff)
       window.recentPercent = Math.min(Math.round(recent), Math.round(used))
 
       if (LONG_WINDOW_IDS.has(window.id) && window.resetInSeconds != null) {
