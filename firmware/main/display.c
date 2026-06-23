@@ -668,16 +668,24 @@ static void draw_bar_cfg_full(int ox, int oy, int width, int height, int seg_w,
         if (i < filled) {
             int is_red = force_red || ((pct > 80) && (i >= thresh));
             if (!is_red && i >= recent_start) {
-                /* last-hour block: hollow box with the top- and bottom-middle
-                 * pixels filled, the middle two left open */
+                /* last-hour block: hollow box whose centre column is filled
+                 * except for a few rows left open in the middle. Keeping the
+                 * open gap small (2 rows up to 8 px tall, 4 rows from 12 px)
+                 * holds the grey density roughly constant across bar heights:
+                 * short bars read as full as the 6 px grid, while the tall hero
+                 * bar still stays visibly lighter than a solid block. */
                 hline(sx, oy, seg_w);
                 hline(sx, oy + height - 1, seg_w);
                 vline(sx, oy + 1, height - 2);
                 vline(sx + seg_w - 1, oy + 1, height - 2);
                 int cx = sx + (seg_w - 1) / 2;
-                int cy = oy + height / 2 - 1;
-                lpix(cx, cy - 1, 1, 0);
-                lpix(cx, cy + 2, 1, 0);
+                int open_rows = (height >= 12) ? 4 : 2;
+                int open_start = oy + (height - open_rows) / 2;
+                for (int ry = oy + 1; ry <= oy + height - 2; ry++) {
+                    if (ry < open_start || ry >= open_start + open_rows) {
+                        lpix(cx, ry, 1, 0);
+                    }
+                }
             } else {
                 fill_rect(sx, oy, seg_w, height, 1, is_red);
             }
@@ -901,12 +909,16 @@ static void draw_provider_row(int ox, int oy, int width,
                               const provider_info_t *provider)
 {
     draw_provider_title(ox, oy, width, provider, true);
-    draw_provider_percent_row(ox, oy + 14, width, provider->ses_label, provider->ses,
+    /* Tight 4 px gap below the title, then even 3 px gaps between the 8 px bars
+       (11/22/33) so the 5h->7d spacing matches the grid's 3 px gap while the
+       whole 41 px block still fits two-up under the GitHub strip. */
+    draw_provider_percent_row(ox, oy + 11, width, provider->ses_label, provider->ses,
                               provider->ses_recent, -1, 18, 8, 3, provider->auth_err);
-    draw_provider_percent_row(ox, oy + 23, width, provider->wk_label, provider->wk,
+    draw_provider_percent_row(ox, oy + 22, width, provider->wk_label, provider->wk,
                               provider->wk_recent, provider->wk_tick, 18, 8, 3, provider->auth_err);
-    /* +33 (not +32) so the 7d tick dash at oy+23+8+1 has a clear row and the
-       extra row's top border does not overdraw it. */
+    /* The 7d tick dash sits at oy+22+8+1 = oy+31, leaving a clear row above (30)
+       and below (32) before the extra row's top border at oy+33, so the tick
+       never touches either bar. */
     draw_provider_extra_row(ox, oy + 33, width, provider->extra,
                             18, 8, 3, provider->auth_err);
 }
@@ -1992,6 +2004,10 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
     if (num_providers == 1) {
         draw_provider_hero(6, body_top, 288, &active_providers[0]);
     } else if (num_providers == 2) {
+        /* Each provider row is 41 px tall (title + 3 bars at oy+11/22/33+8),
+           so two rows plus the hairline fit with margin in both cases:
+           GitHub rows at 37..77 and 85..125 (hairline 80); no-GitHub rows at
+           19..59 and 76..116 (hairline 71). */
         int second_y = show_github ? 85 : 76;
         draw_provider_row(6, body_top, 288, &active_providers[0]);
         hline(6, show_github ? 80 : 71, 282);
