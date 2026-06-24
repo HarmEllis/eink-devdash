@@ -25,6 +25,11 @@ last hour. When `WEEK_TICK_MODE` is set, the 7D bar also shows a small dash
 under the box at the recommended daily-limit position, so the remaining weekly
 budget lasts evenly across the remaining days (configurable with `WORK_DAYS`).
 
+With one or two providers the dashboard uses taller full-width rows instead of
+the 2x2 grid:
+
+<p align="center"><img src="docs/assets/readme-dashboard-two-screen.svg" alt="DevDash dashboard with two providers" width="420"></p>
+
 ## Contents
 
 - [Hardware](#hardware)

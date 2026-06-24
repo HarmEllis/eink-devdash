@@ -517,15 +517,19 @@ function drawBarCfg(f, ox, oy, width, height, segW, pct, forceRed = false, recen
     if (i < filled) {
       const isRed = forceRed || (pct > 80 && i >= thresh);
       if (!isRed && i >= recentStart) {
-        // last-hour block: hollow box with the middle two pixels filled
+        // last-hour block: hollow box whose centre column is filled except for
+        // a few rows left open in the middle (2 up to 8px tall, 4 from 12px),
+        // keeping the grey density roughly constant across bar heights.
         f.hline(sx, oy, segW);
         f.hline(sx, oy + height - 1, segW);
         f.vline(sx, oy + 1, height - 2);
         f.vline(sx + segW - 1, oy + 1, height - 2);
         const cx = sx + Math.floor((segW - 1) / 2);
-        const cy = oy + Math.floor(height / 2) - 1;
-        f.lpix(cx, cy - 1, 1, 0); // top-middle filled
-        f.lpix(cx, cy + 2, 1, 0); // bottom-middle filled, middle two open
+        const openRows = height >= 12 ? 4 : 2;
+        const openStart = oy + Math.floor((height - openRows) / 2);
+        for (let ry = oy + 1; ry <= oy + height - 2; ry++) {
+          if (ry < openStart || ry >= openStart + openRows) f.lpix(cx, ry, 1, 0);
+        }
       } else {
         f.fillRect(sx, oy, segW, height, 1, isRed);
       }
@@ -624,6 +628,15 @@ function drawProviderGrid(f, ox, oy, width, provider) {
   drawMetricRow(f, ox, oy + 31, width, provider.metric, 15, 6, 3);
 }
 
+function drawProviderRow(f, ox, oy, width, provider) {
+  drawProviderTitle(f, ox, oy, width, provider, true);
+  drawUsageRow(f, ox, oy + 11, width, provider.windows[0].label, provider.windows[0].pct, 18, 8, 3,
+    provider.windows[0].recent ?? 0, -1);
+  drawUsageRow(f, ox, oy + 22, width, provider.windows[1].label, provider.windows[1].pct, 18, 8, 3,
+    provider.windows[1].recent ?? 0, provider.windows[1].tick ?? -1);
+  drawMetricRow(f, ox, oy + 33, width, provider.metric, 18, 8, 3);
+}
+
 function drawIconRow(f, rowY, iconFn, iconRed, label, value, valueRed) {
   iconFn(f, 6, rowY + 3, iconRed);
   f.drawStr(22, rowY + 4, label, 0);
@@ -639,6 +652,42 @@ function drawGithubErrorColumn(f, label, useRed) {
   f.drawStr(20, 22, "GH", useRed);
   iconWarningBig(f, 51, 64, useRed);
   f.drawStr(54 - Math.floor(strW(label) / 2), 94, label, useRed);
+}
+
+function drawDashboardChrome(f, updatedAt, refreshMin) {
+  f.hline(0, 0, 295);
+  f.hline(0, 127, 295);
+  f.vline(0, 0, 127);
+  f.vline(295, 0, 127);
+
+  iconBoxLogo(f, 6, 4);
+  f.drawStr(19, 4, "DEVDASH", 0);
+  drawHeaderConnectionSlots(f, 1, 1);
+  const next = `+${refreshMin ?? 5}m`;
+  const xNext = 290 - strW(next);
+  const xClock = xNext - 2 - strW(updatedAt);
+  const xSync = xClock - 4 - 8;
+  iconSync(f, xSync, 4);
+  f.drawStr(xClock, 4, updatedAt, 0);
+  f.drawStr(xNext, 4, next, 0);
+  f.hline(1, 14, 293);
+}
+
+// Two-provider layout (no GitHub strip): full-width stacked rows. Mirrors the
+// firmware draw_provider_row path (display.c), the >1-provider sibling of the
+// 2x2 grid used by renderDashboard.
+function renderDashboardTwo() {
+  const f = new Frame();
+  const providers = [
+    { label: "CLAUDE", icon: "spark", windows: [{ label: "5H", pct: 9, recent: 4, reset: 8200 }, { label: "7D", pct: 41, recent: 6, tick: 57, reset: 304800 }], metric: { amount: 0.91, percent: 5, currency: "EUR", valueText: "0,91" } },
+    { label: "CODEX", icon: "ring", windows: [{ label: "5H", pct: 32, recent: 8, reset: 3600 }, { label: "7D", pct: 38, recent: 5, tick: 52, reset: 313200 }], metric: { amount: 3, percent: null, currency: "USD", valueText: "3" } },
+  ];
+  drawDashboardChrome(f, "14:38", 5);
+  const bodyTop = 19;
+  drawProviderRow(f, 6, bodyTop, 288, providers[0]);
+  f.hline(6, 71, 282);
+  drawProviderRow(f, 6, 76, 288, providers[1]);
+  return f;
 }
 
 function renderDashboard({ githubPresent = true, githubError = null } = {}) {
@@ -660,22 +709,7 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
 
   const depsAlert = data.github.dependabot > 0;
 
-  f.hline(0, 0, 295);
-  f.hline(0, 127, 295);
-  f.vline(0, 0, 127);
-  f.vline(295, 0, 127);
-
-  iconBoxLogo(f, 6, 4);
-  f.drawStr(19, 4, "DEVDASH", 0);
-  drawHeaderConnectionSlots(f, 1, 1);
-  const next = `+${data.refreshMin ?? 5}m`;
-  const xNext = 290 - strW(next);
-  const xClock = xNext - 2 - strW(data.updatedAt);
-  const xSync = xClock - 4 - 8;
-  iconSync(f, xSync, 4);
-  f.drawStr(xClock, 4, data.updatedAt, 0);
-  f.drawStr(xNext, 4, next, 0);
-  f.hline(1, 14, 293);
+  drawDashboardChrome(f, data.updatedAt, data.refreshMin);
 
   if (data.githubPresent) {
     if (githubError) {
@@ -1059,6 +1093,7 @@ mkdirSync(outDir, { recursive: true });
 const screens = [
   ["readme-boot-screen.svg", renderBoot(), "DevDash boot screen"],
   ["readme-dashboard-screen.svg", renderDashboard(), "DevDash dashboard screen"],
+  ["readme-dashboard-two-screen.svg", renderDashboardTwo(), "DevDash dashboard screen with two providers"],
   ["readme-ota-screen.svg", renderOta(), "DevDash OTA update screen"],
   ["readme-provision-screen.svg", renderProvision(), "DevDash provisioning screen"],
   ["readme-no-wifi-screen.svg", renderOffline("wifi"), "DevDash no WiFi screen"],
