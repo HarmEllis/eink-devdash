@@ -1,7 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildDashboardPayload, formatLocalIso, formatLocalUpdatedAt, resolveTimeZone } from './dashboard.js'
+import {
+  buildDashboardPayload,
+  formatLocalIso,
+  formatLocalUpdatedAt,
+  resolveTimeZone,
+  startOfLocalDayMs,
+} from './dashboard.js'
+import { resetUsageHistory } from '../services/usage-history.js'
 
 // A fixed instant: 2026-06-03T21:14:09Z. In Europe/Amsterdam (UTC+2 in summer)
 // that is local 23:14:09; in UTC it is 21:14:09.
@@ -130,4 +137,103 @@ test('buildDashboardPayload flattens grouped adapters and caps usage services at
     'three',
     'four',
   ])
+})
+
+// --- startOfLocalDayMs --------------------------------------------------------
+
+test('startOfLocalDayMs returns local midnight on a normal day', () => {
+  // 2026-06-15T08:00:00Z is local 10:00 in Amsterdam (UTC+2 in summer); local
+  // midnight 2026-06-15T00:00 CEST is 2026-06-14T22:00:00Z.
+  const now = new Date('2026-06-15T08:00:00.000Z')
+  assert.equal(
+    startOfLocalDayMs(now, 'Europe/Amsterdam'),
+    Date.parse('2026-06-14T22:00:00.000Z'),
+  )
+})
+
+test('startOfLocalDayMs honors the supplied timezone (Tokyo)', () => {
+  // 2026-06-15T08:00:00Z is local 17:00 JST; Tokyo midnight is the prior 15:00Z.
+  const now = new Date('2026-06-15T08:00:00.000Z')
+  assert.equal(
+    startOfLocalDayMs(now, 'Asia/Tokyo'),
+    Date.parse('2026-06-14T15:00:00.000Z'),
+  )
+})
+
+test('startOfLocalDayMs picks the midnight offset on the spring-forward day', () => {
+  // 2026-03-29 Amsterdam springs 02:00 CET -> 03:00 CEST. Midnight is unaffected
+  // (00:00 CET = 2026-03-28T23:00:00Z), but the offset at `now` (CEST, +2)
+  // differs from the offset at midnight (CET, +1); a naive subtraction would be
+  // an hour off.
+  const now = new Date('2026-03-29T10:00:00.000Z') // local 12:00 CEST
+  assert.equal(
+    startOfLocalDayMs(now, 'Europe/Amsterdam'),
+    Date.parse('2026-03-28T23:00:00.000Z'),
+  )
+})
+
+test('startOfLocalDayMs picks the midnight offset on the fall-back day', () => {
+  // 2026-10-25 Amsterdam falls back 03:00 CEST -> 02:00 CET. Midnight is still
+  // CEST (00:00 CEST = 2026-10-24T22:00:00Z) while `now` is CET (+1).
+  const now = new Date('2026-10-25T10:00:00.000Z') // local 11:00 CET
+  assert.equal(
+    startOfLocalDayMs(now, 'Europe/Amsterdam'),
+    Date.parse('2026-10-24T22:00:00.000Z'),
+  )
+})
+
+test('startOfLocalDayMs returns the first valid instant when local midnight does not exist', () => {
+  // America/Sao_Paulo (historical) sprang forward at 00:00 -> 01:00 on
+  // 2018-11-04, so local midnight never happened. Start of day is the first
+  // valid instant, 01:00 BRST = 2018-11-04T03:00:00Z.
+  const now = new Date('2018-11-04T12:00:00.000Z')
+  assert.equal(
+    startOfLocalDayMs(now, 'America/Sao_Paulo'),
+    Date.parse('2018-11-04T03:00:00.000Z'),
+  )
+})
+
+// --- per-window recent cutoff in buildDashboardPayload ------------------------
+
+test('the 7d window uses the local-day cutoff while short windows use the hour cutoff', async () => {
+  resetUsageHistory()
+  const tz = 'Asia/Tokyo' // non-default; Tokyo midnight for these instants is 15:00Z the day before
+  // Fixed absolute reset instants. resetInSeconds is a countdown, so it must
+  // shrink as `now` advances to keep resetAt stable; a constant countdown would
+  // make resetAt drift forward each build and falsely trip the reset guard.
+  const shortReset = Date.parse('2026-06-15T08:00:00.000Z')
+  const weeklyReset = Date.parse('2026-06-20T00:00:00.000Z')
+  const mk = (now: Date, shortUsed: number, weeklyUsed: number) => ({
+    id: 'u',
+    async getService() {
+      return {
+        id: 'prov',
+        kind: 'usage' as const,
+        provider: 'test',
+        label: 'Prov',
+        status: 'ok' as const,
+        windows: [
+          { id: 'short', label: '5h', usedPercent: shortUsed, resetInSeconds: (shortReset - now.getTime()) / 1000 },
+          { id: 'weekly', label: '7d', usedPercent: weeklyUsed, resetInSeconds: (weeklyReset - now.getTime()) / 1000 },
+        ],
+      }
+    },
+  })
+  // All three instants are the same Tokyo day (2026-06-15), after Tokyo midnight,
+  // so the day window has no pre-midnight baseline and warms up to the oldest.
+  const t0 = new Date('2026-06-15T02:00:00.000Z') // Tokyo 11:00
+  const t1 = new Date('2026-06-15T05:00:00.000Z') // Tokyo 14:00
+  const t2 = new Date('2026-06-15T06:00:00.000Z') // Tokyo 15:00
+  await buildDashboardPayload(t0, [mk(t0, 10, 10)], tz)
+  await buildDashboardPayload(t1, [mk(t1, 30, 30)], tz)
+  const payload = await buildDashboardPayload(t2, [mk(t2, 40, 40)], tz)
+
+  const windows = payload.services[0].windows!
+  const short = windows.find((w) => w.id === 'short')!
+  const weekly = windows.find((w) => w.id === 'weekly')!
+  // Hour cutoff at 06:00Z: baseline is the 05:00Z sample (30) -> 40 - 30 = 10.
+  assert.equal(short.recentPercent, 10)
+  // Day cutoff (Tokyo): warm-up baseline is the oldest same-day sample (10) ->
+  // 40 - 10 = 30, proving the long window does not use the hour cutoff.
+  assert.equal(weekly.recentPercent, 30)
 })
