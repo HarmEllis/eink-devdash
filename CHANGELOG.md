@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-24
+
+This release changes the recent usage slice on the 7-day bar to show today's usage instead of just the last hour, and fixes some rendering inconsistencies in the two-provider layout.
+
+### Changed
+
+- **Weekly bar recent slice**: the grey "recent usage" slice on the 7-day bar now uses the start of the local calendar day as its cutoff, showing how much of the weekly budget was consumed today. The shorter session (5h) window continues to show the last hour.
+- Documented the Gemini (`agy`) tmux-pane review process in `AGENTS.md`.
+
+### Fixed
+
+- **Two-provider bar rendering**: fixed under-filled rendering of the recent usage slice on the taller bars used in the two-provider and hero layouts, and corrected uneven bar spacing so the 7-day tick dash no longer touches the extra-usage bar.
+
 ## [0.10.0] - 2026-06-22
 
 This release adds two pacing aids to the provider usage bars: a last-hour activity slice that shows how much of each window's usage is recent, and a recommended daily-limit tick on the 7-day bar that helps spread the remaining weekly budget evenly across the remaining days.
@@ -223,6 +236,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.11.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.7.1...v0.8.0
