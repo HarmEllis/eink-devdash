@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-07-03
+
+This release fixes a rendering glitch on the 5H/7d usage bars where the
+recency pattern reverted to solid red once it crossed the 80% alert
+threshold.
+
+### Fixed
+
+- **Recency pattern in the alert-red zone**: the "last hour"/"today" recency
+  pattern on the usage bars now keeps rendering once a column enters the
+  alert-red (>80%) zone instead of falling back to a plain solid fill there,
+  so the bar transitions monotonically (pattern -> red pattern) instead of
+  reverting to solid mid-pattern. The README mockup generator mirrors the
+  same fix.
+
 ## [0.11.0] - 2026-06-24
 
 This release changes the recent usage slice on the 7-day bar to show today's usage instead of just the last hour, and fixes some rendering inconsistencies in the two-provider layout.
@@ -236,6 +251,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.11.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.8.0...v0.9.0
