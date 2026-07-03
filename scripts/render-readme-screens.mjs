@@ -516,19 +516,21 @@ function drawBarCfg(f, ox, oy, width, height, segW, pct, forceRed = false, recen
     const sx = ox + i * stride;
     if (i < filled) {
       const isRed = forceRed || (pct > 80 && i >= thresh);
-      if (!isRed && i >= recentStart) {
+      if (i >= recentStart) {
         // last-hour block: hollow box whose centre column is filled except for
         // a few rows left open in the middle (2 up to 8px tall, 4 from 12px),
-        // keeping the grey density roughly constant across bar heights.
-        f.hline(sx, oy, segW);
-        f.hline(sx, oy + height - 1, segW);
-        f.vline(sx, oy + 1, height - 2);
-        f.vline(sx + segW - 1, oy + 1, height - 2);
+        // keeping the grey density roughly constant across bar heights. Drawn
+        // in red (useRed: isRed) when past the >80% threshold, so the alert
+        // coloring never interrupts the recency pattern with a solid run.
+        f.fillRect(sx, oy, segW, 1, 1, isRed);
+        f.fillRect(sx, oy + height - 1, segW, 1, 1, isRed);
+        f.fillRect(sx, oy + 1, 1, height - 2, 1, isRed);
+        f.fillRect(sx + segW - 1, oy + 1, 1, height - 2, 1, isRed);
         const cx = sx + Math.floor((segW - 1) / 2);
         const openRows = height >= 12 ? 4 : 2;
         const openStart = oy + Math.floor((height - openRows) / 2);
         for (let ry = oy + 1; ry <= oy + height - 2; ry++) {
-          if (ry < openStart || ry >= openStart + openRows) f.lpix(cx, ry, 1, 0);
+          if (ry < openStart || ry >= openStart + openRows) f.lpix(cx, ry, 1, isRed);
         }
       } else {
         f.fillRect(sx, oy, segW, height, 1, isRed);

@@ -647,9 +647,11 @@ static void icon_big_cross_red(int ox, int oy)
 /* Filled segments past the 80% threshold render red when pct > 80. Empty
  * segments are hollow 1-px black boxes. `recent_pct` (0..pct) renders the most
  * recent slice of the fill as a hollow box with its top- and bottom-middle
- * pixels filled (the "last hour" look) instead of solid black; the >80% red
- * zone keeps red (alert beats recency). `tick_pct` (>=0) draws a short dash
- * under the segment at the recommended limit; pass -1 for none. */
+ * pixels filled (the "last hour" look) instead of solid black; if that slice
+ * reaches into the >80% zone the pattern is drawn in red instead of reverting
+ * to a solid fill, so the recency read never gets interrupted by a solid run.
+ * `tick_pct` (>=0) draws a short dash under the segment at the recommended
+ * limit; pass -1 for none. */
 static void draw_bar_cfg_full(int ox, int oy, int width, int height, int seg_w,
                               int pct, bool force_red, int recent_pct, int tick_pct)
 {
@@ -667,23 +669,26 @@ static void draw_bar_cfg_full(int ox, int oy, int width, int height, int seg_w,
         int sx = ox + i * stride;
         if (i < filled) {
             int is_red = force_red || ((pct > 80) && (i >= thresh));
-            if (!is_red && i >= recent_start) {
+            if (i >= recent_start) {
                 /* last-hour block: hollow box whose centre column is filled
                  * except for a few rows left open in the middle. Keeping the
                  * open gap small (2 rows up to 8 px tall, 4 rows from 12 px)
                  * holds the grey density roughly constant across bar heights:
                  * short bars read as full as the 6 px grid, while the tall hero
-                 * bar still stays visibly lighter than a solid block. */
-                hline(sx, oy, seg_w);
-                hline(sx, oy + height - 1, seg_w);
-                vline(sx, oy + 1, height - 2);
-                vline(sx + seg_w - 1, oy + 1, height - 2);
+                 * bar still stays visibly lighter than a solid block. Drawn in
+                 * red (use_red = is_red) when this column is also past the
+                 * >80% threshold, so the alert coloring never interrupts the
+                 * recency pattern with a solid run. */
+                fill_rect(sx, oy, seg_w, 1, 1, is_red);
+                fill_rect(sx, oy + height - 1, seg_w, 1, 1, is_red);
+                fill_rect(sx, oy + 1, 1, height - 2, 1, is_red);
+                fill_rect(sx + seg_w - 1, oy + 1, 1, height - 2, 1, is_red);
                 int cx = sx + (seg_w - 1) / 2;
                 int open_rows = (height >= 12) ? 4 : 2;
                 int open_start = oy + (height - open_rows) / 2;
                 for (int ry = oy + 1; ry <= oy + height - 2; ry++) {
                     if (ry < open_start || ry >= open_start + open_rows) {
-                        lpix(cx, ry, 1, 0);
+                        lpix(cx, ry, 1, is_red);
                     }
                 }
             } else {
