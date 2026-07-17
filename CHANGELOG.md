@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-07-17
+
+This release fixes two Codex usage bugs and stabilises a flaky relay test suite.
+
+### Fixed
+
+- **Codex window label**: the 5H/7d usage label is now inferred from the rate-limits `limit_id` and reset duration instead of being hardcoded to the API slot, so a temporary weekly-only limit (which Codex reports in the primary slot) no longer shows "5H LIMIT". When inference identifies the primary slot as the weekly window and no secondary window is present, the slots are swapped so the weekly data lands in the long window where the daily-slice cutoff and tick apply.
+- **Daily-limit tick drift**: the recommended ceiling tick on the 7-day bar is now anchored to start-of-day usage instead of the live `usedPercent`, so it no longer creeps upward as usage accrues during the day and stays stable for the whole calendar day.
+- Widened relay test timing margins (`ACK_TIMEOUT_MS`, `DASHBOARD_RESPONSE_DEADLINE_MS`, `MANIFEST_RESPONSE_DEADLINE_MS`) to prevent intermittent CI failures on slower runners; production defaults are unchanged.
+
 ## [0.11.1] - 2026-07-03
 
 This release fixes a rendering glitch on the 5H/7d usage bars where the
@@ -251,6 +261,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.11.2]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.9.0...v0.10.0
