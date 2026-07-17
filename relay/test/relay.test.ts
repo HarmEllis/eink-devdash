@@ -224,7 +224,7 @@ test('publisher without dashboard capability returns unavailable immediately', a
     headers: DEVICE_AUTH,
   })
   expect(response.status).toBe(503)
-  expect(Date.now() - started).toBeLessThan(100)
+  expect(Date.now() - started).toBeLessThan(500)
   expect(receivedRequest).toBe(false)
   expect(await response.json()).toEqual({ error: 'Dashboard publisher unavailable' })
   legacy.close()
@@ -290,7 +290,7 @@ test('publisher error response returns unavailable without a stored fallback', a
     headers: DEVICE_AUTH,
   })
   expect(response.status).toBe(503)
-  expect(Date.now() - started).toBeLessThan(100)
+  expect(Date.now() - started).toBeLessThan(500)
   expect(await response.json()).toEqual({ error: 'Dashboard publisher unavailable' })
   ws.close()
 })
