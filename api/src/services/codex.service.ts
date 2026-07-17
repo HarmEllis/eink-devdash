@@ -129,6 +129,38 @@ function firstNumberOrNull(...values: unknown[]): number | null {
   return null
 }
 
+const WEEKLY_LIMIT_IDS = new Set(['week', 'weekly', '7d'])
+const SHORT_LIMIT_IDS = new Set(['hour', '5h', 'short', 'primary'])
+const DAY_SECONDS = 24 * 60 * 60
+
+/* Derive a human-readable window label ('5h' or '7d') from (in priority order):
+ * 1. The rate-limits limit_id / limitId field.
+ * 2. The reset instant — but only as an upgrade: '5h' → '7d' when the reset
+ *    is more than 24 h away.  We deliberately never downgrade a known weekly
+ *    default (e.g. secondary / '7d') to '5h' just because its reset is near;
+ *    a weekly window in its last day is still a weekly window.
+ * 3. The supplied defaultLabel fallback. */
+function inferWindowLabel(
+  window: RateLimitWindow | null | undefined,
+  limitId: unknown,
+  defaultLabel: string,
+  nowSeconds: number,
+): string {
+  if (typeof limitId === 'string') {
+    const id = limitId.toLowerCase().trim()
+    if (WEEKLY_LIMIT_IDS.has(id)) return '7d'
+    if (SHORT_LIMIT_IDS.has(id)) return '5h'
+  }
+  const resetsAt = firstNumberOrNull(window?.resets_at, window?.resetsAt)
+  if (resetsAt !== null && (resetsAt - nowSeconds) > DAY_SECONDS) {
+    // The reset is more than 24 h away: the window cannot be a 5-hour window.
+    return '7d'
+  }
+  // Either the reset is ≤ 24 h away or there is no reset info. Respect the
+  // defaultLabel so a weekly secondary window near its reset keeps '7d'.
+  return defaultLabel
+}
+
 function planTypeFromRateLimits(rateLimits: RateLimits): string | null {
   if (typeof rateLimits.plan_type === 'string') return rateLimits.plan_type
   if (typeof rateLimits.planType === 'string') return rateLimits.planType
@@ -241,12 +273,37 @@ async function syncCodexRuntimeHome(): Promise<void> {
 
 function usageFromRateLimits(rateLimits: RateLimits): CodexUsage {
   const nowSeconds = Date.now() / 1000
+  const limitId = rateLimits.limit_id ?? rateLimits.limitId
+
+  // Infer labels for both API slots before deciding which one goes where.
+  const primaryLabel   = inferWindowLabel(rateLimits.primary,   limitId, '5h', nowSeconds)
+  const secondaryLabel = inferWindowLabel(rateLimits.secondary, limitId, '7d', nowSeconds)
+
+  // Normalise slot assignment: the CodexUsage short/long fields must always
+  // carry the right kind of window regardless of which API slot the Codex
+  // app-server happens to use.  When Codex only exposes a single weekly limit
+  // the app-server puts it in primary; inference then flags it as '7d', and we
+  // must move it to long so downstream enrichment (daily slice, tick) works.
+  let shortSource   = rateLimits.primary
+  let longSource    = rateLimits.secondary
+  let shortLabelOut = primaryLabel
+  let longLabelOut  = secondaryLabel
+
+  if (primaryLabel === '7d' && rateLimits.secondary == null) {
+    // Primary is the weekly window and secondary is absent — swap so the weekly
+    // data lands in long where downstream enrichment (daily slice, tick) applies.
+    shortSource   = rateLimits.secondary
+    longSource    = rateLimits.primary
+    shortLabelOut = '5h'  // secondary absent → short slot carries the empty fallback
+    longLabelOut  = primaryLabel
+  }
+
   return {
     status: 'ok',
     source: 'chatgpt',
     planType: planTypeFromRateLimits(rateLimits),
-    short: windowFromRateLimit(rateLimits.primary, '5h', nowSeconds),
-    long: windowFromRateLimit(rateLimits.secondary, '7d', nowSeconds),
+    short: windowFromRateLimit(shortSource, shortLabelOut, nowSeconds),
+    long:  windowFromRateLimit(longSource,  longLabelOut,  nowSeconds),
     reachedLimit: normalizeReachedLimit(
       rateLimits.rate_limit_reached_type ?? rateLimits.rateLimitReachedType,
     ),
@@ -528,3 +585,6 @@ export async function getCodexUsage(signal?: AbortSignal): Promise<CodexUsage> {
   const usage = await getChatGptUsage(signal)
   return { ...usage, spend: CODEX_OVERAGE_USD }
 }
+
+/* Exported for tests only. */
+export { inferWindowLabel, usageFromRateLimits }

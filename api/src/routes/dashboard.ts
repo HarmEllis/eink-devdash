@@ -186,8 +186,14 @@ function enrichUsageWindows(services: DashboardService[], timeZone: string, now:
       window.recentPercent = Math.min(Math.round(recent), Math.round(used))
 
       if (LONG_WINDOW_IDS.has(window.id) && window.resetInSeconds != null) {
+        // Use the start-of-day usage as the tick baseline so the recommended
+        // ceiling is computed once per day and stays stable as usage grows.
+        // recentPercent is the usage accrued today, so used - recent gives the
+        // usage level at local midnight. For even-pace mode usedPercent is not
+        // used in the formula, so this has no effect there.
+        const usedAtDayStart = Math.max(0, used - recent)
         const tick = computeWeekTick({
-          usedPercent: used,
+          usedPercent: usedAtDayStart,
           resetInSeconds: window.resetInSeconds,
           mode: WEEK_TICK_MODE,
           workDays: WORK_DAYS,
