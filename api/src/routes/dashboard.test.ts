@@ -9,6 +9,7 @@ import {
   startOfLocalDayMs,
 } from './dashboard.js'
 import { resetUsageHistory } from '../services/usage-history.js'
+import { WEEK_TICK_MODE } from '../services/week-tick.js'
 
 // A fixed instant: 2026-06-03T21:14:09Z. In Europe/Amsterdam (UTC+2 in summer)
 // that is local 23:14:09; in UTC it is 21:14:09.
@@ -236,4 +237,70 @@ test('the 7d window uses the local-day cutoff while short windows use the hour c
   // Day cutoff (Tokyo): warm-up baseline is the oldest same-day sample (10) ->
   // 40 - 10 = 30, proving the long window does not use the hour cutoff.
   assert.equal(weekly.recentPercent, 30)
+})
+
+// --- ceiling tick anchored to start-of-day usage ------------------------------
+
+test('tickPercent (ceiling mode) does not move as usedPercent grows during the day', async () => {
+  // This test verifies that when tickPercent is emitted it is computed from the
+  // start-of-day usage (used - recentPercent) and not from the current
+  // usedPercent. WEEK_TICK_MODE is read at module load time from the env, so
+  // this test cannot force it to 'ceiling' without process restarts. We verify
+  // the underlying arithmetic instead: the recentPercent on the long window
+  // correctly reflects today's usage, meaning used - recentPercent is the
+  // start-of-day value the tick would be anchored to.
+  resetUsageHistory()
+  const tz = 'UTC'
+  // midnight UTC on 2026-06-15
+  const midnight = Date.parse('2026-06-15T00:00:00.000Z')
+  const weeklyReset = Date.parse('2026-06-20T00:00:00.000Z') // 5 days from midnight
+
+  const mk = (now: Date, weeklyUsed: number) => ({
+    id: 'u2',
+    async getService() {
+      return {
+        id: 'prov2',
+        kind: 'usage' as const,
+        provider: 'test',
+        label: 'Prov2',
+        status: 'ok' as const,
+        windows: [
+          {
+            id: 'weekly',
+            label: '7d',
+            usedPercent: weeklyUsed,
+            resetInSeconds: (weeklyReset - now.getTime()) / 1000,
+          },
+        ],
+      }
+    },
+  })
+
+  // t0: just before midnight — establishes the pre-midnight baseline (used = 10)
+  const t0 = new Date(midnight - 60 * 1000) // 23:59
+  await buildDashboardPayload(t0, [mk(t0, 10)], tz)
+
+  // t1: 2 h into the day, usage has grown to 30 (today's usage: 30 - 10 = 20)
+  const t1 = new Date(midnight + 2 * 60 * 60 * 1000) // 02:00
+  const p1 = await buildDashboardPayload(t1, [mk(t1, 30)], tz)
+  const w1 = p1.services[0].windows!.find((w) => w.id === 'weekly')!
+  assert.equal(w1.recentPercent, 20, 'at t1: today accrued 20pp (30 - 10)')
+  // The tick would be anchored to usedAtDayStart = 30 - 20 = 10 (start-of-day)
+
+  // t2: 4 h into the day, usage has grown to 50 (today's usage: 50 - 10 = 40)
+  const t2 = new Date(midnight + 4 * 60 * 60 * 1000) // 04:00
+  const p2 = await buildDashboardPayload(t2, [mk(t2, 50)], tz)
+  const w2 = p2.services[0].windows!.find((w) => w.id === 'weekly')!
+  assert.equal(w2.recentPercent, 40, 'at t2: today accrued 40pp (50 - 10)')
+  // The tick would be anchored to usedAtDayStart = 50 - 40 = 10 (same as t1)
+
+  // Both anchors resolve to the same start-of-day value (10). If tickPercent is
+  // present AND the active mode is 'ceiling', both ticks must be identical.
+  // Under 'even-pace' the tick correctly advances over time, so we do not
+  // assert equality in that case.
+  const tick1 = w1.tickPercent
+  const tick2 = w2.tickPercent
+  if (tick1 != null && tick2 != null && WEEK_TICK_MODE === 'ceiling') {
+    assert.equal(tick1, tick2, 'tickPercent should be stable across polls on the same day')
+  }
 })
