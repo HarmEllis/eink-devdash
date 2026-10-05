@@ -12,6 +12,7 @@
 
 void setUp(void) {}
 void tearDown(void) {}
+void run_reset_credit_tests(void);
 
 /* ---- ota_download_url_is_canonical -------------------------------------- */
 
@@ -219,6 +220,7 @@ static void test_wifi_country_rejects_unsupported_and_malformed(void)
 void app_main(void)
 {
     UNITY_BEGIN();
+    run_reset_credit_tests();
 
     RUN_TEST(test_canonical_url_accepts_exact_match);
     RUN_TEST(test_canonical_url_rejects_other_repo);

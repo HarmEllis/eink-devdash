@@ -2,6 +2,7 @@
 #include "esp_err.h"
 #include "storage.h"
 #include "unreachable_diag.h"
+#include "reset_credits.h"
 
 typedef struct {
     int issues;
@@ -46,6 +47,7 @@ typedef struct {
     int window_count;
     bool service_error;
     extra_usage_t extra_usage;
+    reset_credits_t reset_credits;
 } usage_service_data_t;
 
 typedef struct {

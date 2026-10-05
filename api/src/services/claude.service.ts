@@ -1,5 +1,7 @@
 import { ClaudeCredentialStore } from './claude-credentials.js'
 import { minorToMajor } from './currency.js'
+import type { DashboardResetCredits } from './dashboard-service.js'
+import { claudeResetCredits } from './reset-credits.js'
 
 type RateLimit = { used: number; limit: number; resetInSeconds: number }
 
@@ -19,6 +21,7 @@ type ClaudeUsage = {
   weekly: RateLimit
   authError: boolean
   extraUsage?: ExtraUsage | null
+  resetCredits?: DashboardResetCredits
 }
 
 const credentialStore = new ClaudeCredentialStore()
@@ -26,6 +29,14 @@ export const CLAUDE_ADAPTER_BUDGET_MS = 11_000
 const PROBE_TIMEOUT_MS = 5_000
 const USAGE_TIMEOUT_MS = 5_000
 const OAUTH_USAGE_ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
+const OAUTH_USAGE_USER_AGENT = 'claude-cli/2.1.280 (external, cli)'
+const RESET_QUERY_COOLDOWN_MS = 6 * 60 * 60 * 1000
+let resetQueryDisabledUntil = 0
+
+// Test isolation for the process-local optional-query cooldown.
+export function resetClaudeUsageQueryCooldownForTests(): void {
+  resetQueryDisabledUntil = 0
+}
 
 /* Operator-supplied overage spend in USD. An explicit override that wins over
  * the live read (precedence: override > live > absent) — useful when the
@@ -219,7 +230,7 @@ function extraUsageFromBody(body: Record<string, unknown>): ExtraUsage | null {
 }
 
 type OAuthUsageResult =
-  | { kind: 'ok'; fiveHour: ParsedRateLimit; weekly: ParsedRateLimit; extraUsage: ExtraUsage | null }
+  | { kind: 'ok'; fiveHour: ParsedRateLimit; weekly: ParsedRateLimit; extraUsage: ExtraUsage | null; resetCredits?: DashboardResetCredits }
   | { kind: 'unauthorized' }
   | { kind: 'unavailable' }
 
@@ -233,15 +244,25 @@ async function fetchOAuthUsage(
   const timeout = AbortSignal.timeout(Math.max(1, Math.min(USAGE_TIMEOUT_MS, remaining)))
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
   try {
-    const res = await fetch(OAUTH_USAGE_ENDPOINT, {
+    const request = {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
         'anthropic-version': '2023-06-01',
         'anthropic-beta': 'oauth-2025-04-20',
+        'User-Agent': OAUTH_USAGE_USER_AGENT,
       },
       signal: combined,
-    })
+    }
+    const withResetQuery = Date.now() >= resetQueryDisabledUntil
+    let res = await fetch(withResetQuery ? `${OAUTH_USAGE_ENDPOINT}?cedar_ember=1` : OAUTH_USAGE_ENDPOINT, request)
+    if (withResetQuery && [400, 403, 404, 422].includes(res.status)) {
+      resetQueryDisabledUntil = Date.now() + RESET_QUERY_COOLDOWN_MS
+      // Share the original timeout and adapter deadline with this optional
+      // fallback, rather than paying a second full timeout on every refresh.
+      await res.body?.cancel()
+      res = await fetch(OAUTH_USAGE_ENDPOINT, request)
+    }
 
     if (res.status === 401) return { kind: 'unauthorized' }
     if (!res.ok) {
@@ -255,6 +276,7 @@ async function fetchOAuthUsage(
       fiveHour: windowFromUsage(body, 'five_hour'),
       weekly: windowFromUsage(body, 'seven_day'),
       extraUsage: extraUsageFromBody(body),
+      resetCredits: claudeResetCredits(body.cedar_ember),
     }
   } catch (err) {
     if (signal?.aborted) throw signal.reason ?? err
@@ -307,12 +329,14 @@ async function resolveClaudeUsage(signal?: AbortSignal): Promise<ClaudeUsage> {
         weekly: got.weekly.rate,
         authError: false,
         extraUsage: got.extraUsage,
+        ...(got.resetCredits ? { resetCredits: got.resetCredits } : {}),
       }
     }
     // Parsed but no usable windows: get windows from the probe, but preserve
     // the valid spend the GET already returned rather than discarding it.
     const probed = await probeForWindows(token, signal, deadline)
-    return { ...probed, extraUsage: got.extraUsage ?? probed.extraUsage }
+    return { ...probed, extraUsage: got.extraUsage ?? probed.extraUsage,
+      ...(got.resetCredits ? { resetCredits: got.resetCredits } : {}) }
   }
 
   // GET unavailable (or still unauthorized after refresh): probe for windows

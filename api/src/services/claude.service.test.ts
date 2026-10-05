@@ -255,3 +255,100 @@ test('Claude falls back to the probe when the GET is unavailable (no spend sourc
     globalThis.fetch = previousFetch
   }
 })
+
+test('Claude requests reset grants without dropping spend and preserves them through the window probe', async () => {
+  const previousFetch = globalThis.fetch
+  try {
+    await withClaudeHome(async () => {
+      const { getClaudeUsage } = await import('./claude.service.js')
+      let queryCalls = 0
+      globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+        if (String(input).includes('/api/oauth/usage')) {
+          assert.ok(String(input).endsWith('?cedar_ember=1'))
+          assert.equal(new Headers(init?.headers).get('User-Agent'), 'claude-cli/2.1.280 (external, cli)')
+          queryCalls++
+          return usageBody({
+            // Deliberately no quota windows: the existing probe supplies them.
+            extra_usage: { is_enabled: true, used_credits: 91, monthly_limit: 1700, currency: 'EUR' },
+            cedar_ember: { eligible: true, grants: [{ resets_left: 2, resets_total: 3, paused: false,
+              starts_at: new Date(Date.now() - 3600000).toISOString(),
+              ends_at: new Date(Date.now() + 39600000).toISOString(), usable_now: false }] },
+          })
+        }
+        return new Response(null, { status: 200, headers: {
+          'anthropic-ratelimit-unified-5h-utilization': '0.5',
+          'anthropic-ratelimit-unified-5h-reset': String(Math.floor(Date.now() / 1000) + 600),
+        } })
+      }) as typeof fetch
+      const usage = await getClaudeUsage()
+      assert.equal(queryCalls, 1)
+      assert.equal(usage.fiveHour.used, 50)
+      assert.equal(usage.authError, false)
+      assert.equal(usage.extraUsage!.amount, 0.91)
+      assert.equal(usage.resetCredits!.availableCount, 2)
+      assert.ok(usage.resetCredits!.nextExpiresInSeconds! >= 39599)
+    })
+  } finally { globalThis.fetch = previousFetch }
+})
+
+test('Claude optional query rejection retries ordinary GET and remembers the cooldown', async () => {
+  const previousFetch = globalThis.fetch
+  const { resetClaudeUsageQueryCooldownForTests } = await import('./claude.service.js')
+  resetClaudeUsageQueryCooldownForTests()
+  try {
+    await withClaudeHome(async () => {
+      const { getClaudeUsage } = await import('./claude.service.js')
+      const requests: string[] = []
+      globalThis.fetch = (async (input: unknown) => {
+        const url = String(input)
+        requests.push(url)
+        if (url.includes('?')) return new Response(null, { status: 403 })
+        return usageBody({ five_hour: { utilization: 17 }, extra_usage: {
+          is_enabled: true, used_credits: 91, monthly_limit: 1700, currency: 'EUR',
+        } })
+      }) as typeof fetch
+      for (let i = 0; i < 2; i++) {
+        const usage = await getClaudeUsage()
+        assert.equal(usage.authError, false)
+        assert.equal(usage.fiveHour.used, 17)
+        assert.equal(usage.extraUsage!.amount, 0.91)
+        assert.equal(usage.resetCredits, undefined)
+      }
+      assert.deepEqual(requests, [
+        'https://api.anthropic.com/api/oauth/usage?cedar_ember=1',
+        'https://api.anthropic.com/api/oauth/usage',
+        'https://api.anthropic.com/api/oauth/usage',
+      ])
+    })
+  } finally {
+    globalThis.fetch = previousFetch
+    resetClaudeUsageQueryCooldownForTests()
+  }
+})
+
+test('Claude unsupported optional-query statuses fall back, while 429 never retries the GET', async () => {
+  const previousFetch = globalThis.fetch
+  const { getClaudeUsage, resetClaudeUsageQueryCooldownForTests } = await import('./claude.service.js')
+  try {
+    await withClaudeHome(async () => {
+      for (const status of [400, 404, 422, 429]) {
+        resetClaudeUsageQueryCooldownForTests()
+        let reads = 0
+        globalThis.fetch = (async (input: unknown) => {
+          if (String(input).includes('/api/oauth/usage')) {
+            reads++
+            return reads === 1 ? new Response(null, { status }) : usageBody({ five_hour: { utilization: 17 } })
+          }
+          return new Response(null, { status: 429, headers: { 'retry-after': '300' } })
+        }) as typeof fetch
+        const usage = await getClaudeUsage()
+        assert.equal(reads, status === 429 ? 1 : 2)
+        assert.equal(usage.authError, false)
+        assert.equal(usage.fiveHour.used, status === 429 ? 100 : 17)
+      }
+    })
+  } finally {
+    globalThis.fetch = previousFetch
+    resetClaudeUsageQueryCooldownForTests()
+  }
+})

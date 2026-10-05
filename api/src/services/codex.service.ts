@@ -3,6 +3,8 @@ import { constants as fsConstants } from 'fs'
 import { access, cp, mkdir, open, readdir, rm, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
+import type { DashboardResetCredits } from './dashboard-service.js'
+import { codexResetCredits } from './reset-credits.js'
 
 type CodexSource = 'chatgpt' | 'api-key'
 type CodexLimitReached = 'short' | 'long' | null
@@ -23,6 +25,7 @@ type CodexUsage = {
   long: CodexWindow
   reachedLimit: CodexLimitReached
   spend?: number | null
+  resetCredits?: DashboardResetCredits
 }
 
 type RateLimitWindow = {
@@ -46,6 +49,7 @@ type RateLimits = {
 type AppServerRateLimitsResponse = {
   rateLimits?: RateLimits
   rateLimitsByLimitId?: Record<string, RateLimits> | null
+  rateLimitResetCredits?: unknown
 }
 
 type JsonRpcResponse = {
@@ -472,14 +476,21 @@ async function getLiveChatGptUsage(signal?: AbortSignal): Promise<CodexUsage | n
 
   try {
     const response = await readRateLimitsFromAppServer(signal)
-    const rateLimits = selectRateLimits(response)
-    return rateLimits ? usageFromRateLimits(rateLimits) : null
+    return usageFromAppServerResponse(response)
   } catch (err) {
     if (signal?.aborted) throw signal.reason ?? err
     if (isErrnoException(err) && err.code === 'ENOENT') return null
     console.warn('[codex] live usage probe failed; falling back to session files', err)
     return null
   }
+}
+
+function usageFromAppServerResponse(response: AppServerRateLimitsResponse): CodexUsage | null {
+  const rateLimits = selectRateLimits(response)
+  if (!rateLimits) return null
+  const usage = usageFromRateLimits(rateLimits)
+  const resetCredits = codexResetCredits(response.rateLimitResetCredits)
+  return resetCredits ? { ...usage, resetCredits } : usage
 }
 
 async function listNewestSessionFiles(): Promise<string[]> {
@@ -587,4 +598,4 @@ export async function getCodexUsage(signal?: AbortSignal): Promise<CodexUsage> {
 }
 
 /* Exported for tests only. */
-export { inferWindowLabel, usageFromRateLimits }
+export { inferWindowLabel, usageFromRateLimits, usageFromAppServerResponse }

@@ -304,3 +304,38 @@ test('tickPercent (ceiling mode) does not move as usedPercent grows during the d
     assert.equal(tick1, tick2, 'tickPercent should be stable across polls on the same day')
   }
 })
+
+test('full four-provider payload including reset credits fits released firmware with margin', async () => {
+  const { serviceFromClaudeUsage, serviceFromCodexUsage, serviceFromAntigravityUsage } = await import('../services/usage.adapters.js')
+  const resetCredits = { availableCount: 2147483647, nextExpiresInSeconds: 2147483647 }
+  const services = [
+    { id: 'github', kind: 'code-host' as const, provider: 'github', label: 'GitHub', status: 'ok' as const,
+      counters: ['issues', 'prs', 'dependabot', 'notifications'].map(id => ({ id, label: id, value: 2147483647, alert: true })) },
+    serviceFromClaudeUsage({ authError: false, resetCredits,
+      fiveHour: { used: 100, limit: 100, resetInSeconds: 2147483647 },
+      weekly: { used: 100, limit: 100, resetInSeconds: 2147483647 },
+      extraUsage: { amount: 999999999.99, percent: 100, limit: 999999999.99, currency: 'EUR' } }),
+    serviceFromCodexUsage({ status: 'ok', source: 'chatgpt', planType: 'business', reachedLimit: 'short', resetCredits,
+      short: { usedPercent: 100, label: '5h', resetsAt: 2147483647, resetInSeconds: 2147483647 },
+      long: { usedPercent: 100, label: '7d', resetsAt: 2147483647, resetInSeconds: 2147483647 }, spend: 999999999.99 }),
+    ...serviceFromAntigravityUsage({ status: 'ok', reachedLimit: null, spend: 999999999.99,
+      short: { usedPercent: 100, label: '5h', resetsAt: 2147483647, resetInSeconds: 2147483647 },
+      long: { usedPercent: 100, label: '7d', resetsAt: 2147483647, resetInSeconds: 2147483647 },
+      groups: [
+        { id: 'gemini', label: 'Gemini', reachedLimit: null,
+          short: { usedPercent: 100, label: '5h', resetsAt: 2147483647, resetInSeconds: 2147483647 },
+          long: { usedPercent: 100, label: '7d', resetsAt: 2147483647, resetInSeconds: 2147483647 } },
+        { id: 'claude-gpt', label: 'Claude/GPT', reachedLimit: null,
+          short: { usedPercent: 100, label: '5h', resetsAt: 2147483647, resetInSeconds: 2147483647 },
+          long: { usedPercent: 100, label: '7d', resetsAt: 2147483647, resetInSeconds: 2147483647 } },
+      ] }),
+  ]
+  const payload = await buildDashboardPayload(INSTANT, services.map(service => ({
+    id: service.id, async getService() { return service },
+  })))
+  assert.equal(payload.services.length, 5)
+  assert.deepEqual(payload.services[1].resetCredits, resetCredits)
+  assert.deepEqual(payload.services[2].resetCredits, resetCredits)
+  const bytes = Buffer.byteLength(JSON.stringify(payload))
+  assert.ok(bytes <= 6144 - 256, `Payload ${bytes} bytes must leave at least 256 bytes of firmware buffer margin`)
+})

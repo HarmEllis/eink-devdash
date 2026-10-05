@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { inferWindowLabel, usageFromRateLimits } from './codex.service.js'
+import { inferWindowLabel, usageFromRateLimits, usageFromAppServerResponse } from './codex.service.js'
 
 // For inferWindowLabel tests an arbitrary fixed value works because it only
 // computes (resetsAt - nowSeconds) deltas.
@@ -136,4 +136,24 @@ test('usageFromRateLimits: secondary window near reset keeps 7d label in long sl
   })
   assert.equal(usage.long.label, '7d', 'secondary near reset keeps 7d label in long slot')
   assert.ok(usage.long.usedPercent > 0)
+})
+
+test('app-server keeps root reset credits with the selected Codex bucket and does not duplicate them', () => {
+  const usage = usageFromAppServerResponse({
+    rateLimits: { primary: { usedPercent: 99 } },
+    rateLimitsByLimitId: {
+      other: { primary: { usedPercent: 77 } },
+      codex: { primary: { usedPercent: 12, resetsAt: NOW_REAL + 3600 } },
+    },
+    rateLimitResetCredits: { availableCount: 3, credits: [
+      { status: 'available', expiresAt: Math.floor(Date.now() / 1000) + 7200 },
+    ] },
+  })!
+  assert.equal(usage.short.usedPercent, 12)
+  assert.equal(usage.resetCredits!.availableCount, 3)
+  assert.ok(usage.resetCredits!.nextExpiresInSeconds! >= 7199)
+  assert.equal(usageFromAppServerResponse({ rateLimits: {} })!.resetCredits, undefined)
+  assert.equal(usageFromRateLimits({ primary: {} }).resetCredits, undefined)
+  assert.deepEqual(usageFromAppServerResponse({ rateLimits: {}, rateLimitResetCredits: { availableCount: 0 } })!.resetCredits,
+    { availableCount: 0, nextExpiresInSeconds: null })
 })

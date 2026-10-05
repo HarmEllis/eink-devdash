@@ -524,7 +524,29 @@ The display contract is intentionally bounded by the 296x128 panel:
 - the first two windows are rendered, using their API-provided two-character
   labels and either `usedPercent` or `used / limit`;
 - the first supported USD/EUR extra-usage metric, when present, is rendered as
-  the optional third bar.
+  the optional third bar;
+- available manual limit resets appear in the title as a count, a circular
+  reset arrow, and the time until the earliest known expiry. Names shorten
+  when needed to fit the title without overlapping the automatic reset times.
+
+Claude and Codex supply these reset credits through their existing usage reads.
+This display is read-only: redeem resets in the provider's own application.
+Confirmed zero shows `0` with the arrow; unavailable data is hidden. A known
+count with no expiry shows only the count and arrow. Durations use hours below
+24 hours (`<1h` below one hour), days otherwise, and days plus hours when there
+is room. Expiries beyond nine days show `9d+`; counts above 99 show `99+`.
+Values are snapshots updated on the normal dashboard refresh cycle.
+The optional service field is `resetCredits: { availableCount, nextExpiresInSeconds }`;
+`nextExpiresInSeconds` is `null` when no future expiry is known. The dashboard
+schema remains version 2, so older firmware can ignore this field.
+
+Claude's reset inventory uses an undocumented OAuth query; an unsupported query
+falls back to the ordinary usage endpoint for six hours without affecting quota
+windows or usage-credit spend. Codex requires app-server reset-credit support
+(the bundled CLI is pinned to 0.157.1). An older `CODEX_CLI_PATH` override or the
+session-file fallback can still provide quotas but leaves reset credits unknown.
+Codex may return only some expiry details, so its displayed expiry is the
+earliest **known** one; the available count remains the provider's total.
 
 This means a new LLM provider can be added entirely in the API by returning the
 same generic service shape. Firmware changes are still required to exceed four
@@ -687,6 +709,9 @@ Regenerate the README screen previews after display layout changes:
 ```bash
 node scripts/render-readme-screens.mjs
 ```
+
+Generate the reset-credit examples (one to four services, zero/unknown, and
+overflow) separately with `node scripts/render-readme-screens.mjs --reset-credit-previews`.
 
 ## License
 

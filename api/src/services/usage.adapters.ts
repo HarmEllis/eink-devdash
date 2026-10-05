@@ -1,4 +1,4 @@
-import type { DashboardMetric, DashboardService, DashboardServiceAdapter } from './dashboard-service.js'
+import type { DashboardMetric, DashboardResetCredits, DashboardService, DashboardServiceAdapter } from './dashboard-service.js'
 import { getClaudeUsage, type ExtraUsage } from './claude.service.js'
 import { getCodexUsage } from './codex.service.js'
 import { getAntigravityUsage, type AntigravityUsage } from './antigravity.service.js'
@@ -15,6 +15,7 @@ type ClaudeUsage = {
   weekly: ClaudeRateLimit
   authError: boolean
   extraUsage?: ExtraUsage | null
+  resetCredits?: DashboardResetCredits
 }
 
 type CodexLimitReached = 'short' | 'long' | null
@@ -35,6 +36,7 @@ type CodexUsage = {
   long: CodexWindow
   reachedLimit: CodexLimitReached
   spend?: number | null
+  resetCredits?: DashboardResetCredits
 }
 
 type UsageAdapterOptions<TUsage> = {
@@ -95,6 +97,7 @@ export function serviceFromClaudeUsage(usage: ClaudeUsage): DashboardService {
   }
 
   const metric = extraUsageMetric(usage.extraUsage)
+  if (usage.resetCredits) service.resetCredits = usage.resetCredits
   if (metric) service.metrics = [metric]
 
   return service
@@ -132,6 +135,7 @@ export function serviceFromCodexUsage(usage: CodexUsage): DashboardService {
 
   // Codex has no live spend source (ChatGPT-auth exposes only a remaining-credit
   // snapshot), so the amount comes from CODEX_OVERAGE_USD with no percent/limit.
+  if (usage.resetCredits) service.resetCredits = usage.resetCredits
   const metric = extraUsageMetric(
     usage.spend != null && usage.spend > 0
       ? { amount: usage.spend, percent: null, limit: null, currency: 'USD' }

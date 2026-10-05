@@ -765,6 +765,7 @@ typedef struct {
     int ses_reset;
     int wk_reset;
     const extra_usage_t *extra;
+    const reset_credits_t *reset_credits;
     bool auth_err;
     bool reached;
 } provider_info_t;
@@ -826,8 +827,23 @@ static void draw_provider_title(int ox, int oy, int width,
     char resets[20];
     format_reset_pair(provider, resets, sizeof(resets));
 
+    int reserved = str_w(resets) > 66 ? str_w(resets) : 66;
+    reset_credit_layout_t layout = reset_credits_layout(
+        provider->auth_err ? NULL : provider->reset_credits,
+        strlen(provider->label), 11, FONT_W,
+        width - reserved - (show_hourglass ? 10 : 0));
+    char label[DASH_USAGE_LABEL_LEN];
+    snprintf(label, sizeof(label), "%.*s", (int)layout.label_length, provider->label);
     icon_provider_logo(ox, oy, provider->logo, 1, provider->auth_err);
-    draw_str(ox + 11, oy, provider->label, provider->auth_err);
+    draw_str(ox + 11, oy, label, provider->auth_err);
+    if (layout.visible) {
+        draw_str(ox + layout.badge_x, oy, layout.count_text, 0);
+        for (int y = 0; y < 7; y++) for (int x = 0; x < RESET_CREDIT_ICON_WIDTH; x++) {
+            if (reset_credit_icon_rows[y] & (1u << (RESET_CREDIT_ICON_WIDTH - 1 - x)))
+                lpix(ox + layout.icon_x + x, oy + y, 1, 0);
+        }
+        draw_str(ox + layout.expiry_x, oy, layout.expiry_text, 0);
+    }
 
     int reset_x = ox + width - str_w(resets);
     if (show_hourglass) {
@@ -935,7 +951,21 @@ static void draw_provider_hero(int ox, int oy, int width,
     format_reset_pair(provider, resets, sizeof(resets));
 
     icon_provider_logo(ox, oy, provider->logo, 3, provider->auth_err);
-    draw_str2x(ox + 29, oy + 3, provider->label, provider->auth_err);
+    int reserved = str_w(resets) > 66 ? str_w(resets) : 66;
+    reset_credit_layout_t layout = reset_credits_layout(
+        provider->auth_err ? NULL : provider->reset_credits,
+        strlen(provider->label), 29, FONT2_W, width - reserved - 10);
+    char label[DASH_USAGE_LABEL_LEN];
+    snprintf(label, sizeof(label), "%.*s", (int)layout.label_length, provider->label);
+    draw_str2x(ox + 29, oy + 3, label, provider->auth_err);
+    if (layout.visible) {
+        draw_str(ox + layout.badge_x, oy + 7, layout.count_text, 0);
+        for (int y = 0; y < 7; y++) for (int x = 0; x < RESET_CREDIT_ICON_WIDTH; x++) {
+            if (reset_credit_icon_rows[y] & (1u << (RESET_CREDIT_ICON_WIDTH - 1 - x)))
+                lpix(ox + layout.icon_x + x, oy + 7 + y, 1, 0);
+        }
+        draw_str(ox + layout.expiry_x, oy + 7, layout.expiry_text, 0);
+    }
     int reset_x = ox + width - str_w(resets);
     icon_hourglass(reset_x - 10, oy + 7, provider->auth_err);
     draw_str(reset_x, oy + 7, resets,
@@ -1018,7 +1048,7 @@ static RTC_DATA_ATTR bool    s_last_red_state      = false;
 static RTC_DATA_ATTR bool    s_last_content_valid  = false;
 static RTC_DATA_ATTR bool    s_last_bw_valid       = false;
 static RTC_DATA_ATTR bool    s_last_data_valid     = false;
-#define DISPLAY_RTC_STATE_MAGIC 0x44563432u
+#define DISPLAY_RTC_STATE_MAGIC 0x44563433u
 /* Keep this marker before dashboard_data_t. When that struct changes across an
    OTA, this address previously held its schema_version field, so the new magic
    cannot accidentally validate the old RTC layout. Change the magic whenever
@@ -1997,6 +2027,7 @@ static bool draw_dashboard_frame(const dashboard_data_t *data,
             .wk_reset = service->window_count > 1
                 ? long_window->reset_in_seconds : 0,
             .extra = &service->extra_usage,
+            .reset_credits = &service->reset_credits,
             .auth_err = service->service_error,
             .reached = (service->window_count > 0 && short_window->reached) ||
                        (service->window_count > 1 && long_window->reached),
