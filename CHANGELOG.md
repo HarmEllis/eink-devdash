@@ -11,7 +11,7 @@ This release shows saved reset credits and their earliest known expiry for Claud
 ### Added
 
 - Show the available manual reset count, a circular reset arrow, and the earliest known credit expiry between the service name and automatic quota reset countdowns. Confirmed zero remains visible; unavailable inventories are hidden.
-- Read active reset grants from Claude usage responses and the root Codex app-server reset credit inventory.
+- Read active reset grants from Claude usage responses and the root Codex app-server reset credit inventory. Unsupported Claude inventory queries fall back to the standard usage request, with a six-hour cooldown.
 - Support OTA updates to canonical `vMAJOR.MINOR.PATCH-rc.N` tags, with numeric RC ordering and final releases following RCs of the same version. Equal versions and downgrades remain blocked.
 
 ### Changed
@@ -19,11 +19,6 @@ This release shows saved reset credits and their earliest known expiry for Claud
 - Upgrade the bundled Codex CLI to 0.157.1 to support reset credit inventories.
 - Fit service names and expiry labels to one-, two-, three-, and four-service headers, and refresh dashboard previews and payload documentation.
 - Allow prerelease artifact publishing after successful CI on the exact release-branch commit while preserving the stable Web Flasher, production relay, and stable Docker aliases.
-
-### Fixed
-
-- Fall back to the standard Claude usage request when the reset inventory query is unsupported, with a six-hour cooldown to avoid repeated unsupported requests.
-- Accept the final release after an RC of the same version instead of treating both as equal.
 
 Firmware without RC OTA support needs one USB update before it can receive RCs. In particular, devices running the original `v0.12.0-rc.1` need USB flashing to install `v0.12.0`; devices on stable `v0.11.2` can update to `v0.12.0` through OTA.
 
