@@ -334,7 +334,7 @@ esp_err_t ota_client_maybe_update(const dash_config_v2_t *cfg,
     const dash_api_profile_t *api = &net->apis[api_idx];
     if (!api->enabled || api->api_url[0] == '\0') return ESP_ERR_INVALID_STATE;
 
-    char latest_version[40] = {0};
+    char latest_version[OTA_VERSION_MAX_LENGTH + 1] = {0};
     char download_url[256]  = {0};
     bool ota_enabled = false;
     esp_err_t err = fetch_manifest(api->api_url, api->device_token,

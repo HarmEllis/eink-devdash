@@ -22,6 +22,7 @@
  * the device at someone else's binaries. */
 #define OTA_REPO_SLUG  "HarmEllis/eink-devdash"
 #define OTA_ASSET_NAME "eink-devdash.bin"
+#define OTA_VERSION_MAX_LENGTH 39
 
 /*
  * True iff `url` is byte-for-byte the canonical GitHub Releases download URL
@@ -40,20 +41,22 @@ bool ota_download_url_is_canonical(const char *url, const char *latest_version);
 /*
  * True iff `latest` is a strictly newer release than `running` (upgrade-only).
  *
- *  - `latest` (from the manifest) MUST be canonical "vMAJOR.MINOR.PATCH": a
+ *  - `latest` (from the manifest) MUST be canonical "vMAJOR.MINOR.PATCH[-rc.N]": a
  *    required leading 'v', exactly three dot-separated components, each 1+
- *    ASCII digits with no leading zero (except a lone "0"), and no trailing
- *    characters. The 'v' is mandatory because release tags carry it and the
+ *    ASCII digits with no leading zero (except a lone "0"), optionally followed
+ *    by "-rc.N" with a bounded uint32_t RC number and no leading zero.
+ *    The 'v' is mandatory because release tags carry it and the
  *    download URL embeds the version verbatim (/releases/download/v0.4.0/...).
  *  - `running` (from esp_app_get_description()->version, a `git describe`
  *    string like "v0.3.1-2-gabc-dirty") is parsed by the same grammar for its
  *    prefix, tolerating a missing leading 'v' (only this locally embedded value
- *    may omit it) and a trailing "-<suffix>" after PATCH.
+ *    may omit it) and a trailing "-<suffix>" after PATCH or "-rc.N".
  *
  * Components are bounded uint32_t with explicit overflow detection. Comparison
- * is numeric (major, then minor, then patch), so v0.9.0 < v0.10.0. A
- * git-describe suffix on an equal base (running v0.3.1-2-gabc vs latest
+ * is numeric (major, minor, patch, then RC number), with the final release
+ * following all RCs of the same base version. A git-describe suffix on an equal
+ * base (running v0.3.1-2-gabc vs latest
  * v0.3.1) is NOT newer. Fails closed: any parse failure or overflow returns
- * false (no install).
+ * false (no install). Manifest versions are at most OTA_VERSION_MAX_LENGTH bytes.
  */
 bool ota_version_is_newer(const char *latest, const char *running);

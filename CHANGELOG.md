@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Allow OTA updates to canonical `vMAJOR.MINOR.PATCH-rc.N` release candidates, compare RC numbers numerically, and accept the final release after an RC of the same version. Existing firmware without RC support needs a one-time USB update.
+
 ## [0.11.2] - 2026-07-17
 
 This release fixes two Codex usage bugs and stabilises a flaky relay test suite.

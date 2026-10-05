@@ -8,6 +8,8 @@ typedef struct {
     uint32_t major;
     uint32_t minor;
     uint32_t patch;
+    bool is_rc;
+    uint32_t rc;
 } ota_semver_t;
 
 /*
@@ -36,22 +38,25 @@ static bool parse_component(const char **p, uint32_t *out)
 }
 
 /*
- * Parse "vMAJOR.MINOR.PATCH" into `out`.
+ * Parse "vMAJOR.MINOR.PATCH[-rc.N]" into `out`.
  *  - require_v: when true the leading 'v' is mandatory (manifest `latest`);
  *    when false it is tolerated as optional (locally embedded `running`).
- *  - allow_suffix: when true a trailing "-<suffix>" after PATCH is accepted
- *    (a `git describe` running version); when false PATCH must end the string.
+ *  - allow_suffix: when true a trailing "-<suffix>" after the base or RC is
+ *    accepted (a `git describe` running version); otherwise the tag must end.
  */
 static bool parse_semver(const char *s, bool require_v, bool allow_suffix,
                          ota_semver_t *out)
 {
     if (!s) return false;
+    if (require_v && strlen(s) > OTA_VERSION_MAX_LENGTH) return false;
     if (s[0] == 'v') {
         s++;
     } else if (require_v) {
         return false;
     }
 
+    out->is_rc = false;
+    out->rc = 0;
     const char *p = s;
     if (!parse_component(&p, &out->major)) return false;
     if (*p != '.') return false;
@@ -61,6 +66,11 @@ static bool parse_semver(const char *s, bool require_v, bool allow_suffix,
     p++;
     if (!parse_component(&p, &out->patch)) return false;
 
+    if (strncmp(p, "-rc.", 4) == 0) {
+        p += 4;
+        if (!parse_component(&p, &out->rc)) return false;
+        out->is_rc = true;
+    }
     if (*p == '\0') return true;
     if (allow_suffix && *p == '-') return true;
     return false;
@@ -82,8 +92,8 @@ bool ota_download_url_is_canonical(const char *url, const char *latest_version)
 bool ota_version_is_newer(const char *latest, const char *running)
 {
     ota_semver_t l, r;
-    /* `latest` must be strictly canonical; `running` may omit 'v' and carry a
-     * git-describe suffix. Either parse failure fails closed (no install). */
+    /* `latest` accepts stable or rc.N tags; `running` may omit 'v' and carry
+     * a git-describe suffix. Either parse failure fails closed (no install). */
     if (!parse_semver(latest, /*require_v=*/true, /*allow_suffix=*/false, &l)) {
         return false;
     }
@@ -93,5 +103,8 @@ bool ota_version_is_newer(const char *latest, const char *running)
 
     if (l.major != r.major) return l.major > r.major;
     if (l.minor != r.minor) return l.minor > r.minor;
-    return l.patch > r.patch;
+    if (l.patch != r.patch) return l.patch > r.patch;
+    /* The final release follows every RC of the same numeric version. */
+    if (l.is_rc != r.is_rc) return !l.is_rc;
+    return l.is_rc && l.rc > r.rc;
 }

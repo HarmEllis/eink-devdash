@@ -410,7 +410,16 @@ esptool.py --chip esp32s3 -p /dev/ttyACM0 write_flash \
 ### Updates
 
 After initial setup, the device checks the API's OTA manifest on wake and
-installs newer published firmware automatically when OTA is enabled.
+installs newer published firmware automatically when OTA is enabled. Both stable
+release tags and `vMAJOR.MINOR.PATCH-rc.N` tags are supported. Selecting an RC API
+image advertises its matching RC firmware; stable API images advertise stable
+firmware. Versions compare numerically, with `rc.1 < rc.2 < final` for the same
+major/minor/patch version. Downgrades and equal versions are skipped. Devices
+running firmware from before RC OTA support need one USB update first. In
+particular, the original `v0.12.0-rc.1` firmware cannot update to another RC or
+to final `v0.12.0` by OTA. Publish the RC GitHub release (not a draft) with its
+firmware assets before selecting its API image, since devices cannot download
+draft release assets.
 
 Devices still using the original v0.1.x single-app partition layout must be
 flashed once with the hosted web flasher and erased. This installs the OTA
