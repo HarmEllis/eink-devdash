@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Allow OTA updates to canonical `vMAJOR.MINOR.PATCH-rc.N` release candidates, compare RC numbers numerically, and accept the final release after an RC of the same version. Existing firmware without RC support needs a one-time USB update.
+
 ## [0.12.0-rc.1] - 2026-10-05
 
 This prerelease adds saved reset credits to the Claude and Codex service headers for testing on a physical display. Both the new API and firmware are required to display credits; the dashboard schema remains at version 2.

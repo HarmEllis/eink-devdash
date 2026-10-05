@@ -31,11 +31,15 @@ interface OtaManifestEnabled {
 export type OtaManifest = OtaManifestDisabled | OtaManifestEnabled
 
 const UINT32_MAX = 0xffff_ffff
-const CANONICAL_VERSION_RE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+// Match firmware's manifest version buffer and bounded numeric components.
+const OTA_VERSION_MAX_LENGTH = 39
+const CANONICAL_VERSION_RE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-rc\.(0|[1-9]\d*))?$/
 
 export function appVersionIsCanonical(version: string): boolean {
   const match = CANONICAL_VERSION_RE.exec(version)
-  return !!match && match.slice(1).every((part) => {
+  if (version.length > OTA_VERSION_MAX_LENGTH || !match || match[0] !== version) return false
+  return match.slice(1).every((part) => {
+    if (part === undefined) return true
     const value = Number(part)
     return Number.isSafeInteger(value) && value <= UINT32_MAX
   })

@@ -67,13 +67,46 @@ test('APP_VERSION must be canonical v-prefixed uint32 semver', () => {
   }
 })
 
+test('RC versions advertise the matching firmware asset', () => {
+  for (const version of ['v0.12.0-rc.0', 'v0.12.0-rc.1', 'v0.12.0-rc.10', 'v0.12.0-rc.4294967295']) {
+    assert.equal(appVersionIsCanonical(version), true, version)
+    assert.deepEqual(buildManifest({ otaEnabled: true, appVersion: version }), {
+      otaEnabled: true,
+      latestVersion: version,
+      downloadUrl: `https://github.com/HarmEllis/eink-devdash/releases/download/${version}/eink-devdash.bin`,
+    })
+    assert.deepEqual(buildManifest({ otaEnabled: false, appVersion: version }), { otaEnabled: false })
+  }
+})
+
+test('RC versions reject malformed, overflowing and oversized identifiers', () => {
+  for (const version of [
+    'v0.12.0-rc.', 'v0.12.0-rc.01', 'v0.12.0-rc.-1',
+    'v0.12.0-rc.4294967296', 'v0.12.0-rc.1-extra', 'v0.12.0-rc.1+build',
+    'v0.12.0-beta.1', 'v0.12.0-rc.1/other', 'v0.12.0-rc.1\n',
+    'v4294967295.4294967295.4294967295-rc.4294967295',
+  ]) {
+    assert.equal(appVersionIsCanonical(version), false, version)
+    assert.deepEqual(buildManifest({ otaEnabled: true, appVersion: version }), { otaEnabled: false })
+  }
+})
+
+test('OTA version length matches the firmware manifest buffer boundary', () => {
+  const valid = 'v4294967295.4294967295.4294967295-rc.42'
+  const invalid = `${valid}0`
+  assert.equal(valid.length, 39)
+  assert.equal(invalid.length, 40)
+  assert.equal(appVersionIsCanonical(valid), true)
+  assert.equal(appVersionIsCanonical(invalid), false)
+})
+
 test('getOtaManifest is the environment-backed single source', () => {
   const originalEnabled = process.env.OTA_ENABLED
   const originalVersion = process.env.APP_VERSION
   try {
     process.env.OTA_ENABLED = 'true'
-    process.env.APP_VERSION = 'v0.4.0'
-    assert.equal(getOtaManifest().otaEnabled, true)
+    process.env.APP_VERSION = 'v0.12.0-rc.1'
+    assert.deepEqual(getOtaManifest(), buildManifest({ otaEnabled: true, appVersion: 'v0.12.0-rc.1' }))
     process.env.APP_VERSION = '0.4.0'
     assert.deepEqual(getOtaManifest(), { otaEnabled: false })
   } finally {
