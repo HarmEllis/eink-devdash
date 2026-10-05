@@ -59,7 +59,8 @@ path.
 
 ### API ↔ firmware version coupling
 
-The git tag `vX.Y.Z` is the single source of truth.
+The git tag `vX.Y.Z` (or `vX.Y.Z-rc.N` for release candidates) is the single
+source of truth.
 
 - `docker-publish.yml` passes `--build-arg APP_VERSION=${TAG}` so the
   API container has `process.env.APP_VERSION` available at runtime.
@@ -68,6 +69,14 @@ The git tag `vX.Y.Z` is the single source of truth.
   `esp_app_get_description()->version` reports it.
 - The API advertises `APP_VERSION` as `latestVersion` from
   `/ota/manifest`.
+
+Release candidates are explicitly selected through the corresponding API image.
+Firmware compares core version numbers first, then RC numbers numerically;
+the final release follows every RC of the same core version. Equal versions
+and downgrades remain blocked. The RC GitHub release must be published with its
+firmware assets before devices use its API image; draft assets are inaccessible
+to the firmware. Devices with the previous stable-only OTA parser need one USB
+update before they can receive RC updates.
 
 A version mismatch between the API and the firmware build (e.g. someone
 runs the API container at a non-tag) surfaces as

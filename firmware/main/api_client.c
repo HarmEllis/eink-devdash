@@ -357,6 +357,8 @@ static void parse_usage_service(const cJSON *service, usage_service_data_t *out)
     }
 
     parse_extra_usage(service, &out->extra_usage);
+    reset_credits_parse(cJSON_GetObjectItemCaseSensitive(service, "resetCredits"),
+                        &out->reset_credits);
 }
 
 static void parse_dashboard_v2(const cJSON *root, dashboard_data_t *out)

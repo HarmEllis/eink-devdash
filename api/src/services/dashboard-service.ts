@@ -44,6 +44,13 @@ export type DashboardMetric = {
   valueText?: string
 }
 
+export type DashboardResetCredits = {
+  availableCount: number
+  // Relative to this usage snapshot, like the quota-window countdowns. Null
+  // means no known future expiry; Codex details may cover only some credits.
+  nextExpiresInSeconds: number | null
+}
+
 export type DashboardService = {
   id: string
   kind: DashboardServiceKind
@@ -58,6 +65,7 @@ export type DashboardService = {
   metrics?: DashboardMetric[]
   source?: string
   planType?: string | null
+  resetCredits?: DashboardResetCredits
 }
 
 export type DashboardServiceAdapter = {

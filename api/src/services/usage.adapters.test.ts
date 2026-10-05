@@ -237,3 +237,13 @@ test('Antigravity adapter is omitted when credentials are unavailable', async ()
 
   assert.equal(await adapter.getService(), null)
 })
+
+test('usage adapters preserve confirmed zero and relative reset-credit countdowns', () => {
+  const credits = { availableCount: 0, nextExpiresInSeconds: null }
+  assert.deepEqual(serviceFromClaudeUsage({ ...baseClaudeUsage, resetCredits: credits }).resetCredits, credits)
+  const codex = serviceFromCodexUsage({ status: 'ok', source: 'chatgpt', planType: 'plus', reachedLimit: null,
+    short: { usedPercent: 1, label: '5h', resetsAt: null, resetInSeconds: 0 },
+    long: { usedPercent: 1, label: '7d', resetsAt: null, resetInSeconds: 0 },
+    resetCredits: { availableCount: 3, nextExpiresInSeconds: 3600 } })
+  assert.deepEqual(codex.resetCredits, { availableCount: 3, nextExpiresInSeconds: 3600 })
+})

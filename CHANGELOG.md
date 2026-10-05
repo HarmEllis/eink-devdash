@@ -4,6 +4,42 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-05
+
+This release shows saved reset credits and their earliest known expiry for Claude and Codex, and adds OTA support for release candidates. Both the API and firmware must be updated to display reset credits; the dashboard schema remains at version 2.
+
+### Added
+
+- Show the available manual reset count, a circular reset arrow, and the earliest known credit expiry between the service name and automatic quota reset countdowns. Confirmed zero remains visible; unavailable inventories are hidden.
+- Read active reset grants from Claude usage responses and the root Codex app-server reset credit inventory. Unsupported Claude inventory queries fall back to the standard usage request, with a six-hour cooldown.
+- Support OTA updates to canonical `vMAJOR.MINOR.PATCH-rc.N` tags, with numeric RC ordering and final releases following RCs of the same version. Equal versions and downgrades remain blocked.
+
+### Changed
+
+- Upgrade the bundled Codex CLI to 0.157.1 to support reset credit inventories.
+- Fit service names and expiry labels to one-, two-, three-, and four-service headers, and refresh dashboard previews and payload documentation.
+- Allow prerelease artifact publishing after successful CI on the exact release-branch commit while preserving the stable Web Flasher, production relay, and stable Docker aliases.
+
+Firmware without RC OTA support needs one USB update before it can receive RCs. In particular, devices running the original `v0.12.0-rc.1` need USB flashing to install `v0.12.0`; devices on stable `v0.11.2` can update to `v0.12.0` through OTA.
+
+## [0.12.0-rc.1] - 2026-10-05
+
+This prerelease adds saved reset credits to the Claude and Codex service headers for testing on a physical display. Both the new API and firmware are required to display credits; the dashboard schema remains at version 2.
+
+### Added
+
+- Show the available manual reset count, a circular reset arrow, and the earliest known credit expiry between the service name and automatic quota reset countdowns.
+- Support reset credit inventories from Claude usage responses and Codex app-server responses, including confirmed zero balances and unavailable expiry information.
+
+### Changed
+
+- Upgrade the bundled Codex CLI to 0.157.1 to support reset credit inventories.
+- Fit service names and expiry labels to the available header space in one-, two-, three-, and four-service layouts.
+- Refresh the dashboard previews and document the optional reset credit payload fields.
+- Publish prerelease firmware and version-specific API images after successful CI on release branches, while preserving the stable Web Flasher, Docker aliases, and production relay.
+
+- Fall back to the standard Claude usage request when the reset inventory query is unsupported, with a cooldown to avoid repeated unsupported requests.
+
 ## [0.11.2] - 2026-07-17
 
 This release fixes two Codex usage bugs and stabilises a flaky relay test suite.
@@ -261,6 +297,8 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.12.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.2...v0.12.0
+[0.12.0-rc.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.2...v0.12.0-rc.1
 [0.11.2]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.10.0...v0.11.0

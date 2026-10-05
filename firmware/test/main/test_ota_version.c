@@ -5,6 +5,7 @@
  * exercised without flashing hardware.
  */
 #include <stdlib.h>
+#include <string.h>
 
 #include "unity.h"
 #include "ota_version.h"
@@ -12,6 +13,7 @@
 
 void setUp(void) {}
 void tearDown(void) {}
+void run_reset_credit_tests(void);
 
 /* ---- ota_download_url_is_canonical -------------------------------------- */
 
@@ -95,6 +97,63 @@ static void test_version_tolerates_running_without_v(void)
     /* Only the locally embedded running version may omit the leading 'v'. */
     TEST_ASSERT_TRUE(ota_version_is_newer("v0.4.0", "0.3.1"));
     TEST_ASSERT_TRUE(ota_version_is_newer("v0.4.0", "0.1.0-3-gabc1234-dirty"));
+}
+
+static void test_version_accepts_rc_upgrades_and_final(void)
+{
+    TEST_ASSERT_TRUE(ota_version_is_newer("v0.12.0-rc.1", "v0.11.2"));
+    TEST_ASSERT_TRUE(ota_version_is_newer("v0.12.0-rc.2", "v0.12.0-rc.1"));
+    TEST_ASSERT_TRUE(ota_version_is_newer("v0.12.0-rc.10", "0.12.0-rc.2"));
+    TEST_ASSERT_TRUE(ota_version_is_newer("v0.12.0", "v0.12.0-rc.4294967295"));
+    TEST_ASSERT_TRUE(ota_version_is_newer("v0.12.1-rc.0", "v0.12.0"));
+    TEST_ASSERT_TRUE(ota_version_is_newer("v0.12.0-rc.4294967295", "v0.12.0-rc.1"));
+}
+
+static void test_version_rejects_equal_or_older_rc(void)
+{
+    TEST_ASSERT_FALSE(ota_version_is_newer("v0.12.0-rc.1", "v0.12.0-rc.1"));
+    TEST_ASSERT_FALSE(ota_version_is_newer("v0.12.0-rc.2", "v0.12.0-rc.10"));
+    TEST_ASSERT_FALSE(ota_version_is_newer("v0.12.0-rc.99", "v0.12.0"));
+    TEST_ASSERT_FALSE(ota_version_is_newer("v0.11.2", "v0.12.0-rc.1"));
+    TEST_ASSERT_FALSE(ota_version_is_newer("v0.11.2-rc.99", "v0.12.0-rc.0"));
+}
+
+static void test_version_preserves_rc_in_git_describe(void)
+{
+    TEST_ASSERT_TRUE(ota_version_is_newer("v0.12.0-rc.2", "v0.12.0-rc.1-2-gabc1234"));
+    TEST_ASSERT_TRUE(ota_version_is_newer("v0.12.0", "0.12.0-rc.1-2-gabc1234-dirty"));
+    TEST_ASSERT_TRUE(ota_version_is_newer("v0.12.0-rc.2", "v0.12.0-rc.1-dirty"));
+    TEST_ASSERT_FALSE(ota_version_is_newer("v0.12.0-rc.1", "v0.12.0-rc.1-2-gabc1234"));
+}
+
+static void test_version_rejects_malformed_rc(void)
+{
+    const char *invalid[] = {
+        "v0.12.0-rc.", "v0.12.0-rc.01", "v0.12.0-rc.-1",
+        "v0.12.0-rc.4294967296", "v0.12.0-rc.1-extra",
+        "v0.12.0-rc.1+build", "v0.12.0-beta.1", "v0.12.0-rc.1/other",
+        "v0.12.0-rc.1\n", "v4294967295.4294967295.4294967295-rc.4294967295",
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        TEST_ASSERT_FALSE(ota_version_is_newer(invalid[i], "v0.11.2"));
+    }
+    TEST_ASSERT_FALSE(ota_version_is_newer("v0.12.0", "v0.12.0-rc.invalid"));
+    TEST_ASSERT_TRUE(ota_download_url_is_canonical(
+        "https://github.com/HarmEllis/eink-devdash/releases/download/v0.12.0-rc.1/eink-devdash.bin",
+        "v0.12.0-rc.1"));
+    TEST_ASSERT_FALSE(ota_download_url_is_canonical(
+        "https://github.com/HarmEllis/eink-devdash/releases/download/v0.12.0-rc.1/eink-devdash.bin",
+        "v0.12.0-rc.2"));
+}
+
+static void test_version_manifest_length_boundary(void)
+{
+    const char *valid = "v4294967295.4294967295.4294967295-rc.42";
+    const char *invalid = "v4294967295.4294967295.4294967295-rc.420";
+    TEST_ASSERT_EQUAL_INT(OTA_VERSION_MAX_LENGTH, strlen(valid));
+    TEST_ASSERT_EQUAL_INT(OTA_VERSION_MAX_LENGTH + 1, strlen(invalid));
+    TEST_ASSERT_TRUE(ota_version_is_newer(valid, "v0.12.0-rc.1"));
+    TEST_ASSERT_FALSE(ota_version_is_newer(invalid, "v0.12.0-rc.1"));
 }
 
 static void test_version_fails_closed_on_malformed_latest(void)
@@ -219,6 +278,7 @@ static void test_wifi_country_rejects_unsupported_and_malformed(void)
 void app_main(void)
 {
     UNITY_BEGIN();
+    run_reset_credit_tests();
 
     RUN_TEST(test_canonical_url_accepts_exact_match);
     RUN_TEST(test_canonical_url_rejects_other_repo);
@@ -233,6 +293,11 @@ void app_main(void)
     RUN_TEST(test_version_rejects_git_describe_equal_base);
     RUN_TEST(test_version_numeric_not_lexical_9_to_10);
     RUN_TEST(test_version_tolerates_running_without_v);
+    RUN_TEST(test_version_accepts_rc_upgrades_and_final);
+    RUN_TEST(test_version_rejects_equal_or_older_rc);
+    RUN_TEST(test_version_preserves_rc_in_git_describe);
+    RUN_TEST(test_version_rejects_malformed_rc);
+    RUN_TEST(test_version_manifest_length_boundary);
     RUN_TEST(test_version_fails_closed_on_malformed_latest);
     RUN_TEST(test_version_fails_closed_on_unprefixed_latest);
     RUN_TEST(test_version_fails_closed_on_overflow);

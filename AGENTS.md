@@ -217,6 +217,20 @@ below before creating the tag.
      report that the release has not been pushed, tagged remotely, or drafted
      on GitHub
 
+### Release candidates
+
+Use canonical `vMAJOR.MINOR.PATCH-rc.N` tags for release candidates, with a
+non-negative numeric RC number and no leading zero except `0` itself. Keep the
+same build, CI, draft-release, asset-verification, and maintainer-approval steps
+as above. A release-branch exception still requires explicit maintainer approval.
+Prereleases preserve the stable Web Flasher, production relay, and Docker
+`latest`/major/minor aliases.
+
+Publish the prerelease draft after its firmware and Docker workflows pass, and
+before pointing test devices at its API image. Draft release assets are not
+publicly downloadable by devices. Existing firmware without RC OTA support
+needs a one-time USB update, including the original `v0.12.0-rc.1` firmware.
+
 ## Version Format
 
 - `api/package.json` and `flash-server/manifest.json` use plain semver like

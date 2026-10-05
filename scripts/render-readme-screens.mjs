@@ -588,13 +588,103 @@ function iconProvider(f, ox, oy, name, scale = 1) {
   }
 }
 
-function drawProviderTitle(f, ox, oy, width, provider, hourglass = false) {
+function drawProviderTitle(f, ox, oy, width, provider, hourglass = false, hero = false) {
+  if (provider.resetCredits && !provider.serviceError &&
+      Number.isSafeInteger(provider.resetCredits.availableCount) &&
+      provider.resetCredits.availableCount >= 0) {
+    drawProviderCreditTitle(f, ox, oy, width, provider, hourglass, hero);
+    return;
+  }
   const resets = `${formatResetCountdown(provider.windows[0].reset)}/${formatResetCountdown(provider.windows[1].reset)}`;
-  iconProvider(f, ox, oy, provider.icon);
-  f.drawStr(ox + 11, oy, provider.label, 0);
+  iconProvider(f, ox, oy, provider.icon, hero ? 3 : 1);
+  if (hero) f.drawStr2x(ox + 29, oy + 3, provider.label, 0);
+  else f.drawStr(ox + 11, oy, provider.label, 0);
   const resetX = ox + width - strW(resets);
-  if (hourglass) iconHourglass(f, resetX - 10, oy, 0);
-  f.drawStr(resetX, oy, resets, provider.windows.some((window) => window.pct > 80));
+  const resetY = oy + (hero ? 7 : 0);
+  if (hourglass) iconHourglass(f, resetX - 10, resetY, 0);
+  f.drawStr(resetX, resetY, resets, provider.windows.some((window) => window.pct > 80));
+}
+
+// Read the approved option-A bitmap from firmware to keep previews identical.
+const resetCreditSource = readFileSync(join(root, "firmware/main/reset_credits.c"), "utf8");
+const resetArrowRows = [...resetCreditSource.match(/reset_credit_icon_rows\[7\] = \{([\s\S]*?)\};/)[1]
+  .matchAll(/0x[0-9a-f]+/gi)].map((value) => Number.parseInt(value[0], 16));
+const resetIconWidth = 7;
+
+function iconResetCredit(f, ox, oy) {
+  resetArrowRows.forEach((bits, y) => {
+    for (let x = 0; x < resetIconWidth; x++) {
+      if (bits & (1 << (resetIconWidth - 1 - x))) f.lpix(ox + x, oy + y, 1, 0);
+    }
+  });
+}
+
+function creditExpiryText(seconds, expanded = false) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  const hours = Math.floor(seconds / 3600);
+  if (hours < 1) return "<1h";
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days > 9) return "9d+";
+  const remainder = hours % 24;
+  return expanded && remainder ? `${days}d${remainder}h` : `${days}d`;
+}
+
+function drawProviderCreditTitle(f, ox, oy, width, provider, hourglass, hero = false) {
+  const { availableCount, nextExpiresInSeconds } = provider.resetCredits;
+  const count = availableCount > 99 ? "99+" : String(availableCount);
+  const compact = availableCount > 0 ? creditExpiryText(nextExpiresInSeconds) : "";
+  const expanded = availableCount > 0 ? creditExpiryText(nextExpiresInSeconds, true) : "";
+  // The count's trailing font column supplies the 1px count/icon gap.
+  // Content excludes the two 3px clearances: max 18+7+1+18 = 44px.
+  const badgeWidth = (expiry) => strW(count) + resetIconWidth + (expiry ? 1 + strW(expiry) : 0);
+  const resets = `${formatResetCountdown(provider.windows[0].reset)}/${formatResetCountdown(provider.windows[1].reset)}`;
+  const resetX = ox + width - strW(resets);
+  // Reserve the worst-case automatic countdown pair, preventing abbreviation
+  // changes when a live countdown becomes shorter. The real text stays intact.
+  // Both "23h59" and "3d12h" use five characters: 11 with the slash.
+  const right = ox + width - Math.max(66, strW(resets)) - (hourglass ? 10 : 0);
+  const labelX = ox + (hero ? 29 : 11);
+  const labelFontWidth = hero ? FONT2_W : FONT_W;
+  let label = provider.label;
+  let left = labelX + label.length * labelFontWidth;
+  // Reserve three expiry characters while credits remain, so e.g. 11h -> 9h
+  // does not change the provider abbreviation. Zero needs no expiry slot.
+  const compactBudget = badgeWidth(availableCount > 0 ? "23h" : "");
+  if (right - left < compactBudget + 6) {
+    label = label.slice(0, 3);
+    left = labelX + label.length * labelFontWidth;
+  }
+  while (right - left < compactBudget + 6 && label.length > 1) {
+    label = label.slice(0, -1);
+    left = labelX + label.length * labelFontWidth;
+  }
+  const expiry = badgeWidth(expanded) + 6 <= right - left ? expanded : compact;
+  const badgeW = badgeWidth(expiry);
+  if (badgeW + 6 > right - left) throw new Error(`Reset-credit header does not fit: ${provider.label}`);
+  const badgeX = left + Math.floor((right - left - badgeW) / 2);
+  if (badgeX < left + 3 || badgeX + badgeW > right - 3) {
+    throw new Error(`Reset-credit header clearance violated: ${provider.label}`);
+  }
+  iconProvider(f, ox, oy, provider.icon, hero ? 3 : 1);
+  if (hero) f.drawStr2x(labelX, oy + 3, label, 0);
+  else f.drawStr(labelX, oy, label, 0);
+  const badgeY = oy + (hero ? 7 : 0);
+  f.drawStr(badgeX, badgeY, count, 0);
+  const iconX = badgeX + strW(count);
+  iconResetCredit(f, iconX, badgeY);
+  if (expiry) f.drawStr(iconX + resetIconWidth + 1, badgeY, expiry, 0);
+  if (hourglass) iconHourglass(f, resetX - 10, badgeY, 0);
+  f.drawStr(resetX, badgeY, resets, provider.windows.some((window) => window.pct > 80));
+}
+
+function drawProviderHero(f, ox, oy, width, provider) {
+  drawProviderTitle(f, ox, oy, width, provider, true, true);
+  drawUsageRow(f, ox, oy + 28, width, provider.windows[0].label, provider.windows[0].pct, 26, 12, 4,
+    provider.windows[0].recent ?? 0, -1);
+  drawUsageRow(f, ox, oy + 47, width, provider.windows[1].label, provider.windows[1].pct, 26, 12, 4,
+    provider.windows[1].recent ?? 0, provider.windows[1].tick ?? -1);
+  drawMetricRow(f, ox, oy + 66, width, provider.metric, 26, 12, 4);
 }
 
 function drawUsageRow(f, ox, oy, width, label, pct, labelW, barH, segW, recentPct = 0, tickPct = -1) {
@@ -681,8 +771,8 @@ function drawDashboardChrome(f, updatedAt, refreshMin) {
 function renderDashboardTwo() {
   const f = new Frame();
   const providers = [
-    { label: "CLAUDE", icon: "spark", windows: [{ label: "5H", pct: 9, recent: 4, reset: 8200 }, { label: "7D", pct: 41, recent: 6, tick: 57, reset: 304800 }], metric: { amount: 0.91, percent: 5, currency: "EUR", valueText: "0,91" } },
-    { label: "CODEX", icon: "ring", windows: [{ label: "5H", pct: 32, recent: 8, reset: 3600 }, { label: "7D", pct: 38, recent: 5, tick: 52, reset: 313200 }], metric: { amount: 3, percent: null, currency: "USD", valueText: "3" } },
+    { label: "CLAUDE", icon: "spark", resetCredits: { availableCount: 2, nextExpiresInSeconds: 11 * 3600 }, windows: [{ label: "5H", pct: 9, recent: 4, reset: 8200 }, { label: "7D", pct: 41, recent: 6, tick: 57, reset: 304800 }], metric: { amount: 0.91, percent: 5, currency: "EUR", valueText: "0,91" } },
+    { label: "CODEX", icon: "ring", resetCredits: { availableCount: 3, nextExpiresInSeconds: (3 * 24 + 11) * 3600 }, windows: [{ label: "5H", pct: 32, recent: 8, reset: 3600 }, { label: "7D", pct: 38, recent: 5, tick: 52, reset: 313200 }], metric: { amount: 3, percent: null, currency: "USD", valueText: "3" } },
   ];
   drawDashboardChrome(f, "14:38", 5);
   const bodyTop = 19;
@@ -692,7 +782,7 @@ function renderDashboardTwo() {
   return f;
 }
 
-function renderDashboard({ githubPresent = true, githubError = null } = {}) {
+function renderDashboard({ githubPresent = true, githubError = null, providerCount = 4, resetCreditExample = "available" } = {}) {
   const f = new Frame();
   const data = {
     githubPresent,
@@ -708,6 +798,24 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
     stale: false,
     offline: false,
   };
+
+  data.usage = data.usage.slice(0, providerCount);
+  if (resetCreditExample === "available") {
+    data.usage[0].resetCredits = { availableCount: 2, nextExpiresInSeconds: 11 * 3600 };
+    if (data.usage[1]) data.usage[1].resetCredits = { availableCount: 3, nextExpiresInSeconds: (3 * 24 + 11) * 3600 };
+  } else if (resetCreditExample === "zero") {
+    data.usage[0].resetCredits = { availableCount: 0, nextExpiresInSeconds: null };
+    // Codex deliberately has no reset-credit field: unknown stays hidden.
+  } else if (resetCreditExample === "stress") {
+    for (const provider of data.usage.slice(0, 2)) {
+      provider.resetCredits = { availableCount: 123, nextExpiresInSeconds: 23 * 3600 };
+      provider.windows.forEach((window) => {
+        window.label = "7D";
+        window.reset = (6 * 24 + 23) * 3600;
+      });
+    }
+    data.usage[1].resetCredits.nextExpiresInSeconds = 30 * 86400;
+  }
 
   const depsAlert = data.github.dependabot > 0;
 
@@ -736,6 +844,10 @@ function renderDashboard({ githubPresent = true, githubError = null } = {}) {
   }
 
   const bodyTop = data.githubPresent ? 37 : 19;
+  if (providerCount === 1) {
+    drawProviderHero(f, 6, bodyTop, 288, data.usage[0]);
+    return f;
+  }
   f.vline(148, data.githubPresent ? 35 : 17, data.githubPresent ? 90 : 108);
   f.hline(6, data.githubPresent ? 81 : 72, 282);
   const xs = [6, 156], ys = [bodyTop, data.githubPresent ? 86 : 77];
@@ -1092,7 +1204,15 @@ function escapeXml(value) {
 
 const outDir = join(root, "docs/assets");
 mkdirSync(outDir, { recursive: true });
-const screens = [
+const resetCreditPreviews = process.argv.includes("--reset-credit-previews");
+const screens = resetCreditPreviews ? [
+  ["design-reset-credits-one.svg", renderDashboard({ providerCount: 1 }), "Reset-credit design with one service"],
+  ["design-reset-credits-two.svg", renderDashboardTwo(), "Reset-credit design with two services"],
+  ["design-reset-credits-three.svg", renderDashboard({ providerCount: 3, resetCreditExample: "available" }), "Reset-credit design with three services"],
+  ["design-reset-credits-four.svg", renderDashboard({ resetCreditExample: "available" }), "Reset-credit design with four services"],
+  ["design-reset-credits-zero-unknown.svg", renderDashboard({ resetCreditExample: "zero" }), "Reset-credit design: Claude zero, Codex unknown"],
+  ["design-reset-credits-stress.svg", renderDashboard({ resetCreditExample: "stress" }), "Reset-credit design: overflow counts and widest automatic countdowns"],
+] : [
   ["readme-boot-screen.svg", renderBoot(), "DevDash boot screen"],
   ["readme-dashboard-screen.svg", renderDashboard(), "DevDash dashboard screen"],
   ["readme-dashboard-two-screen.svg", renderDashboardTwo(), "DevDash dashboard screen with two providers"],

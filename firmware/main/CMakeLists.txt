@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "display.c"
+        "reset_credits.c"
         "wifi_prov.c"
         "wifi_roam.c"
         "captive_dns.c"
