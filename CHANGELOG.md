@@ -18,6 +18,7 @@ This prerelease adds saved reset credits to the Claude and Codex service headers
 - Upgrade the bundled Codex CLI to 0.157.1 to support reset credit inventories.
 - Fit service names and expiry labels to the available header space in one-, two-, three-, and four-service layouts.
 - Refresh the dashboard previews and document the optional reset credit payload fields.
+- Publish prerelease firmware and version-specific API images after successful CI on release branches, while preserving the stable Web Flasher, Docker aliases, and production relay.
 
 - Fall back to the standard Claude usage request when the reset inventory query is unsupported, with a cooldown to avoid repeated unsupported requests.
 

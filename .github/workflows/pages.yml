@@ -140,10 +140,14 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh release view "$TAG" >/dev/null 2>&1; then
+            release_args=()
+            if [[ "$TAG" == *-* ]]; then
+              release_args+=(--prerelease --draft)
+            fi
             gh release create "$TAG" \
               --title "$TAG" \
               --generate-notes \
-              --verify-tag
+              --verify-tag "${release_args[@]}"
           fi
           gh release upload "$TAG" \
             bins/*.bin \
@@ -152,6 +156,8 @@ jobs:
 
   deploy-pages:
     name: Deploy GitHub Pages
+    # Test firmware is distributed through release assets, not the stable flasher.
+    if: ${{ !contains(needs.build-firmware.outputs.tag, '-') }}
     # Gate Pages on the Release upload so the public flasher can never
     # publish firmware that wasn't also published as an immutable Release
     # asset — keeps the two surfaces byte-identical and auditable.
