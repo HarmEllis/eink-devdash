@@ -67,7 +67,7 @@ jobs:
 
           runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?event=push&status=completed&head_sha=${TARGET_SHA}&per_page=100")"
           # Stable tags require main CI; prereleases may use an exact release-branch push.
-          success_count="$(printf '%s' "$runs_json" | jq --arg sha "$TARGET_SHA" --arg tag "$TAG" '[.workflow_runs[] | select(.name == "CI" and .head_sha == $sha and .conclusion == "success") | select(.head_branch == "main" or (($tag | contains("-")) and (.head_branch | startswith("release/"))))] | length')"
+          success_count="$(printf '%s' "$runs_json" | jq --arg sha "$TARGET_SHA" --arg tag "$TAG" '[.workflow_runs[] | select(.name == "CI" and .head_sha == $sha and .conclusion == "success") | select(.head_branch == "main" or (($tag | contains("-")) and ((.head_branch // "") | startswith("release/"))))] | length')"
 
           if [ "$success_count" -eq 0 ]; then
             matching_runs="$(printf '%s' "$runs_json" | jq -r '[.workflow_runs[] | select(.name == "CI" and .head_sha == "'"${TARGET_SHA}"'") | "\(.id):\(.status)/\(.conclusion)"] | join(", ")')"
