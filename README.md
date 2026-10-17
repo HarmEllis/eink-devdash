@@ -164,6 +164,7 @@ contains all supported variables.
 | `CLAUDE_OVERAGE_USD` | no | empty | Optional override for the Claude extra-usage bar, which is otherwise read live from Claude's OAuth usage credits (currency symbol, bar = % of the monthly cap, amount consumed). If set (> 0) it forces a manual USD amount-capped bar. |
 | `ANTIGRAVITY_TOKEN` | no | empty | Direct Antigravity OAuth access-token override. Normally the mounted credential file is used instead. |
 | `ANTIGRAVITY_TOKEN_PATH` | no | `~/.gemini/antigravity-cli/antigravity-oauth-token` | Override the Antigravity OAuth credential-file path. |
+| `ANTIGRAVITY_USER_AGENT` | no | `antigravity/cli/1.4.0 <platform>/<arch>` | Override the client identity sent to the Antigravity quota API. The API only returns the Gemini quota groups to recent Antigravity clients; raise the version here if the Gemini tile disappears after an Antigravity update. |
 | `ANTIGRAVITY_OVERAGE_USD` | no | empty | Manual overage spend in USD for the Antigravity extra-usage bar. Empty or `0` hides the bar. |
 | `DASHBOARD_LOCALE` | no | `nl-NL` | BCP-47 locale for the extra-usage amount's decimal separator (`nl-NL` → `0,91`, `en-US` → `0.91`). Invalid/unsupported values fall back to the default. |
 | `DASHBOARD_TIME_ZONE` | no | `Europe/Amsterdam` | IANA timezone used for timestamps and quiet hours. |
@@ -616,7 +617,8 @@ Services are omitted when their provider or credentials are not configured.
 Codex usage uses the live app-server response when available and falls back to
 the latest local session data. Antigravity publishes its Gemini and Claude/GPT
 shared-quota groups as separate generic usage services, each with its own
-five-hour and weekly windows.
+five-hour and weekly windows. Model-specific groups with only a weekly window
+(such as Gemini 4 Argon) are a separate quota and are not shown.
 
 ### `GET /ota/manifest`
 

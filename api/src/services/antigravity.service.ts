@@ -47,6 +47,11 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const GOOGLE_CLIENT_ID =
   '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com'
 const GOOGLE_CLIENT_SECRET = ['GOCSPX', 'K58FWR486LdLJ1mLB8sXC4z6qDAf'].join('-')
+// The quota service only returns the Gemini groups to recent Antigravity
+// clients (verified 2026-10: hub/2.1.4 and cli/1.0.0 get only Claude/GPT), so
+// present as the current Antigravity CLI. ANTIGRAVITY_USER_AGENT overrides it
+// when the service raises the bar again.
+const ANTIGRAVITY_CLI_VERSION = '1.4.0'
 const TOKEN_REFRESH_MARGIN_MS = 60_000
 const REQUEST_TIMEOUT_MS = 10_000
 
@@ -75,6 +80,13 @@ function emptyUsage(status: AntigravityStatus): AntigravityUsage {
 function requestSignal(signal?: AbortSignal): AbortSignal {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   return signal ? AbortSignal.any([signal, timeout]) : timeout
+}
+
+function userAgent(): string {
+  return (
+    process.env.ANTIGRAVITY_USER_AGENT?.trim() ||
+    `antigravity/cli/${ANTIGRAVITY_CLI_VERSION} ${process.platform}/${process.arch}`
+  )
 }
 
 function tokenPath(): string {
@@ -171,7 +183,7 @@ async function retrieveQuotaSummary(
     headers: {
       authorization: `Bearer ${accessToken}`,
       'content-type': 'application/json',
-      'user-agent': `antigravity/hub/2.1.4 ${process.platform}/${process.arch}`,
+      'user-agent': userAgent(),
     },
     body: '{}',
     signal: requestSignal(signal),
@@ -242,13 +254,8 @@ export function parseAntigravityQuotaSummary(
       : normalizedName.includes('claude') || normalizedName.includes('gpt')
         ? 'claudeGpt'
         : null
-    const knownGroup = groupId
-      ? (groupCandidates.get(groupId) ?? {
-          label: groupId === 'gemini' ? 'Gemini' : 'Claude/GPT',
-          short: null,
-          long: null,
-        })
-      : null
+    let groupShort: QuotaCandidate | null = null
+    let groupLong: QuotaCandidate | null = null
 
     for (const bucket of buckets) {
       if (!bucket || typeof bucket !== 'object') continue
@@ -266,15 +273,26 @@ export function parseAntigravityQuotaSummary(
 
       if (value.window === '5h') {
         short = selectCandidate(short, candidate)
-        if (knownGroup) knownGroup.short = selectCandidate(knownGroup.short, candidate)
+        groupShort = selectCandidate(groupShort, candidate)
       }
       if (value.window === 'weekly') {
         long = selectCandidate(long, candidate)
-        if (knownGroup) knownGroup.long = selectCandidate(knownGroup.long, candidate)
+        groupLong = selectCandidate(groupLong, candidate)
       }
     }
 
-    if (groupId && knownGroup) groupCandidates.set(groupId, knownGroup)
+    // Only groups with both windows form a tile. Model-specific weekly-only
+    // groups (such as "Gemini 4 Argon") are a separate quota and must not
+    // drive the shared Gemini tile.
+    if (!groupId || !groupShort || !groupLong) continue
+    const knownGroup = groupCandidates.get(groupId) ?? {
+      label: groupId === 'gemini' ? 'Gemini' : 'Claude/GPT',
+      short: null,
+      long: null,
+    }
+    knownGroup.short = selectCandidate(knownGroup.short, groupShort)
+    knownGroup.long = selectCandidate(knownGroup.long, groupLong)
+    groupCandidates.set(groupId, knownGroup)
   }
 
   if (!short || !long) {
