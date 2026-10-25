@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Antigravity Gemini tile is shown again. The quota API stopped returning
+  the Gemini groups to the old `antigravity/hub/2.1.4` client identity; the API
+  now presents as Antigravity CLI 1.4.0, overridable with
+  `ANTIGRAVITY_USER_AGENT`. Weekly-only model groups such as Gemini 4 Argon no
+  longer feed into the shared Gemini tile.
+
 ## [0.12.0] - 2026-10-05
 
 This release shows saved reset credits and their earliest known expiry for Claude and Codex, and adds OTA support for release candidates. Both the API and firmware must be updated to display reset credits; the dashboard schema remains at version 2.

@@ -202,3 +202,98 @@ test('getAntigravityUsage reports rejected credentials as an auth error', async 
     globalThis.fetch = previousFetch
   }
 })
+
+function argonGroup(remainingFraction: number): Record<string, unknown> {
+  return {
+    displayName: 'Gemini 4 Argon',
+    buckets: [
+      {
+        bucketId: 'gemini-argon-wtu-weekly',
+        window: 'weekly',
+        remainingFraction,
+        resetTime: '2026-06-15T08:00:00Z',
+      },
+    ],
+  }
+}
+
+for (const position of ['before', 'after'] as const) {
+  test(`parseAntigravityQuotaSummary keeps a weekly-only Argon group ${position} Gemini Models out of the Gemini tile`, () => {
+    const payload = quotaResponse()
+    const groups = payload.groups as Record<string, unknown>[]
+    groups[0].displayName = 'Gemini Models'
+    groups[1].displayName = 'Claude and GPT models'
+    if (position === 'before') groups.unshift(argonGroup(0))
+    else groups.push(argonGroup(0))
+
+    const parsed = parseAntigravityQuotaSummary(payload, NOW)
+
+    assert.deepEqual(
+      parsed.groups.map((group) => group.id),
+      ['gemini', 'claudeGpt'],
+    )
+    const gemini = parsed.groups[0]
+    assert.equal(gemini.label, 'Gemini')
+    assert.equal(gemini.short.usedPercent, 45.68)
+    assert.equal(gemini.long.usedPercent, 7.61)
+    assert.equal(gemini.long.resetsAt, Date.parse('2026-06-20T20:00:00Z') / 1000)
+    assert.equal(gemini.reachedLimit, null)
+  })
+}
+
+test('parseAntigravityQuotaSummary does not create a tile from a weekly-only group', () => {
+  const payload = quotaResponse()
+  const groups = payload.groups as Record<string, unknown>[]
+  groups.splice(0, 1, argonGroup(0.5))
+
+  const parsed = parseAntigravityQuotaSummary(payload, NOW)
+
+  assert.deepEqual(
+    parsed.groups.map((group) => group.id),
+    ['claudeGpt'],
+  )
+})
+
+async function requestedUserAgent(override: string | undefined): Promise<string | null> {
+  const previousFetch = globalThis.fetch
+  const previousToken = process.env.ANTIGRAVITY_TOKEN
+  const previousUserAgent = process.env.ANTIGRAVITY_USER_AGENT
+  let userAgent: string | null = null
+
+  try {
+    process.env.ANTIGRAVITY_TOKEN = 'test-access-token'
+    if (override === undefined) delete process.env.ANTIGRAVITY_USER_AGENT
+    else process.env.ANTIGRAVITY_USER_AGENT = override
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      userAgent = new Headers(init?.headers).get('user-agent')
+      return Response.json(quotaResponse())
+    }) as typeof fetch
+
+    assert.equal((await getAntigravityUsage()).status, 'ok')
+    return userAgent
+  } finally {
+    if (previousToken === undefined) delete process.env.ANTIGRAVITY_TOKEN
+    else process.env.ANTIGRAVITY_TOKEN = previousToken
+    if (previousUserAgent === undefined) delete process.env.ANTIGRAVITY_USER_AGENT
+    else process.env.ANTIGRAVITY_USER_AGENT = previousUserAgent
+    globalThis.fetch = previousFetch
+  }
+}
+
+test('getAntigravityUsage presents as the current Antigravity CLI by default', async () => {
+  assert.equal(
+    await requestedUserAgent(undefined),
+    `antigravity/cli/1.4.0 ${process.platform}/${process.arch}`,
+  )
+  assert.equal(
+    await requestedUserAgent('   '),
+    `antigravity/cli/1.4.0 ${process.platform}/${process.arch}`,
+  )
+})
+
+test('getAntigravityUsage uses ANTIGRAVITY_USER_AGENT when set', async () => {
+  assert.equal(
+    await requestedUserAgent(' antigravity/cli/9.9.9 linux/x64 '),
+    'antigravity/cli/9.9.9 linux/x64',
+  )
+})
