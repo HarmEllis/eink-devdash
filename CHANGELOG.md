@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-25
+
+This release restores the Antigravity Gemini tile on the dashboard. Only the API image changes; the dashboard schema remains at version 2 and no firmware update is required.
+
 ### Fixed
 
 - The Antigravity Gemini tile is shown again. The quota API stopped returning
@@ -305,6 +309,7 @@ This minor release adds end-to-end OTA update support for the ESP32-S3 firmware,
 
 Initial public release of the e-ink developer dashboard: ESP32-S3 firmware for a WeAct 2.9" black/red display paired with a Node.js API container that exposes Claude and Codex CLI activity over the LAN.
 
+[0.12.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.2...v0.12.0
 [0.12.0-rc.1]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.2...v0.12.0-rc.1
 [0.11.2]: https://github.com/HarmEllis/eink-devdash/compare/v0.11.1...v0.11.2
